@@ -1,0 +1,18 @@
+[package]
+name = "kindling"
+version = "0.1.0"
+edition = "2021"
+description = "Kindle dictionary MOBI builder"
+
+[[bin]]
+name = "kindling"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+quick-xml = "0.36"
+regex = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
