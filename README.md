@@ -4,17 +4,17 @@
   <img width="700" alt="Kindling - Modern, cross-platform kindlegen replacement" src="kindling_logo.jpg">
 </p>
 
-Modern, cross-platform *kindlegen* replacement. Produces working Kindle dictionary MOBI files with full inflection lookup.
+Reverse-engineered Rust replacement for Amazon's *kindlegen*. 7,000x faster.
 
-## Why
+Kindling builds Kindle dictionary `.mobi` files from OPF/HTML source. It produces the same MOBI V7 format that *kindlegen* does, with working dictionary lookup on Kindle hardware. The MOBI format is undocumented - kindling was built by reverse-engineering *kindlegen* output byte by byte.
 
-Amazon deprecated the standalone *kindlegen* CLI in 2020. Kindle Previewer 3 still uses *kindlegen* internally (bundled at `Contents/lib/fc/bin/kindlegen`), but only exposes it through a GUI. The bundled binary is x86_64-only, running under Rosetta 2 on Apple Silicon Macs, and takes 12+ hours for large inflected-language dictionaries when it doesn't run out of memory entirely. On Windows, only a 32-bit build was ever released, which crashes on large files. On Linux, the 32-bit i386 binary is no longer available from Amazon. Kindle Previewer's GUI cannot run headless, making it unusable for automated builds or CI pipelines. No public specification exists for the MOBI format.
+Amazon deprecated *kindlegen* in 2020. The only remaining copy lives inside Kindle Previewer 3's GUI, which can't run headless and takes 12+ hours for large dictionaries. Kindling builds the same dictionary in 6 seconds.
 
-Kindling is a native Rust replacement that produces valid `.mobi` dictionary files directly, runs on any platform, handles arbitrarily large dictionaries, and integrates into automated build pipelines.
+Pre-built binaries for Mac (Apple Silicon, Intel), Linux (x86_64), and Windows (x86_64) are available on the [Releases](https://github.com/ciscoriordan/kindling/releases) page.
 
-## Status
-
-**Working** - produces Kindle dictionary MOBIs with functional lookup, tested on Kindle hardware.
+<p align="center">
+  <img width="500" alt="Greek dictionary lookup on Kindle" src="kindle_test.jpg">
+</p>
 
 - Single static binary, no runtime dependencies
 - Native performance: builds large dictionaries in seconds, not hours
