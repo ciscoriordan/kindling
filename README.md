@@ -152,6 +152,10 @@ Much of the foundational MOBI format knowledge comes from the [MobileRead wiki](
 - KCC ([Kindle Comic Converter](https://github.com/ciromattia/kcc)) integration - PR to add kindling as a backend
 - Testing with more languages beyond Greek
 
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=ciscoriordan/kindling&type=Date)](https://star-history.com/#ciscoriordan/kindling&Date)
+
 ## Attribution
 
 Kindling was created by Francisco Riordan. Source code is available at https://github.com/ciscoriordan/kindling.
