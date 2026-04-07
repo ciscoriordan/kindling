@@ -1,10 +1,10 @@
-/// MOBI dictionary file writer.
+/// MOBI file writer for dictionaries and books.
 ///
-/// Builds a valid MOBI dictionary file from OPF source files, including:
+/// Builds a valid MOBI file from OPF source files, including:
 /// - PalmDB header
 /// - PalmDOC header + MOBI header + EXTH header (record 0)
 /// - Compressed text content records
-/// - INDX records with dictionary index
+/// - INDX records with dictionary index (dictionaries only)
 /// - FLIS, FCIS, EOF records
 
 use std::collections::HashSet;
@@ -21,15 +21,54 @@ use crate::palmdoc;
 const RECORD_SIZE: usize = 4096;
 const MOBI_HEADER_LENGTH: usize = 264;
 
-/// Build a MOBI dictionary file from an OPF source.
+/// Build a MOBI file from an OPF source.
+///
+/// Automatically detects whether the input is a dictionary (contains idx:entry tags)
+/// or a regular book, and adjusts the output accordingly.
 pub fn build_mobi(
     opf_path: &Path,
     output_path: &Path,
     no_compress: bool,
     headwords_only: bool,
+    srcs_data: Option<&[u8]>,
+    include_cmet: bool,
+    no_hd_images: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let opf = OPFData::parse(opf_path)?;
 
+    // Detect dictionary vs book by checking HTML content for idx:entry tags
+    let is_dictionary = detect_dictionary(&opf);
+
+    if is_dictionary {
+        eprintln!("Detected dictionary content");
+        build_dictionary_mobi(&opf, output_path, no_compress, headwords_only, srcs_data, include_cmet)
+    } else {
+        eprintln!("Detected book content (no idx:entry tags found)");
+        build_book_mobi(&opf, output_path, no_compress, srcs_data, include_cmet, !no_hd_images)
+    }
+}
+
+/// Check if any HTML content file contains dictionary markup (idx:entry tags).
+fn detect_dictionary(opf: &OPFData) -> bool {
+    for html_path in opf.get_content_html_paths() {
+        if let Ok(content) = std::fs::read_to_string(&html_path) {
+            if content.contains("<idx:entry") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Build a dictionary MOBI file (existing behavior).
+fn build_dictionary_mobi(
+    opf: &OPFData,
+    output_path: &Path,
+    no_compress: bool,
+    headwords_only: bool,
+    srcs_data: Option<&[u8]>,
+    include_cmet: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     // Parse all dictionary entries from HTML content
     let mut all_entries: Vec<DictionaryEntry> = Vec::new();
     for html_path in opf.get_content_html_paths() {
@@ -45,7 +84,7 @@ pub fn build_mobi(
 
     // Build the text content (stripped HTML for all spine items)
     eprintln!("Building text content...");
-    let text_content = build_text_content(&opf);
+    let text_content = build_text_content(&opf, true);
 
     // Insert the guide reference tag
     let text_content = insert_guide_reference(&text_content);
@@ -102,12 +141,27 @@ pub fn build_mobi(
     let fcis = build_fcis(text_length);
     let eof = build_eof();
 
+    // Build optional SRCS and CMET records
+    let srcs_record: Option<Vec<u8>> = srcs_data.map(|data| data.to_vec());
+    let cmet_record: Option<Vec<u8>> = if include_cmet {
+        Some(build_cmet())
+    } else {
+        None
+    };
+    let num_optional = srcs_record.as_ref().map_or(0, |_| 1) + cmet_record.as_ref().map_or(0, |_| 1);
+
     // Calculate record indices
+    // Layout: record0 | text | INDX | FLIS | FCIS | [SRCS] | [CMET] | EOF
     let first_non_book = text_records.len() + 1;
     let orth_index_record = text_records.len() + 1;
     let flis_record = text_records.len() + 1 + indx_records.len();
     let fcis_record = flis_record + 1;
-    let total_records = 1 + text_records.len() + indx_records.len() + 3;
+    let srcs_record_idx = if srcs_record.is_some() {
+        Some(fcis_record + 1)
+    } else {
+        None
+    };
+    let total_records = 1 + text_records.len() + indx_records.len() + 3 + num_optional;
 
     // Collect unique headword characters for fontsignature
     let mut headword_chars: HashSet<u32> = HashSet::new();
@@ -129,6 +183,14 @@ pub fn build_mobi(
         fcis_record,
         no_compress,
         &headword_chars,
+        true, // is_dictionary
+        0xFFFFFFFF, // no images for dictionaries
+        None, // no cover offset
+        None, // no fixed-layout for dictionaries
+        None, // no version override (use default 7)
+        None, // no KF8 boundary (dictionaries stay KF7-only)
+        srcs_record_idx,
+        None, // no HD images for dictionaries
     );
 
     // Assemble all records
@@ -137,6 +199,12 @@ pub fn build_mobi(
     all_records.extend(indx_records);
     all_records.push(flis);
     all_records.push(fcis);
+    if let Some(srcs) = srcs_record {
+        all_records.push(srcs);
+    }
+    if let Some(cmet) = cmet_record {
+        all_records.push(cmet);
+    }
     all_records.push(eof);
 
     // Build PalmDB header and write file
@@ -153,14 +221,759 @@ pub fn build_mobi(
     Ok(())
 }
 
+/// Build a regular book MOBI file with dual KF7+KF8 format.
+///
+/// Record layout:
+///   KF7 Section: record0, text records, image records, FLIS, FCIS
+///   BOUNDARY record (8 bytes: "BOUNDARY")
+///   KF8 Section: kf8_record0, kf8_text records, NULL padding,
+///                fragment INDX, skeleton INDX, NCX INDX, FDST, DATP,
+///                FLIS, FCIS, EOF
+fn build_book_mobi(
+    opf: &OPFData,
+    output_path: &Path,
+    no_compress: bool,
+    srcs_data: Option<&[u8]>,
+    include_cmet: bool,
+    hd_images: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Collect images from the OPF manifest
+    let image_items = opf.get_image_items(); // Vec<(href, media_type)>
+    let cover_href = opf.get_cover_image_href();
+
+    // Build the href-to-recindex mapping and load image data
+    // Image recindex is 1-based (first image = "00001")
+    let mut image_records: Vec<Vec<u8>> = Vec::new();
+    let mut href_to_recindex: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut cover_offset: Option<u32> = None;
+    let mut total_image_bytes: usize = 0;
+
+    for (idx, (href, _media_type)) in image_items.iter().enumerate() {
+        let recindex = idx + 1; // 1-based
+        let image_path = opf.base_dir.join(href);
+
+        // Try reading the file directly, then with percent-decoded path
+        let data = std::fs::read(&image_path).or_else(|_| {
+            let decoded = percent_decode(href);
+            std::fs::read(opf.base_dir.join(&decoded))
+        });
+
+        if let Ok(mut data) = data {
+            // Patch JFIF density units: Kindle firmware needs DPI units (0x01)
+            // for cover images to display on the lock screen. If the JFIF header
+            // has units=0x00 (aspect ratio only), change it to 0x01 (DPI).
+            // JFIF layout: FF D8 FF E0 [len:2] 'J' 'F' 'I' 'F' \0 [ver:2] [units:1]
+            //              0  1  2  3   4  5   6   7   8   9  10  11  12    13
+            if data.len() > 13
+                && data[0] == 0xFF && data[1] == 0xD8  // SOI marker
+                && data[2] == 0xFF && data[3] == 0xE0  // APP0 marker
+                && data[6..11] == *b"JFIF\0"           // JFIF identifier
+                && data[13] == 0x00                     // units = aspect ratio only
+            {
+                data[13] = 0x01; // patch to DPI
+            }
+            total_image_bytes += data.len();
+            href_to_recindex.insert(href.clone(), recindex);
+            image_records.push(data);
+
+            // Check if this is the cover image
+            if let Some(ref cover) = cover_href {
+                if href == cover {
+                    cover_offset = Some(idx as u32); // 0-based offset within image records
+                }
+            }
+        } else {
+            eprintln!("Warning: could not read image file: {}", image_path.display());
+            // Still push an empty record to keep recindex alignment
+            href_to_recindex.insert(href.clone(), recindex);
+            image_records.push(Vec::new());
+        }
+    }
+
+    if !image_records.is_empty() {
+        eprintln!(
+            "Collected {} images ({} bytes total)",
+            image_records.len(),
+            total_image_bytes
+        );
+    }
+
+    // Build the KF7 text content (stripped for KF7, with recindex for images)
+    eprintln!("Building KF7 text content...");
+    let text_content = build_text_content(opf, false);
+
+    // Rewrite image src attributes to recindex references for KF7
+    let text_content = if !href_to_recindex.is_empty() {
+        rewrite_image_src(&text_content, &href_to_recindex, &opf.spine_items)
+    } else {
+        text_content
+    };
+
+    // Build KF7 text records
+    let (text_records, text_length) = if no_compress {
+        eprintln!("Splitting KF7 text into uncompressed records...");
+        let result = split_text_uncompressed(&text_content);
+        eprintln!(
+            "Split KF7 text into {} uncompressed records ({} bytes)",
+            result.0.len(),
+            result.1
+        );
+        result
+    } else {
+        eprintln!("Compressing KF7 text...");
+        let result = compress_text(&text_content);
+        eprintln!(
+            "Compressed KF7 text into {} records ({} bytes uncompressed)",
+            result.0.len(),
+            result.1
+        );
+        result
+    };
+
+    // Build KF8 section
+    eprintln!("Building KF8 section...");
+    let html_parts = build_html_parts(opf);
+    let css_content = extract_css_content(opf);
+    let kf8_section = crate::kf8::build_kf8_section(
+        &html_parts,
+        &css_content,
+        &href_to_recindex,
+        &opf.spine_items,
+        no_compress,
+    );
+    eprintln!(
+        "KF8: {} text records ({} bytes), {} flows",
+        kf8_section.text_records.len(),
+        kf8_section.text_length,
+        kf8_section.flow_count,
+    );
+
+    // Build optional SRCS and CMET records
+    let srcs_record: Option<Vec<u8>> = srcs_data.map(|data| data.to_vec());
+    let cmet_record: Option<Vec<u8>> = if include_cmet {
+        Some(build_cmet())
+    } else {
+        None
+    };
+    let num_optional = srcs_record.as_ref().map_or(0, |_| 1) + cmet_record.as_ref().map_or(0, |_| 1);
+
+    // --- KF7 Section record layout ---
+    // [0]       KF7 Record 0
+    // [1..N]    KF7 text records
+    // [N+1..]   Image records (shared)
+    // [...]     FLIS, FCIS, [SRCS], [CMET]
+    let num_image_records = image_records.len();
+    let kf7_first_non_book = text_records.len() + 1;
+    let kf7_first_image = if num_image_records > 0 {
+        text_records.len() + 1
+    } else {
+        0xFFFFFFFF
+    };
+    let kf7_flis = text_records.len() + 1 + num_image_records;
+    let kf7_fcis = kf7_flis + 1;
+    let kf7_srcs_idx = if srcs_record.is_some() {
+        Some(kf7_fcis + 1)
+    } else {
+        None
+    };
+
+    // BOUNDARY record index (global) - after FLIS, FCIS, and optional SRCS/CMET
+    let boundary_idx = 1 + text_records.len() + num_image_records + 2 + num_optional;
+
+    // KF8 Record 0 is the record after BOUNDARY
+    let kf8_record0_global = boundary_idx + 1;
+
+    // Total records in KF7 section (before boundary): record0 + text + images + FLIS + FCIS + [SRCS] + [CMET]
+    let kf7_total = 1 + text_records.len() + num_image_records + 2 + num_optional;
+
+    // --- KF8 Section record layout (KF8-relative indices) ---
+    // [0]       KF8 Record 0
+    // [1..M]    KF8 text records
+    // [M+1]     NULL padding
+    // [M+2..]   Fragment INDX records
+    // [...]     Skeleton INDX records
+    // [...]     NCX INDX records
+    // [...]     FDST record
+    // [...]     DATP record
+    // [...]     FLIS, FCIS, EOF
+    let kf8_text_count = kf8_section.text_records.len();
+    let kf8_null_pad = kf8_text_count + 1; // KF8-relative
+    let kf8_fragment_start = kf8_null_pad + 1;
+    let kf8_skeleton_start = kf8_fragment_start + kf8_section.fragment_indx.len();
+    let kf8_ncx_start = kf8_skeleton_start + kf8_section.skeleton_indx.len();
+    let kf8_fdst_idx = kf8_ncx_start + kf8_section.ncx_indx.len();
+    let kf8_datp_idx = kf8_fdst_idx + 1;
+    let kf8_flis_idx = kf8_datp_idx + 1;
+    let kf8_fcis_idx = kf8_flis_idx + 1;
+    let _kf8_eof_idx = kf8_fcis_idx + 1;
+
+    // KF8 first_image: images are in the KF7 section, so KF8 references them
+    // by their global record index minus the KF8 Record 0 global index.
+    // Wait, in the reference file, KF8 first_image was 14 (relative), and
+    // KF8 record 0 was at global 33, meaning images would be at global 47+.
+    // But images are shared in the KF7 section. The KF8 header's first_image
+    // is still relative, pointing to where images would be if they were in the
+    // KF8 section. For shared images, we don't set first_image in KF8 since
+    // kindle:embed URLs handle the mapping.
+    // Actually, looking at the reference: KF8 first_image=14 but there are only
+    // ~17 KF8 records. The images are shared from KF7. The kindle:embed URL
+    // encoding handles this. Let's set first_image to 0xFFFFFFFF for KF8.
+    // Actually, the reference file has first_image=14, which likely points past
+    // the KF8 text/index records into the shared image area via record number
+    // math. Let me just not set it for now.
+
+    let kf8_first_nonbook = kf8_text_count + 1; // after text records
+
+    // --- HD image container (CONT/CRES) ---
+    // Build HD container records if enabled and there are images.
+    // The HD container goes after the KF8 section's EOF.
+    let hd_container: Option<HdContainer> = if hd_images && num_image_records > 0 {
+        eprintln!("Building HD image container (CONT/CRES)...");
+        Some(build_hd_container(opf, &image_records))
+    } else {
+        None
+    };
+
+    // Count HD container records for total record calculation
+    let hd_record_count = hd_container.as_ref().map_or(0, |hd| hd.total_record_count());
+
+    // Total global records (kf7_total already includes optional SRCS/CMET)
+    let total_global_records = kf7_total + 1 + 1 + kf8_text_count + 1 // boundary + kf8rec0 + text + null
+        + kf8_section.fragment_indx.len()
+        + kf8_section.skeleton_indx.len()
+        + kf8_section.ncx_indx.len()
+        + 1  // FDST
+        + 1  // DATP
+        + 3  // FLIS + FCIS + EOF
+        + hd_record_count; // HD container (BOUNDARY + CONT + CRES slots + kindle:embed list + CONTBOUNDARY + EOF)
+
+    // Build fixed-layout metadata if applicable
+    let fixed_layout = if opf.is_fixed_layout {
+        eprintln!("Detected fixed-layout content");
+        Some(exth::FixedLayoutMeta {
+            is_fixed_layout: true,
+            original_resolution: opf.original_resolution.clone(),
+            page_progression_direction: opf.page_progression_direction.clone(),
+        })
+    } else {
+        None
+    };
+
+    // Build HD geometry string for EXTH 536 (format: "WxH:start-end|")
+    let hd_geometry_string: Option<String> = hd_container.as_ref().map(|hd| {
+        hd.geometry_string()
+    });
+
+    // Build KF7 record 0 (version=6, with EXTH 121 pointing to KF8 record 0)
+    let empty_chars: HashSet<u32> = HashSet::new();
+    let kf7_record0 = build_record0(
+        opf,
+        text_length,
+        text_records.len(),
+        kf7_first_non_book,
+        0xFFFFFFFF_usize, // no orth index
+        total_global_records,
+        kf7_flis,
+        kf7_fcis,
+        no_compress,
+        &empty_chars,
+        false, // not a dictionary
+        kf7_first_image,
+        cover_offset,
+        fixed_layout.as_ref(),
+        Some(6),  // KF7 version = 6
+        Some(kf8_record0_global as u32), // EXTH 121 -> KF8 Record 0
+        kf7_srcs_idx,
+        hd_geometry_string.as_deref(),
+    );
+
+    // Build KF8 record 0 (version=8, KF8-relative indices)
+    let kf8_record0 = build_kf8_record0(
+        opf,
+        kf8_section.text_length,
+        kf8_text_count,
+        kf8_first_nonbook,
+        kf8_fdst_idx,
+        kf8_section.flow_count,
+        kf8_skeleton_start,
+        kf8_fragment_start,
+        kf8_ncx_start,
+        kf8_datp_idx,
+        kf8_flis_idx,
+        kf8_fcis_idx,
+        no_compress,
+        cover_offset,
+        fixed_layout.as_ref(),
+        0xFFFFFFFF, // KF8 first_image (images are in KF7 section)
+    );
+
+    // Build FLIS/FCIS/EOF for both sections
+    let kf7_flis_rec = build_flis();
+    let kf7_fcis_rec = build_fcis(text_length);
+    let kf8_flis_rec = build_flis();
+    let kf8_fcis_rec = build_fcis(kf8_section.text_length);
+    let eof = build_eof();
+    let boundary_rec = b"BOUNDARY".to_vec();
+    let null_pad_rec = vec![0x00u8]; // NULL padding record
+
+    // Assemble all records in order:
+    // KF7: record0 + text + images + FLIS + FCIS + [SRCS] + [CMET]
+    // BOUNDARY
+    // KF8: record0 + text + NULL + fragment_indx + skeleton_indx + ncx_indx + FDST + DATP + FLIS + FCIS + EOF
+    // [HD: BOUNDARY + CONT + CRES/placeholder records + kindle:embed list + CONTBOUNDARY + EOF]
+    let mut all_records: Vec<Vec<u8>> = Vec::new();
+
+    // KF7 section
+    all_records.push(kf7_record0);
+    all_records.extend(text_records);
+    all_records.extend(image_records);
+    all_records.push(kf7_flis_rec);
+    all_records.push(kf7_fcis_rec);
+    if let Some(srcs) = srcs_record {
+        all_records.push(srcs);
+    }
+    if let Some(cmet) = cmet_record {
+        all_records.push(cmet);
+    }
+
+    // Boundary
+    all_records.push(boundary_rec);
+
+    // KF8 section
+    all_records.push(kf8_record0);
+    all_records.extend(kf8_section.text_records);
+    all_records.push(null_pad_rec);
+    all_records.extend(kf8_section.fragment_indx);
+    all_records.extend(kf8_section.skeleton_indx);
+    all_records.extend(kf8_section.ncx_indx);
+    all_records.push(kf8_section.fdst);
+    all_records.push(kf8_section.datp);
+    all_records.push(kf8_flis_rec);
+    all_records.push(kf8_fcis_rec);
+    all_records.push(eof);
+
+    // HD image container (CONT/CRES)
+    if let Some(hd) = hd_container {
+        all_records.extend(hd.into_records());
+    }
+
+    let hd_str = if hd_record_count > 0 {
+        format!(", HD: {}", hd_record_count)
+    } else {
+        String::new()
+    };
+    eprintln!(
+        "Dual format: {} total records (KF7: {}, boundary: 1, KF8: {}{})",
+        all_records.len(),
+        kf7_total,
+        all_records.len() - kf7_total - 1 - hd_record_count,
+        hd_str,
+    );
+
+    // Build PalmDB header and write file
+    let title = if opf.title.is_empty() {
+        "Book"
+    } else {
+        &opf.title
+    };
+    let palmdb = build_palmdb(title, &all_records);
+
+    std::fs::write(output_path, &palmdb)?;
+    eprintln!("Wrote {} ({} bytes)", output_path.display(), palmdb.len());
+
+    Ok(())
+}
+
+// --- HD Image Container (CONT/CRES) support ---
+
+/// Represents the HD image container that goes after the KF8 section.
+///
+/// Record layout:
+///   BOUNDARY (8 bytes)
+///   CONT (header with EXTH-like metadata)
+///   CRES/placeholder records (one per image)
+///   kindle:embed list record
+///   CONTBOUNDARY marker (12 bytes)
+///   EOF marker (4 bytes)
+struct HdContainer {
+    /// The CONT header record
+    cont_record: Vec<u8>,
+    /// CRES records (actual HD images) or placeholder records (0xA0A0A0A0)
+    cres_records: Vec<Vec<u8>>,
+    /// kindle:embed list record (pipe-delimited kindle:embed URLs for HD images)
+    kindle_embed_list: Vec<u8>,
+    /// Maximum image width across all HD images
+    max_width: u32,
+    /// Maximum image height across all HD images
+    max_height: u32,
+    /// Total number of CRES/placeholder slots
+    num_cres_slots: usize,
+}
+
+impl HdContainer {
+    /// Total number of PalmDB records this container adds.
+    /// BOUNDARY + CONT + CRES slots + kindle:embed list + CONTBOUNDARY + EOF
+    fn total_record_count(&self) -> usize {
+        1 + 1 + self.cres_records.len() + 1 + 1 + 1
+    }
+
+    /// Build the EXTH 536 geometry string: "WxH:start-end|"
+    /// start and end are 0-based indices covering the CRES/placeholder slots,
+    /// the kindle:embed list, and the CONTBOUNDARY record.
+    fn geometry_string(&self) -> String {
+        // end index = num_cres_slots + 1 (kindle:embed list) + 1 (CONTBOUNDARY)
+        let end = self.num_cres_slots + 2;
+        format!("{}x{}:0-{}|", self.max_width, self.max_height, end)
+    }
+
+    /// Convert into a flat list of PalmDB records in order.
+    fn into_records(self) -> Vec<Vec<u8>> {
+        let mut records = Vec::with_capacity(self.total_record_count());
+        records.push(b"BOUNDARY".to_vec());
+        records.push(self.cont_record);
+        records.extend(self.cres_records);
+        records.push(self.kindle_embed_list);
+        records.push(b"CONTBOUNDARY".to_vec());
+        records.push(vec![0xE9, 0x8E, 0x0D, 0x0A]); // EOF
+        records
+    }
+}
+
+/// Build the HD image container for a book MOBI.
+///
+/// Each image from the KF7 section gets a corresponding slot in the HD container:
+/// either a CRES record with the full image data (for all images, since the source
+/// images from EPUB are typically already high-res) or a 4-byte placeholder
+/// (0xA0A0A0A0) for empty/missing images.
+fn build_hd_container(
+    opf: &OPFData,
+    image_records: &[Vec<u8>],
+) -> HdContainer {
+    let title = if opf.title.is_empty() { "Book" } else { &opf.title };
+    let num_images = image_records.len();
+
+    let mut cres_records: Vec<Vec<u8>> = Vec::new();
+    let mut hd_image_count: u32 = 0;
+    let mut max_width: u32 = 0;
+    let mut max_height: u32 = 0;
+    let mut kindle_embed_parts: Vec<String> = Vec::new();
+
+    for (idx, img_data) in image_records.iter().enumerate() {
+        if img_data.is_empty() {
+            // Empty image slot - use placeholder
+            cres_records.push(vec![0xA0, 0xA0, 0xA0, 0xA0]);
+            continue;
+        }
+
+        // Check image dimensions
+        let dims = get_image_dimensions(img_data);
+
+        if let Some((w, h)) = dims {
+            // Include as HD image: CRES header (12 bytes) + image data
+            let mut cres = Vec::with_capacity(12 + img_data.len());
+            cres.extend_from_slice(b"CRES");
+            cres.extend_from_slice(&0u32.to_be_bytes()); // reserved
+            cres.extend_from_slice(&12u32.to_be_bytes()); // offset to image data
+            cres.extend_from_slice(img_data);
+            cres_records.push(cres);
+
+            hd_image_count += 1;
+            if w > max_width { max_width = w; }
+            if h > max_height { max_height = h; }
+
+            // Build kindle:embed reference for this HD image
+            // recindex is 1-based
+            let recindex = idx + 1;
+            let embed_ref = format!(
+                "kindle:embed:{}?mime=image/jpg",
+                encode_kindle_embed_base32(recindex)
+            );
+            kindle_embed_parts.push(embed_ref);
+        } else {
+            // Can't determine dimensions (not JPEG/PNG) - use placeholder
+            cres_records.push(vec![0xA0, 0xA0, 0xA0, 0xA0]);
+        }
+    }
+
+    // Build the kindle:embed list record (pipe-delimited, trailing pipe)
+    let kindle_embed_list = if kindle_embed_parts.is_empty() {
+        Vec::new()
+    } else {
+        let mut list_str = kindle_embed_parts.join("|");
+        list_str.push('|');
+        list_str.into_bytes()
+    };
+
+    // Build the CONT header record
+    let cont_record = build_cont_record(
+        title,
+        &opf.author,
+        num_images,
+        hd_image_count,
+        max_width,
+        max_height,
+    );
+
+    eprintln!(
+        "HD container: {} image slots, {} HD images, max {}x{}",
+        num_images, hd_image_count, max_width, max_height,
+    );
+
+    HdContainer {
+        cont_record,
+        cres_records,
+        kindle_embed_list,
+        max_width,
+        max_height,
+        num_cres_slots: num_images,
+    }
+}
+
+/// Build the CONT record (HD container header).
+///
+/// Structure (48-byte header + EXTH block + padded title):
+///   0: "CONT" magic
+///   4: total record length (u32 BE)
+///   8: (version << 16) | total_records_in_container (u32 BE)
+///   12: encoding (65001 = UTF-8)
+///   16: 0
+///   20: 1
+///   24: num_cres_slots (number of CRES/placeholder records)
+///   28: num_hd_images (number of actual HD images)
+///   32: kindle_embed_list_index (CONT-relative index of kindle:embed list record)
+///   36: 1
+///   40: EXTH_offset (offset where EXTH starts in this record, always 216 after padding)
+///   44: title_length
+///   48: EXTH block
+///   48+exth_len: padded title
+fn build_cont_record(
+    title: &str,
+    _author: &str,
+    num_cres_slots: usize,
+    num_hd_images: u32,
+    max_width: u32,
+    max_height: u32,
+) -> Vec<u8> {
+    // CONT-relative index of the kindle:embed list record:
+    // CONT is record 0, CRES slots are records 1..num_cres_slots, kindle:embed = num_cres_slots + 1
+    let kindle_embed_index = num_cres_slots + 1;
+
+    // Total records in the container (CRES slots + kindle:embed list + CONTBOUNDARY)
+    // The version/count field at offset 8 encodes (1 << 16) | total_count
+    // where total_count includes all records from CONT itself through CONTBOUNDARY + EOF
+    // Observed: kindlegen uses count = num_cres_slots + 3 (kindle:embed + CONTBOUNDARY + EOF?)
+    let container_total = num_cres_slots + 3;
+
+    // Build CONT EXTH block
+    let mut exth_records: Vec<Vec<u8>> = vec![
+        exth::exth_record(125, &4u32.to_be_bytes()),
+        exth::exth_record(204, &202u32.to_be_bytes()), // creator platform
+        exth::exth_record(205, &0u32.to_be_bytes()),   // major
+        exth::exth_record(206, &1u32.to_be_bytes()),   // minor
+        exth::exth_record(535, b"kindling-0.2.0"),      // creator string
+        exth::exth_record(207, &0u32.to_be_bytes()),   // build
+        exth::exth_record(539, b"application/image"),   // container MIME
+    ];
+    let dims_str = format!("{}x{}", max_width, max_height);
+    exth_records.push(exth::exth_record(538, dims_str.as_bytes()));   // HD dimensions
+    // EXTH 542 - content hash (4 bytes from MD5 of title)
+    let title_bytes = if title.is_empty() { b"Book".to_vec() } else { title.as_bytes().to_vec() };
+    let title_hash = md5_simple(&title_bytes);
+    exth_records.push(exth::exth_record(542, &title_hash[..4]));
+    exth_records.push(exth::exth_record(543, b"HD_CONTAINER"));      // container type
+
+    let exth_record_data: Vec<u8> = exth_records.iter().flat_map(|r| r.iter().copied()).collect();
+    let exth_length = 12 + exth_record_data.len();
+    let exth_padding = (4 - (exth_length % 4)) % 4;
+    let exth_padded_length = exth_length + exth_padding;
+
+    let mut exth_block = Vec::with_capacity(exth_padded_length);
+    exth_block.extend_from_slice(b"EXTH");
+    exth_block.extend_from_slice(&(exth_padded_length as u32).to_be_bytes());
+    exth_block.extend_from_slice(&(exth_records.len() as u32).to_be_bytes());
+    exth_block.extend_from_slice(&exth_record_data);
+    exth_block.extend_from_slice(&vec![0u8; exth_padding]);
+
+    // Compute title padding
+    let title_raw = title.as_bytes();
+    let title_len = title_raw.len();
+
+    // The EXTH offset field at offset 40 is the total size of header(48) + exth + padded_title area.
+    // In kindlegen this was 216, which equals 48 (header) + 168 (EXTH).
+    // The title follows the EXTH and is padded with zeros to fill out the record.
+    let header_size = 48;
+    let exth_offset = header_size + exth_block.len();
+
+    // Total record size: header + EXTH + title + padding to fill nicely
+    // We want the title area to be padded to at least a reasonable size
+    let title_area_size = std::cmp::max(256, title_len.div_ceil(4) * 4);
+    let total_size = header_size + exth_block.len() + title_area_size;
+
+    // Build the 48-byte header
+    let mut record = Vec::with_capacity(total_size);
+    record.extend_from_slice(b"CONT");
+    record.extend_from_slice(&(total_size as u32).to_be_bytes());
+    record.extend_from_slice(&((1u32 << 16) | container_total as u32).to_be_bytes());
+    record.extend_from_slice(&65001u32.to_be_bytes()); // UTF-8
+    record.extend_from_slice(&0u32.to_be_bytes());     // offset 16: 0
+    record.extend_from_slice(&1u32.to_be_bytes());     // offset 20: 1
+    record.extend_from_slice(&(num_cres_slots as u32).to_be_bytes()); // offset 24
+    record.extend_from_slice(&num_hd_images.to_be_bytes());           // offset 28
+    record.extend_from_slice(&(kindle_embed_index as u32).to_be_bytes()); // offset 32
+    record.extend_from_slice(&1u32.to_be_bytes());     // offset 36: 1
+    record.extend_from_slice(&(exth_offset as u32).to_be_bytes()); // offset 40
+    record.extend_from_slice(&(title_len as u32).to_be_bytes());   // offset 44
+
+    // EXTH block
+    record.extend_from_slice(&exth_block);
+
+    // Padded title
+    record.extend_from_slice(title_raw);
+    while record.len() < total_size {
+        record.push(0x00);
+    }
+
+    record
+}
+
+/// Encode a 1-based record index as base-32 for kindle:embed URLs.
+/// Uses digits 0-9 and uppercase A-V (32 characters), 4 chars zero-padded.
+fn encode_kindle_embed_base32(recindex: usize) -> String {
+    const CHARS: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUV";
+    let mut result = [b'0'; 4];
+    let mut v = recindex;
+    for i in (0..4).rev() {
+        result[i] = CHARS[v % 32];
+        v /= 32;
+    }
+    String::from_utf8(result.to_vec()).unwrap()
+}
+
+/// Get image dimensions (width, height) from JPEG or PNG image data.
+///
+/// For JPEG: parses SOF markers to find dimensions.
+/// For PNG: reads IHDR chunk.
+/// Returns None if the format is unrecognized or dimensions can't be determined.
+fn get_image_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+    if data.len() < 24 {
+        return None;
+    }
+
+    // JPEG: starts with FF D8
+    if data[0] == 0xFF && data[1] == 0xD8 {
+        return get_jpeg_dimensions(data);
+    }
+
+    // PNG: starts with 89 50 4E 47 0D 0A 1A 0A
+    if data.len() >= 24 && data[0..8] == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A] {
+        // IHDR chunk starts at offset 8: length(4) + "IHDR"(4) + width(4) + height(4)
+        if &data[12..16] == b"IHDR" {
+            let w = u32::from_be_bytes([data[16], data[17], data[18], data[19]]);
+            let h = u32::from_be_bytes([data[20], data[21], data[22], data[23]]);
+            return Some((w, h));
+        }
+    }
+
+    // GIF: starts with "GIF"
+    if data.len() >= 10 && &data[0..3] == b"GIF" {
+        let w = u16::from_le_bytes([data[6], data[7]]) as u32;
+        let h = u16::from_le_bytes([data[8], data[9]]) as u32;
+        return Some((w, h));
+    }
+
+    None
+}
+
+/// Parse JPEG SOF markers to get image dimensions.
+fn get_jpeg_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+    let mut i = 0;
+    while i + 1 < data.len() {
+        if data[i] != 0xFF {
+            i += 1;
+            continue;
+        }
+        let marker = data[i + 1];
+        match marker {
+            0xD8 => { // SOI
+                i += 2;
+            }
+            0xD9 | 0xDA => { // EOI or SOS - stop searching
+                break;
+            }
+            // SOF markers: C0, C1, C2, C3
+            0xC0..=0xC3 => {
+                if i + 9 <= data.len() {
+                    let h = u16::from_be_bytes([data[i + 5], data[i + 6]]) as u32;
+                    let w = u16::from_be_bytes([data[i + 7], data[i + 8]]) as u32;
+                    return Some((w, h));
+                }
+                break;
+            }
+            0x00 => {
+                // Stuffed byte after FF - not a marker
+                i += 2;
+            }
+            _ => {
+                // Other marker with length field
+                if i + 4 <= data.len() {
+                    let length = u16::from_be_bytes([data[i + 2], data[i + 3]]) as usize;
+                    i += 2 + length;
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Get the individual cleaned HTML parts for each spine item (for KF8).
+///
+/// Returns the cleaned HTML content of each file as a separate string,
+/// not merged into one document.
+fn build_html_parts(opf: &OPFData) -> Vec<String> {
+    let mut parts: Vec<String> = Vec::new();
+    for html_path in opf.get_content_html_paths() {
+        let content = std::fs::read_to_string(&html_path).unwrap_or_default();
+        let cleaned = clean_book_html(&content);
+        parts.push(cleaned);
+    }
+    parts
+}
+
+/// Extract CSS content from the OPF manifest.
+///
+/// Reads all CSS files referenced in the manifest and concatenates them.
+fn extract_css_content(opf: &OPFData) -> String {
+    let mut css_parts: Vec<String> = Vec::new();
+
+    for (_, (href, media_type)) in &opf.manifest {
+        if media_type == "text/css" || href.ends_with(".css") {
+            let css_path = opf.base_dir.join(href);
+            if let Ok(content) = std::fs::read_to_string(&css_path) {
+                css_parts.push(content);
+            }
+        }
+    }
+
+    css_parts.join("\n")
+}
+
 /// Read and concatenate all spine HTML files into a single text blob.
-fn build_text_content(opf: &OPFData) -> Vec<u8> {
+///
+/// When `strip_idx` is true (dictionary mode), idx: namespace markup is stripped.
+/// When false (book mode), HTML is cleaned minimally.
+fn build_text_content(opf: &OPFData, strip_idx: bool) -> Vec<u8> {
     let mut parts: Vec<String> = Vec::new();
 
     for html_path in opf.get_content_html_paths() {
         let content = std::fs::read_to_string(&html_path).unwrap_or_default();
-        let stripped = strip_idx_markup(&content);
-        parts.push(stripped);
+        let cleaned = if strip_idx {
+            strip_idx_markup(&content)
+        } else {
+            clean_book_html(&content)
+        };
+        parts.push(cleaned);
     }
 
     // Merge all HTML files into a single document
@@ -259,6 +1072,147 @@ fn strip_idx_markup(html: &str) -> String {
     result = result.replace("/><b>", "/> <b>");
 
     result.trim().to_string()
+}
+
+/// Clean book HTML for non-dictionary content.
+///
+/// Minimal cleanup: removes XML declarations and xmlns attributes,
+/// but preserves all HTML content as-is (no idx markup to strip).
+fn clean_book_html(html: &str) -> String {
+    let mut result = html.to_string();
+
+    // Remove XML declarations
+    let xml_decl = Regex::new(r"<\?xml[^?]*\?>\s*").unwrap();
+    result = xml_decl.replace_all(&result, "").to_string();
+
+    // Remove xmlns:* attributes
+    let xmlns = Regex::new(r#"\s+xmlns:\w+="[^"]*""#).unwrap();
+    result = xmlns.replace_all(&result, "").to_string();
+
+    // Remove the default xmlns attribute too (common in EPUB XHTML)
+    let xmlns_default = Regex::new(r#"\s+xmlns="[^"]*""#).unwrap();
+    result = xmlns_default.replace_all(&result, "").to_string();
+
+    result.trim().to_string()
+}
+
+/// Rewrite image `src="..."` attributes to `recindex="NNNNN"` in the text content.
+///
+/// The src paths in HTML files may be relative to the HTML file's own location
+/// (e.g., `../Images/foo.jpg` from `Text/chapter1.xhtml`), so we need to try
+/// multiple path resolution strategies to match against the manifest hrefs.
+fn rewrite_image_src(
+    text_bytes: &[u8],
+    href_to_recindex: &std::collections::HashMap<String, usize>,
+    spine_items: &[(String, String)],
+) -> Vec<u8> {
+    let text = String::from_utf8_lossy(text_bytes);
+
+    // Build a lookup that maps various path forms to recindex.
+    // For each manifest href like "Images/cover.jpg", we want to match:
+    // - "Images/cover.jpg" (exact)
+    // - "../Images/cover.jpg" (relative from a subdirectory)
+    // - "cover.jpg" (filename only)
+    let mut path_to_recindex: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+
+    for (href, &recindex) in href_to_recindex {
+        // Exact manifest href
+        path_to_recindex.insert(href.clone(), recindex);
+
+        // Also try with URL-decoded form (spaces encoded as %20, etc.)
+        let decoded = percent_decode(href);
+        if decoded != *href {
+            path_to_recindex.insert(decoded, recindex);
+        }
+
+        // Filename only (last path component)
+        if let Some(fname) = href.rsplit('/').next() {
+            path_to_recindex.entry(fname.to_string()).or_insert(recindex);
+        }
+    }
+
+    // For relative paths from spine HTML locations, resolve "../" prefixes
+    // by computing what each spine item's relative reference would be.
+    for (_, spine_href) in spine_items {
+        if let Some(spine_dir) = spine_href.rsplit_once('/') {
+            let spine_dir = spine_dir.0; // e.g., "Text" from "Text/chapter1.xhtml"
+            for (href, &recindex) in href_to_recindex {
+                // Compute relative path from spine_dir to href
+                // Common case: spine is "Text/ch1.xhtml", image is "Images/foo.jpg"
+                // Relative path would be "../Images/foo.jpg"
+                let relative = format!("../{}", href);
+                path_to_recindex.entry(relative).or_insert(recindex);
+
+                // Also try if spine and image share a common root
+                if let Some(img_dir) = href.rsplit_once('/') {
+                    if spine_dir != img_dir.0 {
+                        let relative2 = format!("../{}", href);
+                        path_to_recindex.entry(relative2).or_insert(recindex);
+                    } else {
+                        // Same directory - just the filename
+                        let fname = img_dir.1;
+                        path_to_recindex.entry(fname.to_string()).or_insert(recindex);
+                    }
+                }
+            }
+        }
+    }
+
+    // Replace src="..." with recindex="NNNNN" using regex
+    let src_re = Regex::new(r#"(?i)\bsrc\s*=\s*"([^"]*)""#).unwrap();
+    let result = src_re.replace_all(&text, |caps: &regex::Captures| {
+        let src_path = caps.get(1).unwrap().as_str();
+        // Try to match the src path
+        if let Some(&recindex) = path_to_recindex.get(src_path) {
+            format!("recindex=\"{:05}\"", recindex)
+        } else {
+            // Try URL-decoded version
+            let decoded = percent_decode(src_path);
+            if let Some(&recindex) = path_to_recindex.get(&decoded) {
+                format!("recindex=\"{:05}\"", recindex)
+            } else {
+                // Try filename-only match
+                if let Some(fname) = src_path.rsplit('/').next() {
+                    if let Some(&recindex) = path_to_recindex.get(fname) {
+                        format!("recindex=\"{:05}\"", recindex)
+                    } else {
+                        // Keep original - not an image we know about
+                        caps.get(0).unwrap().as_str().to_string()
+                    }
+                } else {
+                    caps.get(0).unwrap().as_str().to_string()
+                }
+            }
+        }
+    });
+
+    result.into_owned().into_bytes()
+}
+
+/// Simple percent-decoding for URL-encoded paths (handles %20, %2F, etc.)
+fn percent_decode(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.bytes();
+    while let Some(b) = chars.next() {
+        if b == b'%' {
+            let h1 = chars.next();
+            let h2 = chars.next();
+            if let (Some(h1), Some(h2)) = (h1, h2) {
+                if let Ok(byte) = u8::from_str_radix(
+                    &format!("{}{}", h1 as char, h2 as char),
+                    16,
+                ) {
+                    result.push(byte as char);
+                    continue;
+                }
+            }
+            result.push('%');
+        } else {
+            result.push(b as char);
+        }
+    }
+    result
 }
 
 /// Insert the guide reference tag with the correct filepos.
@@ -528,6 +1482,11 @@ fn build_lookup_terms(
 }
 
 /// Build record 0: PalmDOC header + MOBI header + EXTH header + full name.
+///
+/// `override_version`: if Some, overrides the MOBI version/min_version
+/// (e.g., Some(6) for KF7 in dual-format mode).
+/// `kf8_boundary_record`: if Some, adds EXTH 121 pointing to KF8 Record 0.
+/// `hd_geometry`: if Some, adds EXTH 536 with HD image geometry (format: "WxH:start-end|").
 fn build_record0(
     opf: &OPFData,
     text_length: usize,
@@ -539,9 +1498,18 @@ fn build_record0(
     fcis_record: usize,
     no_compress: bool,
     headword_chars: &HashSet<u32>,
+    is_dictionary: bool,
+    first_image_record: usize,
+    cover_offset: Option<u32>,
+    fixed_layout: Option<&exth::FixedLayoutMeta>,
+    override_version: Option<u32>,
+    kf8_boundary_record: Option<u32>,
+    srcs_record: Option<usize>,
+    hd_geometry: Option<&str>,
 ) -> Vec<u8> {
+    let default_name = if is_dictionary { "Dictionary" } else { "Book" };
     let full_name = if opf.title.is_empty() {
-        "Dictionary"
+        default_name
     } else {
         &opf.title
     };
@@ -570,7 +1538,8 @@ fn build_record0(
     let mut mobi = vec![0u8; MOBI_HEADER_LENGTH];
     put_bytes(&mut mobi, 0, b"MOBI");
     put32(&mut mobi, 4, MOBI_HEADER_LENGTH as u32);
-    put32(&mut mobi, 8, 2); // mobi type = 2
+    // MOBI type: 2 = MOBI book, but kindlegen uses 2 for both books and dicts
+    put32(&mut mobi, 8, 2);
     put32(&mut mobi, 12, 65001); // UTF-8
 
     // Unique ID from title hash
@@ -578,7 +1547,8 @@ fn build_record0(
     let unique_id = u32::from_be_bytes([uid_hash[0], uid_hash[1], uid_hash[2], uid_hash[3]]);
     put32(&mut mobi, 16, unique_id);
 
-    put32(&mut mobi, 20, 7); // file version = 7
+    let version = override_version.unwrap_or(7);
+    put32(&mut mobi, 20, version); // file version
     put32(&mut mobi, 24, orth_index_record as u32);
     put32(&mut mobi, 28, 0xFFFFFFFF); // inflection index (none)
     put32(&mut mobi, 32, 0xFFFFFFFF); // index names
@@ -591,8 +1561,8 @@ fn build_record0(
     put32(&mut mobi, 76, locale_code(&opf.language));
     put32(&mut mobi, 80, locale_code(&opf.dict_in_language));
     put32(&mut mobi, 84, locale_code(&opf.dict_out_language));
-    put32(&mut mobi, 88, 7); // min version = 7
-    put32(&mut mobi, 92, 0xFFFFFFFF); // first image record
+    put32(&mut mobi, 88, version); // min version = same as file version
+    put32(&mut mobi, 92, first_image_record as u32); // first image record
     put32(&mut mobi, 96, 0); // huffman record
     put32(&mut mobi, 100, 0); // huffman count
 
@@ -625,20 +1595,41 @@ fn build_record0(
     put32(&mut mobi, 232, 0xFFFFFFFF);
     put32(&mut mobi, 236, 0xFFFFFFFF);
     put32(&mut mobi, 240, 0xFFFFFFFF);
-    put32(&mut mobi, 244, 0xFFFFFFFF);
-    put32(&mut mobi, 248, 0xFFFFFFFF);
+
+    // SRCS record index and count (offset 244, 248)
+    if let Some(srcs_idx) = srcs_record {
+        put32(&mut mobi, 244, srcs_idx as u32);
+        put32(&mut mobi, 248, 1); // SRCS count = 1
+    } else {
+        put32(&mut mobi, 244, 0xFFFFFFFF);
+        put32(&mut mobi, 248, 0xFFFFFFFF);
+    }
+
     put32(&mut mobi, 256, 0xFFFFFFFF);
 
     // Build EXTH header
-    let exth_data = exth::build_exth(
-        full_name,
-        &opf.author,
-        &opf.date,
-        &opf.language,
-        &opf.dict_in_language,
-        &opf.dict_out_language,
-        headword_chars,
-    );
+    let exth_data = if is_dictionary {
+        exth::build_exth(
+            full_name,
+            &opf.author,
+            &opf.date,
+            &opf.language,
+            &opf.dict_in_language,
+            &opf.dict_out_language,
+            headword_chars,
+        )
+    } else {
+        exth::build_book_exth(
+            full_name,
+            &opf.author,
+            &opf.date,
+            &opf.language,
+            cover_offset,
+            fixed_layout,
+            kf8_boundary_record,
+            hd_geometry,
+        )
+    };
 
     // Full name offset
     let full_name_offset = 16 + MOBI_HEADER_LENGTH + exth_data.len();
@@ -646,6 +1637,157 @@ fn build_record0(
     put32(&mut mobi, 72, full_name_bytes.len() as u32);
 
     // Assemble record 0
+    let mut record0 = Vec::new();
+    record0.extend_from_slice(&palmdoc);
+    record0.extend_from_slice(&mobi);
+    record0.extend_from_slice(&exth_data);
+    record0.extend_from_slice(full_name_bytes);
+
+    // Pad to 4-byte boundary
+    while record0.len() % 4 != 0 {
+        record0.push(0x00);
+    }
+
+    record0
+}
+
+/// Build KF8 Record 0: PalmDOC header + MOBI header (version=8) + EXTH + full name.
+///
+/// All record indices are KF8-relative (relative to this record as index 0).
+fn build_kf8_record0(
+    opf: &OPFData,
+    text_length: usize,
+    text_record_count: usize,
+    first_non_book_record: usize,
+    fdst_record: usize,
+    fdst_flow_count: usize,
+    skeleton_indx_record: usize,
+    fragment_indx_record: usize,
+    ncx_record: usize,
+    datp_record: usize,
+    flis_record: usize,
+    fcis_record: usize,
+    no_compress: bool,
+    cover_offset: Option<u32>,
+    fixed_layout: Option<&exth::FixedLayoutMeta>,
+    first_image_record: usize,
+) -> Vec<u8> {
+    let full_name = if opf.title.is_empty() {
+        "Book"
+    } else {
+        &opf.title
+    };
+    let full_name_bytes = full_name.as_bytes();
+
+    // PalmDOC header (16 bytes)
+    let compression_type: u16 = if no_compress { 1 } else { 2 };
+    let mut record_size = RECORD_SIZE;
+    let mut text_rec_count = text_record_count;
+    if text_rec_count > 65000 {
+        record_size = std::cmp::max(RECORD_SIZE, (text_length / 65000) + 1);
+        text_rec_count = std::cmp::min(text_rec_count, 65535);
+    }
+
+    let mut palmdoc = Vec::with_capacity(16);
+    palmdoc.extend_from_slice(&compression_type.to_be_bytes());
+    palmdoc.extend_from_slice(&0u16.to_be_bytes());
+    palmdoc.extend_from_slice(&(text_length as u32).to_be_bytes());
+    palmdoc.extend_from_slice(&(text_rec_count as u16).to_be_bytes());
+    palmdoc.extend_from_slice(&(record_size as u16).to_be_bytes());
+    palmdoc.extend_from_slice(&0u16.to_be_bytes());
+    palmdoc.extend_from_slice(&0u16.to_be_bytes());
+    assert_eq!(palmdoc.len(), 16);
+
+    // MOBI header
+    let mut mobi = vec![0u8; MOBI_HEADER_LENGTH];
+    put_bytes(&mut mobi, 0, b"MOBI");
+    put32(&mut mobi, 4, MOBI_HEADER_LENGTH as u32);
+    put32(&mut mobi, 8, 2); // MOBI type = book
+    put32(&mut mobi, 12, 65001); // UTF-8
+
+    // Unique ID from title hash
+    let uid_hash = md5_simple(full_name.as_bytes());
+    let unique_id = u32::from_be_bytes([uid_hash[0], uid_hash[1], uid_hash[2], uid_hash[3]]);
+    put32(&mut mobi, 16, unique_id);
+
+    put32(&mut mobi, 20, 8); // file version = 8 (KF8)
+    put32(&mut mobi, 24, 0xFFFFFFFF); // orth index (none for KF8 books)
+    put32(&mut mobi, 28, 0xFFFFFFFF); // inflection index
+    put32(&mut mobi, 32, 0xFFFFFFFF); // index names
+    put32(&mut mobi, 36, 0xFFFFFFFF); // index keys
+    for off in (40..64).step_by(4) {
+        put32(&mut mobi, off, 0xFFFFFFFF); // extra indices
+    }
+    put32(&mut mobi, 64, first_non_book_record as u32);
+
+    put32(&mut mobi, 76, locale_code(&opf.language));
+    put32(&mut mobi, 80, 0); // no dict_in for KF8
+    put32(&mut mobi, 84, 0); // no dict_out for KF8
+    put32(&mut mobi, 88, 8); // min version = 8
+    put32(&mut mobi, 92, first_image_record as u32);
+    put32(&mut mobi, 96, 0); // huffman record
+    put32(&mut mobi, 100, 0); // huffman count
+
+    put32(&mut mobi, 112, 0x50); // EXTH flags
+
+    put32(&mut mobi, 148, 0xFFFFFFFF); // DRM flags
+    put32(&mut mobi, 152, 0xFFFFFFFF);
+
+    // FDST record and flow count (KF8-relative)
+    put32(&mut mobi, 160, fdst_record as u32);
+    put32(&mut mobi, 164, fdst_flow_count as u32);
+
+    // Offset 176: for KF8, this field differs from KF7
+    put32(&mut mobi, 176, 0);
+    put32(&mut mobi, 180, fdst_flow_count as u32);
+
+    // FCIS/FLIS (KF8-relative)
+    put32(&mut mobi, 184, fcis_record as u32);
+    put32(&mut mobi, 188, 1);
+    put32(&mut mobi, 192, flis_record as u32);
+    put32(&mut mobi, 196, 1);
+
+    // Skeleton INDX (KF8-relative)
+    put32(&mut mobi, 212, skeleton_indx_record as u32);
+
+    // DATP (KF8-relative)
+    put32(&mut mobi, 216, datp_record as u32);
+
+    // Fragment INDX (KF8-relative)
+    put32(&mut mobi, 220, fragment_indx_record as u32);
+
+    // Extra record data flags (multibyte + TBS)
+    put32(&mut mobi, 224, 3);
+
+    // NCX (KF8-relative)
+    put32(&mut mobi, 228, ncx_record as u32);
+
+    // Other indices: 0xFFFFFFFF
+    put32(&mut mobi, 232, 0xFFFFFFFF);
+    put32(&mut mobi, 236, 0xFFFFFFFF);
+    put32(&mut mobi, 240, 0xFFFFFFFF);
+    put32(&mut mobi, 244, 0xFFFFFFFF);
+    put32(&mut mobi, 248, 0xFFFFFFFF);
+    put32(&mut mobi, 256, 0xFFFFFFFF);
+
+    // Build EXTH header (no EXTH 121 or 536 in KF8 section)
+    let exth_data = exth::build_book_exth(
+        full_name,
+        &opf.author,
+        &opf.date,
+        &opf.language,
+        cover_offset,
+        fixed_layout,
+        None, // no KF8 boundary in KF8 header itself
+        None, // no HD geometry in KF8 header
+    );
+
+    // Full name offset
+    let full_name_offset = 16 + MOBI_HEADER_LENGTH + exth_data.len();
+    put32(&mut mobi, 68, full_name_offset as u32);
+    put32(&mut mobi, 72, full_name_bytes.len() as u32);
+
+    // Assemble KF8 record 0
     let mut record0 = Vec::new();
     record0.extend_from_slice(&palmdoc);
     record0.extend_from_slice(&mobi);
@@ -693,6 +1835,15 @@ fn build_fcis(text_length: usize) -> Vec<u8> {
     fcis.extend_from_slice(&1u16.to_be_bytes());
     fcis.extend_from_slice(&0u32.to_be_bytes());
     fcis
+}
+
+/// Build a CMET (compilation metadata) record.
+///
+/// This is a simple ASCII string identifying the tool that built the MOBI.
+/// Kindle ignores it, but some analysis tools look for it.
+fn build_cmet() -> Vec<u8> {
+    let version = env!("CARGO_PKG_VERSION");
+    format!("kindling {}", version).into_bytes()
 }
 
 /// Build the EOF marker record.

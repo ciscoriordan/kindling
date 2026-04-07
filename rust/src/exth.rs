@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 
 /// Build a single EXTH record: type (u32 BE) + length (u32 BE) + data.
-fn exth_record(rec_type: u32, data: &[u8]) -> Vec<u8> {
+pub fn exth_record(rec_type: u32, data: &[u8]) -> Vec<u8> {
     let mut rec = Vec::with_capacity(8 + data.len());
     rec.extend_from_slice(&rec_type.to_be_bytes());
     rec.extend_from_slice(&((8 + data.len()) as u32).to_be_bytes());
@@ -203,7 +203,128 @@ fn md5_hash(data: &[u8]) -> [u8; 16] {
     result
 }
 
-/// Build the complete EXTH header with metadata records.
+/// Fixed-layout metadata parsed from OPF.
+pub struct FixedLayoutMeta {
+    pub is_fixed_layout: bool,
+    pub original_resolution: Option<String>,
+    pub page_progression_direction: Option<String>,
+}
+
+/// Build an EXTH header for a regular book (non-dictionary).
+///
+/// Includes basic metadata (title, author, date) but skips dictionary-specific
+/// records like language pairs (531/532), InMemory flag (547), and fontsignature (300).
+/// If `cover_offset` is Some, sets EXTH 201 (CoverOffset) and 202 (ThumbOffset)
+/// to the 0-based index of the cover image within the image records.
+/// If `fixed_layout` is provided and indicates fixed-layout content, adds EXTH
+/// records 122, 307, and 527.
+/// If `hd_geometry` is Some, adds EXTH 536 with the HD image geometry string
+/// (format: "WxH:start-end|").
+pub fn build_book_exth(
+    title: &str,
+    author: &str,
+    date: &str,
+    language: &str,
+    cover_offset: Option<u32>,
+    fixed_layout: Option<&FixedLayoutMeta>,
+    kf8_boundary_record: Option<u32>,
+    hd_geometry: Option<&str>,
+) -> Vec<u8> {
+    let mut records: Vec<Vec<u8>> = Vec::new();
+
+    // Publishing date (106)
+    if !date.is_empty() {
+        records.push(exth_record(106, date.as_bytes()));
+    }
+
+    // Author (100)
+    if !author.is_empty() {
+        records.push(exth_record(100, author.as_bytes()));
+    }
+
+    // EXTH 542 - content-dependent 4-byte hash
+    let title_bytes = if title.is_empty() {
+        b"Book".to_vec()
+    } else {
+        title.as_bytes().to_vec()
+    };
+    let exth542_hash = md5_hash(&title_bytes);
+    records.push(exth_record(542, &exth542_hash[..4]));
+
+    // Language (524)
+    if !language.is_empty() {
+        records.push(exth_record(524, language.as_bytes()));
+    }
+
+    // Writing mode (525)
+    records.push(exth_record(525, b"horizontal-lr"));
+
+    // EXTH 131 (value 0)
+    records.push(exth_record(131, &0u32.to_be_bytes()));
+
+    // Creator software - kindling identity
+    records.push(exth_record(204, &300u32.to_be_bytes())); // platform = 300 (kindling)
+    records.push(exth_record(205, &0u32.to_be_bytes())); // major = 0
+    records.push(exth_record(206, &1u32.to_be_bytes())); // minor = 1
+
+    // Creator build string (535)
+    records.push(exth_record(535, b"kindling-0.2.0"));
+
+    // Creator build (207)
+    records.push(exth_record(207, &0u32.to_be_bytes())); // build = 0
+
+    // Cover image offset (201) and thumb offset (202)
+    if let Some(offset) = cover_offset {
+        records.push(exth_record(201, &offset.to_be_bytes()));
+        records.push(exth_record(202, &offset.to_be_bytes()));
+    }
+
+    // Fixed-layout metadata
+    if let Some(fl) = fixed_layout {
+        if fl.is_fixed_layout {
+            // EXTH 122: fixed-layout flag
+            records.push(exth_record(122, b"true"));
+
+            // EXTH 307: original-resolution
+            let resolution = fl.original_resolution.as_deref().unwrap_or("1072x1448");
+            records.push(exth_record(307, resolution.as_bytes()));
+
+            // EXTH 527: page-progression-direction
+            let ppd = fl.page_progression_direction.as_deref().unwrap_or("ltr");
+            records.push(exth_record(527, ppd.as_bytes()));
+        }
+    }
+
+    // EXTH 125 (value 1)
+    records.push(exth_record(125, &1u32.to_be_bytes()));
+
+    // EXTH 121: KF8 boundary record (global index of KF8 Record 0)
+    if let Some(boundary) = kf8_boundary_record {
+        records.push(exth_record(121, &boundary.to_be_bytes()));
+    }
+
+    // EXTH 536: HD image geometry string (format: "WxH:start-end|")
+    if let Some(geometry) = hd_geometry {
+        records.push(exth_record(536, geometry.as_bytes()));
+    }
+
+    // Assemble EXTH
+    let record_data: Vec<u8> = records.iter().flat_map(|r| r.iter().copied()).collect();
+    let exth_length = 12 + record_data.len();
+    let padding = (4 - (exth_length % 4)) % 4;
+    let padded_length = exth_length + padding;
+
+    let mut exth = Vec::with_capacity(padded_length);
+    exth.extend_from_slice(b"EXTH");
+    exth.extend_from_slice(&(padded_length as u32).to_be_bytes());
+    exth.extend_from_slice(&(records.len() as u32).to_be_bytes());
+    exth.extend_from_slice(&record_data);
+    exth.extend_from_slice(&vec![0u8; padding]);
+
+    exth
+}
+
+/// Build the complete EXTH header with metadata records for dictionaries.
 ///
 /// Record order matches kindlegen output for maximum compatibility.
 pub fn build_exth(
@@ -258,13 +379,13 @@ pub fn build_exth(
     // EXTH 300 - fontsignature
     records.push(exth_record(300, &build_fontsignature(headword_chars)));
 
-    // Creator software - match kindlegen values
-    records.push(exth_record(204, &202u32.to_be_bytes())); // kindlegen = 202
-    records.push(exth_record(205, &2u32.to_be_bytes())); // major = 2
-    records.push(exth_record(206, &9u32.to_be_bytes())); // minor = 9
+    // Creator software - kindling identity
+    records.push(exth_record(204, &300u32.to_be_bytes())); // platform = 300 (kindling)
+    records.push(exth_record(205, &0u32.to_be_bytes())); // major = 0
+    records.push(exth_record(206, &1u32.to_be_bytes())); // minor = 1
 
     // Creator build string (535)
-    records.push(exth_record(535, b"0000-kdevbld"));
+    records.push(exth_record(535, b"kindling-0.2.0"));
 
     // Creator build (207)
     records.push(exth_record(207, &0u32.to_be_bytes())); // build = 0

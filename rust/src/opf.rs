@@ -22,6 +22,12 @@ pub struct OPFData {
     pub default_lookup_index: String,
     pub spine_items: Vec<(String, String)>, // (id, href) tuples in spine order
     pub manifest: HashMap<String, (String, String)>, // id -> (href, media_type)
+    /// True if the OPF declares fixed-layout (pre-paginated) rendering.
+    pub is_fixed_layout: bool,
+    /// Original resolution from OPF metadata (e.g. "1072x1448").
+    pub original_resolution: Option<String>,
+    /// Page progression direction from OPF spine element (e.g. "ltr", "rtl").
+    pub page_progression_direction: Option<String>,
 }
 
 impl OPFData {
@@ -45,6 +51,9 @@ impl OPFData {
             default_lookup_index: String::from("default"),
             spine_items: Vec::new(),
             manifest: HashMap::new(),
+            is_fixed_layout: false,
+            original_resolution: None,
+            page_progression_direction: None,
         };
 
         // Clean the XML for parsing - strip namespace prefixes that may be unbound
@@ -72,7 +81,18 @@ impl OPFData {
                     match local_name.as_str() {
                         "metadata" => in_metadata = true,
                         "manifest" => in_manifest = true,
-                        "spine" => in_spine = true,
+                        "spine" => {
+                            in_spine = true;
+                            // Check for page-progression-direction attribute
+                            for attr in e.attributes().flatten() {
+                                if attr.key.as_ref() == b"page-progression-direction" {
+                                    let ppd = String::from_utf8_lossy(&attr.value).to_string();
+                                    if !ppd.is_empty() {
+                                        self.page_progression_direction = Some(ppd);
+                                    }
+                                }
+                            }
+                        }
                         "title" | "creator" | "language" | "identifier" | "date"
                             if in_metadata =>
                         {
@@ -86,6 +106,40 @@ impl OPFData {
                         }
                         "DefaultLookupIndex" if in_metadata => {
                             current_tag = "DefaultLookupIndex".to_string();
+                        }
+                        "meta" if in_metadata => {
+                            // Check for fixed-layout and original-resolution metadata
+                            let mut name_val = String::new();
+                            let mut content_val = String::new();
+                            let mut property_val = String::new();
+                            for attr in e.attributes().flatten() {
+                                match attr.key.as_ref() {
+                                    b"name" => {
+                                        name_val = String::from_utf8_lossy(&attr.value).to_string();
+                                    }
+                                    b"content" => {
+                                        content_val = String::from_utf8_lossy(&attr.value).to_string();
+                                    }
+                                    b"property" => {
+                                        property_val = String::from_utf8_lossy(&attr.value).to_string();
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            // <meta name="fixed-layout" content="true"/>
+                            if name_val == "fixed-layout" && content_val == "true" {
+                                self.is_fixed_layout = true;
+                            }
+                            // <meta name="original-resolution" content="WxH"/>
+                            if name_val == "original-resolution" && !content_val.is_empty() {
+                                self.original_resolution = Some(content_val.clone());
+                            }
+                            // <meta property="rendition:layout">pre-paginated</meta>
+                            // For empty/self-closing tags, the value is in content attr;
+                            // for start tags, we need to capture the text content
+                            if property_val == "rendition:layout" {
+                                current_tag = "rendition:layout".to_string();
+                            }
                         }
                         "item" if in_manifest => {
                             let mut id = String::new();
@@ -136,6 +190,11 @@ impl OPFData {
                             "DictionaryInLanguage" => self.dict_in_language = text,
                             "DictionaryOutLanguage" => self.dict_out_language = text,
                             "DefaultLookupIndex" => self.default_lookup_index = text,
+                            "rendition:layout" => {
+                                if text == "pre-paginated" {
+                                    self.is_fixed_layout = true;
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -173,6 +232,90 @@ impl OPFData {
                 }
             })
             .collect()
+    }
+
+    /// Return image manifest items as (href, media_type) pairs, ordered by manifest id.
+    ///
+    /// Only includes items with media-type starting with "image/".
+    pub fn get_image_items(&self) -> Vec<(String, String)> {
+        let mut items: Vec<(String, String, String)> = self
+            .manifest
+            .iter()
+            .filter(|(_, (_, media_type))| media_type.starts_with("image/"))
+            .map(|(id, (href, media_type))| (id.clone(), href.clone(), media_type.clone()))
+            .collect();
+        // Sort by id for deterministic ordering
+        items.sort_by(|a, b| a.0.cmp(&b.0));
+        items.into_iter().map(|(_, href, mt)| (href, mt)).collect()
+    }
+
+    /// Find the cover image href from OPF metadata.
+    ///
+    /// Looks for `<meta name="cover" content="..."/>` in the OPF, then resolves
+    /// the content attribute as a manifest item ID to get the image href.
+    pub fn get_cover_image_href(&self) -> Option<String> {
+        // The cover meta was already parsed into manifest, we need to re-parse
+        // the OPF to find the <meta name="cover" content="..."/> tag
+        let opf_path = self.base_dir.join(
+            // We need to find the OPF file - check common locations
+            std::fs::read_dir(&self.base_dir)
+                .ok()?
+                .filter_map(|e| e.ok())
+                .find(|e| {
+                    e.path()
+                        .extension()
+                        .map(|ext| ext == "opf")
+                        .unwrap_or(false)
+                })?
+                .file_name(),
+        );
+
+        let content = std::fs::read_to_string(&opf_path).ok()?;
+        let cleaned = clean_opf_xml(&content);
+
+        // Find <meta name="cover" content="..."/>
+        let mut reader = Reader::from_str(&cleaned);
+        reader.config_mut().trim_text(true);
+        let mut buf = Vec::new();
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+                    let local_name = local_tag_name(e.name().as_ref());
+                    if local_name == "meta" {
+                        let mut name_val = String::new();
+                        let mut content_val = String::new();
+                        for attr in e.attributes().flatten() {
+                            match attr.key.as_ref() {
+                                b"name" => {
+                                    name_val =
+                                        String::from_utf8_lossy(&attr.value).to_string()
+                                }
+                                b"content" => {
+                                    content_val =
+                                        String::from_utf8_lossy(&attr.value).to_string()
+                                }
+                                _ => {}
+                            }
+                        }
+                        if name_val == "cover" && !content_val.is_empty() {
+                            // content_val is the manifest item ID
+                            if let Some((href, media_type)) = self.manifest.get(&content_val) {
+                                if media_type.starts_with("image/") {
+                                    return Some(href.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(Event::Eof) => break,
+                Err(_) => break,
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        None
     }
 
     #[allow(dead_code)]

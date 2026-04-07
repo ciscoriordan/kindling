@@ -6,7 +6,7 @@
 
 Reverse-engineered Rust replacement for Amazon's *kindlegen*. 7,000x faster.
 
-Kindling builds Kindle dictionary `.mobi` files from OPF/HTML source. It produces the same MOBI V7 format that *kindlegen* does, with working dictionary lookup on Kindle hardware. The MOBI format is undocumented - kindling was built by reverse-engineering *kindlegen* output byte by byte.
+Kindling builds Kindle `.mobi` files from OPF/HTML or EPUB source. It supports both dictionary MOBIs (with full lookup index) and regular book MOBIs (with embedded images and KF8 dual-format output). The MOBI format is barely documented by Amazon - kindling was built by reverse-engineering *kindlegen* output byte by byte, with help from the [MobileRead wiki](https://wiki.mobileread.com/wiki/MOBI).
 
 Amazon deprecated *kindlegen* in 2020. The only remaining copy lives inside Kindle Previewer 3's GUI, which can't run headless and takes 12+ hours for large dictionaries. Kindling builds the same dictionary in 6 seconds.
 
@@ -19,14 +19,13 @@ Pre-built binaries for Mac (Apple Silicon, Intel), Linux (x86_64), and Windows (
 </p>
 
 - Single static binary, no runtime dependencies
+- **Dictionary MOBIs**: full orth index with headword + inflection lookup, ORDT/SPL sort tables, fontsignature
+- **Book MOBIs**: EPUB or OPF input, embedded images, HD image container for high-DPI screens, KF8 dual-format (KF7+KF8), fixed-layout support
+- Auto-detects dictionary vs book from content
+- Drop-in *kindlegen* replacement: accepts the same CLI flags, prints compatible status codes
 - Native performance: builds large dictionaries in seconds, not hours
-- MOBI V7 format with FLIS/FCIS records, matching *kindlegen* output
-- INDX orth index with 3 sub-indexes: headword entries, character mapping, and "default" index name
-- ORDT/SPL sort tables for firmware binary search compatibility
-- EXTH 300 fontsignature (LE USB/CSB bitfields + Unicode character list)
-- HTML stripping: `idx:entry/idx:orth/idx:iform` markup removed from stored text
-- Multi-record INDX with automatic splitting for large dictionaries
-- PalmDOC LZ77 compression
+- PalmDOC LZ77 compression, JFIF header patching for Kindle cover compatibility
+- Optional EPUB source embedding (`--embed-source`) and build metadata (`--include-cmet`)
 
 ## Installation
 
@@ -54,6 +53,32 @@ kindling build input.opf -o output.mobi --headwords-only # index headwords only 
 
 The input OPF must reference HTML files with `<idx:entry>`, `<idx:orth>`, and `<idx:iform>` markup following the Kindle Publishing Guidelines. Both headwords and inflected forms are indexed so that looking up any form on the Kindle finds the correct dictionary entry.
 
+### Build a MOBI book
+
+```bash
+kindling build input.epub -o output.mobi
+kindling build input.epub                         # output next to input as input.mobi
+kindling build input.epub --no-hd-images          # skip HD image container
+kindling build input.epub --embed-source          # embed original EPUB in MOBI
+kindling build input.epub --include-cmet          # include build metadata
+```
+
+Kindling accepts EPUB files (standard zip-packaged EPUB) or OPF files as input. It auto-detects whether the content is a dictionary or a regular book by checking for `<idx:entry>` tags in the HTML. Book MOBIs include embedded images, HD image container (for high-DPI Kindle screens), and KF8 dual-format output for compatibility with all Kindle devices. Fixed-layout EPUBs (e.g., from [Kindle Comic Converter](https://github.com/ciromattia/kcc)) are detected automatically.
+
+By default, kindling skips two optional records that *kindlegen* includes: SRCS (a copy of the original EPUB embedded in the MOBI) and CMET (build log metadata). The Kindle ignores both. Use `--embed-source` and `--include-cmet` to include them if needed.
+
+### Kindlegen compatibility
+
+Kindling can be used as a drop-in *kindlegen* replacement. It accepts the same CLI syntax and prints compatible status codes:
+
+```bash
+kindling input.epub                          # same as kindlegen
+kindling input.epub -dont_append_source      # flag accepted and ignored
+kindling input.epub -o output.mobi           # explicit output path
+```
+
+Tools that shell out to *kindlegen* (like KCC) can switch to kindling with minimal changes.
+
 ## How inflection lookup works
 
 Kindle dictionary lookup searches the orthographic (orth) INDX for a matching headword. Kindling places all lookupable terms - both headwords and their inflected forms - directly into the orth index. Each inflected form entry points to the same text position as its headword, so looking up "cats" finds the "cat" entry.
@@ -75,6 +100,14 @@ Kindling takes a different approach: it places ALL lookupable terms (headwords +
 | Inflection limit | 255 per headword (uint8 overflow, silently drops forms) | No limit |
 | Automation | Requires Kindle Previewer GUI, no headless mode | Single binary, scriptable, CI-friendly |
 
+### Output comparison
+
+| Input | *kindlegen* | kindling | Speedup |
+|---|---|---|---|
+| Greek dictionary (80K headwords, 452K entries) | 12+ hours, frequent OOM | 6 seconds | ~7,000x |
+| Divine Comedy (138 illustrations, 29MB of images) | 19 seconds | 0.5 seconds | ~40x |
+| Pepper & Carrot comic (20 images) | 1.4 seconds | 0.05 seconds | ~30x |
+
 The ~7,000x speedup is more or less a worst-case comparison, but it comes from several real factors. *kindlegen* builds a complex inflection index with compressed string transformation rules, which appears to scale superlinearly - smaller dictionaries finish much faster, but 452K inflections pushes it into 12+ hour territory. It also runs under Rosetta 2 on Apple Silicon and frequently exhausts memory, causing swapping or outright crashes. Kindling skips the inflection index entirely by placing all forms directly in the orth index, which reduces the problem to sorting and writing. The gap is largest for heavily-inflected languages (Greek, Finnish, Turkish, Arabic) with hundreds of thousands of forms.
 
 ## MOBI Format
@@ -82,7 +115,7 @@ The ~7,000x speedup is more or less a worst-case comparison, but it comes from s
 Kindling works with the KF7/MOBI format used by Kindle e-readers for dictionary lookup. The key structures are:
 
 - **PalmDB header**: Database name (derived from title: remove `()[]`, spaces to underscores, truncate to `first_12 + '-' + last_14` if >27 chars), record count, record offsets
-- **Record 0**: PalmDOC header + MOBI header (264 bytes, V7) + EXTH metadata + full name
+- **Record 0**: PalmDOC header + MOBI header (264 bytes) + EXTH metadata + full name
 - **Text records**: PalmDOC compressed HTML with `extra_data_flags=3` trailing bytes (`\x00\x81`). The `\x00` is the multibyte overlap marker (innermost, bit 0) and `\x81` is the TBS size byte (outermost, bit 1) with bit 7 set for self-delimiting VWI parsing. Dictionary markup (`idx:entry`, `idx:orth`, `idx:iform`) is stripped from the stored text, leaving clean display HTML.
 - **INDX records**: 3 sub-indexes within the orth region:
   1. Headword entries (TAGX: tags 1=startpos, 2=textlen). Primary includes ORDT/SPL sort tables.
@@ -106,12 +139,13 @@ Much of the foundational MOBI format knowledge comes from the [MobileRead wiki](
   - **EXTH 547** (`InMemory`): Required for dictionary lookup activation.
   - **EXTH 535**: Creator build tag (e.g., "0000-kdevbld").
   - **EXTH 542** (`Container_Id`): 4-byte content-dependent hash. Not a timestamp despite the MobileRead wiki claim.
-  - **EXTH 204/205/206/207**: Creator software version fields. Kindling reports as kindlegen Mac (202) v2.9.
+  - **EXTH 204/205/206/207**: Creator software version fields.
 - **PalmDB name**: Derived from `dc:title` by removing `()[]`, replacing spaces with underscores, and truncating to `first_12 + '-' + last_14` if longer than 27 characters.
 - **Dictionary detection**: The Kindle identifies a file as a dictionary when the MOBI header orthographic index field (offset 0x28) is not 0xFFFFFFFF. MOBI type remains 2 (book), not a special dictionary type.
 
 ## Upcoming
 
+- KCC ([Kindle Comic Converter](https://github.com/ciromattia/kcc)) integration - PR to add kindling as a backend
 - Testing with more languages beyond Greek
 
 ## Attribution
