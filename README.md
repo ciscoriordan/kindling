@@ -10,6 +10,8 @@ Kindling builds Kindle dictionary `.mobi` files from OPF/HTML source. It produce
 
 Amazon deprecated *kindlegen* in 2020. The only remaining copy lives inside Kindle Previewer 3's GUI, which can't run headless and takes 12+ hours for large dictionaries. Kindling builds the same dictionary in 6 seconds.
 
+Kindling was originally built to generate [Lemma](https://github.com/ciscoriordan/lemma), a Greek-English Kindle dictionary with 80K headwords and 452K inflected forms.
+
 Pre-built binaries for Mac (Apple Silicon, Intel), Linux (x86_64), and Windows (x86_64) are available on the [Releases](https://github.com/ciscoriordan/kindling/releases) page.
 
 <p align="center">
@@ -62,7 +64,7 @@ Kindle dictionary lookup searches the orthographic (orth) INDX for a matching he
 
 Kindling takes a different approach: it places ALL lookupable terms (headwords + inflections) directly into the orthographic index, with each entry pointing to the correct text position. This means a headword like "cat" and all its forms ("cats", "cat's") each get their own orth entry pointing to the same dictionary text.
 
-**Trade-offs**: Kindling's approach produces simpler, more maintainable code and is equally functional for Kindle word lookup. In practice it can actually produce smaller files, because it avoids the overhead of the inflection index structure. Kindling's orth-only approach also bypasses *kindlegen*'s undocumented 255-inflection-per-entry limit. *kindlegen* stores inflection rules in an internal uint8 field, causing it to silently discard rules beyond 255 per headword. Since kindling puts all forms directly in the orth index, there is no per-entry inflection limit.
+**Trade-offs**: Kindling's approach produces simpler, more maintainable code and is equally functional for Kindle word lookup. In practice it can actually produce smaller files, because it avoids the overhead of the inflection index structure. Kindling's orth-only approach also bypasses *kindlegen*'s undocumented 255-inflection-per-entry limit. *kindlegen* stores inflection rules in an internal uint8 field, causing it to silently discard rules beyond 255 per headword. Since kindling puts all forms directly in the orth index, there is no per-entry inflection limit. That said, 255 inflections per headword is still a reasonable practical guideline - Kindle devices have limited memory and very large index sizes can affect lookup performance.
 
 ## Performance
 
@@ -105,6 +107,10 @@ Kindling works with the KF7/MOBI format used by Kindle e-readers for dictionary 
   - **EXTH 204/205/206/207**: Creator software version fields. Kindling reports as kindlegen Mac (202) v2.9.
 - **PalmDB name**: Derived from `dc:title` by removing `()[]`, replacing spaces with underscores, and truncating to `first_12 + '-' + last_14` if longer than 27 characters.
 - **Dictionary detection**: The Kindle identifies a file as a dictionary when the MOBI header orthographic index field (offset 0x28) is not 0xFFFFFFFF. MOBI type remains 2 (book), not a special dictionary type.
+
+## Upcoming
+
+- Testing with more languages beyond Greek
 
 ## Attribution
 
