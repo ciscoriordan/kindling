@@ -146,6 +146,7 @@ Much of the foundational MOBI format knowledge comes from the [MobileRead wiki](
   - **EXTH 204/205/206/207**: Creator software version fields.
 - **PalmDB name**: Derived from `dc:title` by removing `()[]`, replacing spaces with underscores, and truncating to `first_12 + '-' + last_14` if longer than 27 characters.
 - **Dictionary detection**: The Kindle identifies a file as a dictionary when the MOBI header orthographic index field (offset 0x28) is not 0xFFFFFFFF. MOBI type remains 2 (book), not a special dictionary type.
+- **Dictionary links**: HTML anchor links (`<a href="#id">`) work when browsing the dictionary as a standalone book, but are disabled in the in-book lookup popup window. This is a Kindle firmware limitation. See the [Amazon Kindle Publishing Guidelines](http://kindlegen.s3.amazonaws.com/AmazonKindlePublishingGuidelines.pdf), section 15.6.1.
 
 ## Upcoming
 
