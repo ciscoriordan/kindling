@@ -75,7 +75,7 @@ Kindling takes a different approach: it places ALL lookupable terms (headwords +
 | Inflection limit | 255 per headword (uint8 overflow, silently drops forms) | No limit |
 | Automation | Requires Kindle Previewer GUI, no headless mode | Single binary, scriptable, CI-friendly |
 
-*kindlegen* runs under Rosetta 2 on Apple Silicon Macs, adding overhead to an already slow build. For highly-inflected languages (Greek, Finnish, Turkish, Arabic), dictionaries with hundreds of thousands of inflected forms can take 12+ hours or exhaust memory entirely. *kindlegen*'s 32-bit Windows build is limited to ~2 GB of address space and crashes on large dictionaries. The Linux binary was a 32-bit i386 build that is no longer available from Amazon.
+The ~7,000x speedup is more or less a worst-case comparison, but it comes from several real factors. *kindlegen* builds a complex inflection index with compressed string transformation rules, which appears to scale superlinearly - smaller dictionaries finish much faster, but 452K inflections pushes it into 12+ hour territory. It also runs under Rosetta 2 on Apple Silicon and frequently exhausts memory, causing swapping or outright crashes. Kindling skips the inflection index entirely by placing all forms directly in the orth index, which reduces the problem to sorting and writing. The gap is largest for heavily-inflected languages (Greek, Finnish, Turkish, Arabic) with hundreds of thousands of forms.
 
 ## MOBI Format
 
