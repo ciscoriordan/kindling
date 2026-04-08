@@ -8,6 +8,7 @@
 ///     kindling input.epub
 ///     kindling input.opf -o output.mobi -dont_append_source -verbose
 
+mod comic;
 mod epub;
 mod exth;
 mod indx;
@@ -15,6 +16,8 @@ mod kf8;
 mod mobi;
 mod opf;
 mod palmdoc;
+#[cfg(test)]
+mod tests;
 mod vwi;
 
 use std::path::PathBuf;
@@ -63,6 +66,20 @@ enum Commands {
         /// Identify as kindling in EXTH metadata instead of kindlegen
         #[arg(long)]
         creator_tag: bool,
+    },
+
+    /// Convert comic images/CBZ/CBR to Kindle-optimized MOBI
+    Comic {
+        /// Input image folder, CBZ file, or CBR file
+        input: PathBuf,
+
+        /// Output MOBI file
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Target Kindle device profile
+        #[arg(short, long, default_value = "paperwhite")]
+        device: String,
     },
 }
 
@@ -234,6 +251,41 @@ fn main() {
             } => {
                 let output_path = resolve_output_path(&input, output);
                 do_build(&input, &output_path, no_compress, headwords_only, !no_embed_source, include_cmet, no_hd_images, creator_tag);
+            }
+            Commands::Comic {
+                input,
+                output,
+                device,
+            } => {
+                let profile = match comic::get_profile(&device) {
+                    Some(p) => p,
+                    None => {
+                        eprintln!("Error: unknown device '{}'. Valid devices: {}", device, comic::valid_device_names());
+                        process::exit(1);
+                    }
+                };
+
+                let output_path = match output {
+                    Some(p) => p,
+                    None => {
+                        // Default: input path with .mobi extension
+                        if input.is_dir() {
+                            input.with_extension("mobi")
+                        } else {
+                            input.with_extension("mobi")
+                        }
+                    }
+                };
+
+                match comic::build_comic(&input, &output_path, &profile) {
+                    Ok(()) => {
+                        eprintln!("Comic MOBI built successfully: {}", output_path.display());
+                    }
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        process::exit(1);
+                    }
+                }
             }
         }
     }
