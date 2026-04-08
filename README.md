@@ -25,7 +25,7 @@ Pre-built binaries for Mac (Apple Silicon, Intel), Linux (x86_64), and Windows (
 - Drop-in *kindlegen* replacement: accepts the same CLI flags, prints compatible status codes
 - Native performance: builds large dictionaries in seconds, not hours
 - PalmDOC LZ77 compression, JFIF header patching for Kindle cover compatibility
-- Optional EPUB source embedding (`--embed-source`) and build metadata (`--include-cmet`)
+- Kindle Previewer compatible (EPUB source embedded by default, `--no-embed-source` to skip)
 
 ## Installation
 
@@ -59,13 +59,13 @@ The input OPF must reference HTML files with `<idx:entry>`, `<idx:orth>`, and `<
 kindling build input.epub -o output.mobi
 kindling build input.epub                         # output next to input as input.mobi
 kindling build input.epub --no-hd-images          # skip HD image container
-kindling build input.epub --embed-source          # embed original EPUB in MOBI
+kindling build input.epub --no-embed-source       # smaller file, but breaks Kindle Previewer
 kindling build input.epub --include-cmet          # include build metadata
 ```
 
 Kindling accepts EPUB files (standard zip-packaged EPUB) or OPF files as input. It auto-detects whether the content is a dictionary or a regular book by checking for `<idx:entry>` tags in the HTML. Book MOBIs include embedded images, HD image container (for high-DPI Kindle screens), and KF8 dual-format output for compatibility with all Kindle devices. Fixed-layout EPUBs (e.g., from [Kindle Comic Converter](https://github.com/ciromattia/kcc)) are detected automatically.
 
-By default, kindling skips two optional records that *kindlegen* includes: SRCS (a copy of the original EPUB embedded in the MOBI) and CMET (build log metadata). The Kindle ignores both. Use `--embed-source` and `--include-cmet` to include them if needed.
+By default, the original EPUB is embedded in the MOBI (SRCS record). This is required for Kindle Previewer compatibility - Previewer extracts the embedded EPUB and re-converts it internally. Use `--no-embed-source` to skip this and produce a smaller file (the Kindle device itself doesn't need it).
 
 <p align="center">
   <img width="500" alt="Pepper & Carrot comic on Kindle, built with kindling" src="kindle_comic_test.jpg">
