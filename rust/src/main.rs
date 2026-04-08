@@ -156,7 +156,7 @@ fn do_build(
         }
     } else {
         if embed_source && !is_epub {
-            eprintln!("Note: --embed-source ignored for non-EPUB input");
+            eprintln!("Note: EPUB source embedding skipped for non-EPUB input");
         }
         None
     };

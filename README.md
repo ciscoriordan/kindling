@@ -136,12 +136,12 @@ Much of the foundational MOBI format knowledge comes from the [MobileRead wiki](
 - **Labels**: UTF-16BE for non-ASCII headwords (Greek, Cyrillic, etc.), plain ASCII for ASCII-only labels.
 - **No prefix compression**: *kindlegen* stores full label bytes for every INDX entry (99%+ have `prefix_len=0`). Kindling matches this.
 - **INDX primary header offset 16**: Must be 2 (encoding indicator), not the actual data record count.
-- **ORDT/SPL tables**: Appended to the primary INDX after IDXT. Contains ORDT1, ORDT2, and SPL1-SPL6 sections for Unicode collation. Header fields at offsets 56-176 must point to the SPL sections. Collation constants at offsets 84-144 are fixed values.
+- **ORDT/SPL tables**: Appended to the primary INDX after IDXT. Contains ORDT1, ORDT2, and SPL1-SPL6 sections for Unicode collation. Header fields at offsets 56-80 point to SPL sections, offsets 84-144 are collation constants, and offsets 164-184 are ORDT pointers.
 - **EXTH records** required for dictionary lookup:
   - **EXTH 300** (fontsignature): Windows FONTSIGNATURE struct with USB[4] + CSB[2] as little-endian uint32s (even inside big-endian MOBI), followed by 8 zero bytes and sorted unique non-ASCII headword codepoints as `(codepoint + 0x0400)` big-endian uint16. Tells the firmware which Unicode ranges the dictionary covers.
   - **EXTH 531/532**: Dictionary input/output language strings (e.g., "el", "en"). These are what make the Kindle recognize the file as a dictionary.
   - **EXTH 547** (`InMemory`): Required for dictionary lookup activation.
-  - **EXTH 535**: Creator build tag (e.g., "0000-kdevbld").
+  - **EXTH 535**: Creator build tag (e.g., "0730-890adc2"). Use `--creator-tag` to identify as kindling instead.
   - **EXTH 542** (`Container_Id`): 4-byte content-dependent hash. Not a timestamp despite the MobileRead wiki claim.
   - **EXTH 204/205/206/207**: Creator software version fields.
 - **PalmDB name**: Derived from `dc:title` by removing `()[]`, replacing spaces with underscores, and truncating to `first_12 + '-' + last_14` if longer than 27 characters.
