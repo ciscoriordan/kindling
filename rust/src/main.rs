@@ -217,7 +217,7 @@ fn main() {
             input.with_extension("mobi")
         };
 
-        do_build(&input, &output_path, false, false, false, false, false, false);
+        do_build(&input, &output_path, false, false, true, false, false, false);
     } else {
         let cli = Cli::parse();
 
