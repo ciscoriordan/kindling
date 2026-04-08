@@ -301,8 +301,11 @@ pub fn build_book_exth(
         }
     }
 
-    // EXTH 125 (value 1)
-    records.push(exth_record(125, &1u32.to_be_bytes()));
+    // EXTH 547 (InMemory)
+    records.push(exth_record(547, b"InMemory"));
+
+    // EXTH 125 (value 21 to match kindlegen)
+    records.push(exth_record(125, &21u32.to_be_bytes()));
 
     // EXTH 121: KF8 boundary record (global index of KF8 Record 0)
     if let Some(boundary) = kf8_boundary_record {

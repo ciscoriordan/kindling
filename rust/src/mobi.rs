@@ -144,7 +144,16 @@ fn build_dictionary_mobi(
     let eof = build_eof();
 
     // Build optional SRCS and CMET records
-    let srcs_record: Option<Vec<u8>> = srcs_data.map(|data| data.to_vec());
+    let srcs_record: Option<Vec<u8>> = srcs_data.map(|data| {
+        // SRCS record format: "SRCS" + header_len(u32) + unknown(u32) + count(u32) + epub_data
+        let mut rec = Vec::with_capacity(16 + data.len());
+        rec.extend_from_slice(b"SRCS");
+        rec.extend_from_slice(&0x10u32.to_be_bytes()); // header length = 16
+        rec.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        rec.extend_from_slice(&1u32.to_be_bytes());
+        rec.extend_from_slice(data);
+        rec
+    });
     let cmet_record: Option<Vec<u8>> = if include_cmet {
         Some(build_cmet())
     } else {
@@ -353,7 +362,16 @@ fn build_book_mobi(
     );
 
     // Build optional SRCS and CMET records
-    let srcs_record: Option<Vec<u8>> = srcs_data.map(|data| data.to_vec());
+    let srcs_record: Option<Vec<u8>> = srcs_data.map(|data| {
+        // SRCS record format: "SRCS" + header_len(u32) + unknown(u32) + count(u32) + epub_data
+        let mut rec = Vec::with_capacity(16 + data.len());
+        rec.extend_from_slice(b"SRCS");
+        rec.extend_from_slice(&0x10u32.to_be_bytes()); // header length = 16
+        rec.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        rec.extend_from_slice(&1u32.to_be_bytes());
+        rec.extend_from_slice(data);
+        rec
+    });
     let cmet_record: Option<Vec<u8>> = if include_cmet {
         Some(build_cmet())
     } else {
@@ -1573,7 +1591,7 @@ fn build_record0(
     put32(&mut mobi, 96, 0); // huffman record
     put32(&mut mobi, 100, 0); // huffman count
 
-    put32(&mut mobi, 112, 0x50); // EXTH flags
+    put32(&mut mobi, 112, 0x4850); // locale/capability marker (required by Kindle Previewer)
 
     put32(&mut mobi, 148, 0xFFFFFFFF); // DRM flags
     put32(&mut mobi, 152, 0xFFFFFFFF);
@@ -1603,10 +1621,15 @@ fn build_record0(
     put32(&mut mobi, 236, 0xFFFFFFFF);
     put32(&mut mobi, 240, 0xFFFFFFFF);
 
-    // SRCS record index and count (offset 244, 248)
+    // SRCS record index and count
+    // Offset 208/212 is where Kindle Previewer looks for SRCS
+    // Offset 244/248 is documented on MobileRead wiki
+    // Set both for compatibility
     if let Some(srcs_idx) = srcs_record {
+        put32(&mut mobi, 208, srcs_idx as u32);
+        put32(&mut mobi, 212, 1);
         put32(&mut mobi, 244, srcs_idx as u32);
-        put32(&mut mobi, 248, 1); // SRCS count = 1
+        put32(&mut mobi, 248, 1);
     } else {
         put32(&mut mobi, 244, 0xFFFFFFFF);
         put32(&mut mobi, 248, 0xFFFFFFFF);
@@ -1738,7 +1761,7 @@ fn build_kf8_record0(
     put32(&mut mobi, 96, 0); // huffman record
     put32(&mut mobi, 100, 0); // huffman count
 
-    put32(&mut mobi, 112, 0x50); // EXTH flags
+    put32(&mut mobi, 112, 0x4850); // locale/capability marker (required by Kindle Previewer)
 
     put32(&mut mobi, 148, 0xFFFFFFFF); // DRM flags
     put32(&mut mobi, 152, 0xFFFFFFFF);

@@ -48,9 +48,9 @@ enum Commands {
         #[arg(long)]
         headwords_only: bool,
 
-        /// Embed the original EPUB source as a SRCS record (ignored for OPF input)
+        /// Skip embedding the EPUB source in the MOBI (saves space, breaks Kindle Previewer)
         #[arg(long)]
-        embed_source: bool,
+        no_embed_source: bool,
 
         /// Include a CMET (compilation metadata) record
         #[arg(long)]
@@ -227,13 +227,13 @@ fn main() {
                 output,
                 no_compress,
                 headwords_only,
-                embed_source,
+                no_embed_source,
                 include_cmet,
                 no_hd_images,
                 creator_tag,
             } => {
                 let output_path = resolve_output_path(&input, output);
-                do_build(&input, &output_path, no_compress, headwords_only, embed_source, include_cmet, no_hd_images, creator_tag);
+                do_build(&input, &output_path, no_compress, headwords_only, !no_embed_source, include_cmet, no_hd_images, creator_tag);
             }
         }
     }
