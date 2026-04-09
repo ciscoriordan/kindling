@@ -467,8 +467,6 @@ mod tests {
         let rec0 = get_record(&data, &offsets, 0);
         let exth = parse_exth_records(rec0);
 
-        assert!(exth.contains_key(&501), "Dictionary EXTH should contain record 501 (DocType)");
-        assert_eq!(exth[&501][0], b"DICT", "Dictionary EXTH 501 should be DICT");
         assert!(exth.contains_key(&531), "Dictionary EXTH should contain record 531 (DictionaryInLanguage)");
         assert!(exth.contains_key(&532), "Dictionary EXTH should contain record 532 (DictionaryOutLanguage)");
         assert!(exth.contains_key(&547), "Dictionary EXTH should contain record 547 (InMemory)");
@@ -619,7 +617,6 @@ mod tests {
         let rec0 = get_record(&data, &offsets, 0);
         let exth = parse_exth_records(rec0);
 
-        assert_eq!(exth[&501][0], b"DICT", "Dict EXTH 501 should be DICT");
         assert!(exth.contains_key(&531), "Dict EXTH should contain 531");
         assert!(exth.contains_key(&532), "Dict EXTH should contain 532");
         assert!(exth.contains_key(&547), "Dict EXTH should contain 547");

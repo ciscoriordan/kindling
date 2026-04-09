@@ -478,9 +478,6 @@ pub fn build_exth(
     // Creator build (207)
     records.push(exth_record(207, &0u32.to_be_bytes())); // build = 0
 
-    // Document type (501) - DICT for dictionaries
-    records.push(exth_record(501, b"DICT"));
-
     // Dictionary in-memory flag
     records.push(exth_record(547, b"InMemory"));
 
@@ -668,8 +665,8 @@ mod tests {
         // Should have dictionary language records
         assert!(find_record(&records, 531).is_some(), "Dict should have EXTH 531");
         assert!(find_record(&records, 532).is_some(), "Dict should have EXTH 532");
-        // Should have DICT document type
-        assert_eq!(find_record(&records, 501).unwrap(), b"DICT", "Dict should have EXTH 501 = DICT");
+        // Should NOT have doc_type or series records
+        assert!(find_record(&records, 501).is_none(), "Dict should not have EXTH 501");
         assert!(find_record(&records, 112).is_none(), "Dict should not have EXTH 112");
     }
 }
