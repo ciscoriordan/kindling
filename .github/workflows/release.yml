@@ -15,16 +15,16 @@ jobs:
         include:
           - os: macos-latest
             target: aarch64-apple-darwin
-            name: kindling-mac-apple-silicon
+            name: kindling-cli-mac-apple-silicon
           - os: macos-latest
             target: x86_64-apple-darwin
-            name: kindling-mac-intel
+            name: kindling-cli-mac-intel
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            name: kindling-linux
+            name: kindling-cli-linux
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            name: kindling-windows.exe
+            name: kindling-cli-windows.exe
 
     runs-on: ${{ matrix.os }}
 

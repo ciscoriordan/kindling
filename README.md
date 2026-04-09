@@ -24,16 +24,16 @@ Pre-built binaries for Mac (Apple Silicon, Intel), Linux (x86_64), and Windows (
 - **Comics**: Image folder or CBZ input, device-specific resizing, spread splitting, margin cropping, auto-contrast, manga RTL, webtoon support, Panel View markup
 - Drop-in *kindlegen* replacement (same CLI flags, same status codes)
 - Kindle Previewer compatible (EPUB source embedded by default)
-- 75+ automated tests
+- 97 automated tests
 
 ## Installation
 
 Download the latest release for your platform from [Releases](https://github.com/ciscoriordan/kindling/releases):
 
-- **Mac Apple Silicon** - `kindling-mac-apple-silicon`
-- **Mac Intel** - `kindling-mac-intel`
-- **Linux** - `kindling-linux`
-- **Windows** - `kindling-windows.exe`
+- **Mac Apple Silicon** - `kindling-cli-mac-apple-silicon`
+- **Mac Intel** - `kindling-cli-mac-intel`
+- **Linux** - `kindling-cli-linux`
+- **Windows** - `kindling-cli-windows.exe`
 
 Or build from source:
 ```bash
@@ -45,9 +45,9 @@ cd rust && cargo build --release
 ### Dictionaries
 
 ```bash
-kindling build input.opf -o output.mobi
-kindling build input.opf -o output.mobi --no-compress    # skip compression for fast dev builds
-kindling build input.opf -o output.mobi --headwords-only  # index headwords only (no inflections)
+kindling-cli build input.opf -o output.mobi
+kindling-cli build input.opf -o output.mobi --no-compress    # skip compression for fast dev builds
+kindling-cli build input.opf -o output.mobi --headwords-only  # index headwords only (no inflections)
 ```
 
 The input OPF must reference HTML files with `<idx:entry>`, `<idx:orth>`, and `<idx:iform>` markup following the [Amazon Kindle Publishing Guidelines](http://kindlegen.s3.amazonaws.com/AmazonKindlePublishingGuidelines.pdf). Both headwords and inflected forms are indexed so that looking up any form on the Kindle finds the correct dictionary entry.
@@ -55,10 +55,10 @@ The input OPF must reference HTML files with `<idx:entry>`, `<idx:orth>`, and `<
 ### Books
 
 ```bash
-kindling build input.epub -o output.mobi
-kindling build input.epub                          # output next to input as input.mobi
-kindling build input.epub --no-hd-images           # skip HD image container
-kindling build input.epub --no-embed-source        # smaller file, but breaks Kindle Previewer
+kindling-cli build input.epub -o output.mobi
+kindling-cli build input.epub                          # output next to input as input.mobi
+kindling-cli build input.epub --no-hd-images           # skip HD image container
+kindling-cli build input.epub --no-embed-source        # smaller file, but breaks Kindle Previewer
 ```
 
 Auto-detects dictionary vs book by checking for `<idx:entry>` tags. Book MOBIs include embedded images, HD image container (for high-DPI Kindle screens), and KF8 dual-format output. The original EPUB is embedded by default for Kindle Previewer compatibility (`--no-embed-source` to skip).
@@ -66,10 +66,10 @@ Auto-detects dictionary vs book by checking for `<idx:entry>` tags. Book MOBIs i
 ### Comics
 
 ```bash
-kindling comic input.cbz -o output.mobi --device paperwhite
-kindling comic manga.cbz -o output.mobi --rtl              # manga (right-to-left)
-kindling comic webtoon/ -o output.mobi --webtoon            # webtoon (vertical strip)
-kindling comic input/ -o output.mobi --no-split --no-crop   # disable smart processing
+kindling-cli comic input.cbz -o output.mobi --device paperwhite
+kindling-cli comic manga.cbz -o output.mobi --rtl              # manga (right-to-left)
+kindling-cli comic webtoon/ -o output.mobi --webtoon            # webtoon (vertical strip)
+kindling-cli comic input/ -o output.mobi --no-split --no-crop   # disable smart processing
 ```
 
 Converts image folders and CBZ files to Kindle-optimized MOBI with:
@@ -85,9 +85,9 @@ Converts image folders and CBZ files to Kindle-optimized MOBI with:
 ### Kindlegen compatibility
 
 ```bash
-kindling input.epub                          # same as kindlegen
-kindling input.epub -dont_append_source      # flag accepted
-kindling input.epub -o output.mobi           # explicit output path
+kindling-cli input.epub                          # same as kindlegen
+kindling-cli input.epub -dont_append_source      # flag accepted
+kindling-cli input.epub -o output.mobi           # explicit output path
 ```
 
 Drop-in replacement. Same CLI syntax, same status codes (`:I1036:` on success, `:E23026:` on failure).
@@ -96,7 +96,7 @@ Drop-in replacement. Same CLI syntax, same status codes (`:I1036:` on success, `
 
 ### vs kindlegen
 
-| Input | *kindlegen* | kindling | Speedup |
+| Input | *kindlegen* | Kindling | Speedup |
 |---|---|---|---|
 | Greek dictionary (80K headwords, 452K entries) | 12+ hours, frequent OOM | 6 seconds | ~7,000x |
 | Divine Comedy (138 illustrations, 29MB of images) | 19 seconds | 0.5 seconds | ~40x |
@@ -106,7 +106,7 @@ The ~7,000x dictionary speedup comes from skipping *kindlegen*'s complex inflect
 
 ### vs KCC
 
-| | KCC | kindling |
+| | KCC | Kindling |
 |---|---|---|
 | Installation | Python + PySide6 + Pillow + 7z + mozjpeg + ... | Single binary, no dependencies |
 | Binary size | ~200MB+ (with dependencies) | ~5MB |
@@ -169,7 +169,7 @@ Much of the foundational MOBI format knowledge comes from the [MobileRead wiki](
 
 ## Related projects
 
-- [Lemma](https://github.com/ciscoriordan/lemma) - Greek-English Kindle dictionary built with kindling
+- [Lemma](https://github.com/ciscoriordan/lemma) - Greek-English Kindle dictionary built with Kindling
 
 ## Star History
 
