@@ -21,7 +21,7 @@ Pre-built binaries for Mac (Apple Silicon, Intel), Linux (x86_64), and Windows (
 
 - **Dictionaries**: Full orth index with headword + inflection lookup, ORDT/SPL sort tables, fontsignature
 - **Books**: EPUB or OPF input, embedded images, KF8 dual-format (KF7+KF8) or KF8-only (.azw3), HD image container, fixed-layout support
-- **Comics**: Image folder, CBZ, or EPUB input, device-specific resizing, spread splitting, margin cropping, auto-contrast, manga RTL, webtoon support, Panel View markup
+- **Comics**: Image folder, CBZ, or EPUB input, device-specific resizing, spread splitting, margin cropping, auto-contrast, moire correction for color e-ink, manga RTL, webtoon with overlap fallback, Panel View, metadata overrides
 - Drop-in *kindlegen* replacement (same CLI flags, same status codes)
 - Kindle Previewer compatible (EPUB source embedded by default)
 - Comprehensive test suite with CI on every push (see [Testing](#testing))
@@ -75,18 +75,24 @@ kindling-cli comic manga.epub -o output.mobi --rtl              # EPUB comic/man
 kindling-cli comic manga.cbz -o output.mobi --rtl              # manga (right-to-left)
 kindling-cli comic webtoon/ -o output.mobi --webtoon            # webtoon (vertical strip)
 kindling-cli comic input/ -o output.mobi --no-split --no-crop   # disable smart processing
+kindling-cli comic input.cbz --title "My Comic" --language ja   # metadata overrides
+kindling-cli comic input.cbz --doc-type ebok                    # appear under Books on Kindle
+kindling-cli comic input.cbz --cover 3                          # use page 3 as cover
 ```
 
 Converts image folders, CBZ files, and EPUB files to Kindle-optimized MOBI with:
-- **Device profiles**: *paperwhite*, *oasis*, *scribe*, *basic*, *colorsoft*, *fire-hd-10*
+- **Device profiles**: *paperwhite*, *kpw5*, *oasis*, *scribe*, *scribe2025*, *kindle2024*, *basic*, *colorsoft*, *fire-hd-10*
 - **Spread splitting**: Landscape images auto-split into two pages (disable: `--no-split`)
 - **Margin cropping**: Uniform-color borders auto-removed (disable: `--no-crop`)
 - **Auto-contrast**: Histogram stretching and gamma correction for e-ink (disable: `--no-enhance`)
+- **Moire correction**: Rainbow artifact removal for color e-ink screens (Colorsoft), applied automatically to grayscale source images
 - **Manga mode**: `--rtl` reverses page order and split direction
-- **Webtoon mode**: `--webtoon` merges vertical strips and splits at panel gutters
+- **Webtoon mode**: `--webtoon` merges vertical strips and splits at panel gutters with overlap fallback to prevent content loss
 - **Panel View**: Tap-to-zoom panel detection for Kindle (disable: `--no-panel-view`)
 - **EPUB support**: Fixed-layout EPUB comics extracted in spine order (correct page sequence)
 - **ComicInfo.xml**: Auto-reads metadata and manga direction from CBZ files
+- **Metadata overrides**: `--title`, `--author`, `--language`, `--cover` (page number or file path)
+- **Document type**: `--doc-type ebok` to appear under Books instead of Documents on Kindle (default: `pdoc`)
 
 ### Kindlegen compatibility
 
@@ -253,9 +259,10 @@ The test suite covers:
 - **MOBI structure**: PalmDB header, record offsets, MOBI header fields (magic, version, encoding, capability markers), FLIS/FCIS/EOF records
 - **Dictionary output**: Orth index presence and structure, INDX records, headword count, EXTH 531/532/547 language records, compressed vs uncompressed roundtrips
 - **Book output**: KF7+KF8 dual format (BOUNDARY record, KF8 section version), KF8-only output (.azw3), image record JPEG magic, EXTH metadata, SRCS embedding
-- **Comic pipeline**: Device profiles, spread detection and splitting, margin cropping, auto-contrast, webtoon merge/split, Panel View markup, manga RTL ordering, JPEG quality, ComicInfo.xml parsing
+- **Comic pipeline**: Device profiles (including kpw5, scribe2025, kindle2024), spread detection and splitting, crop-before-split symmetry, margin cropping, auto-contrast, moire wiring for color devices, webtoon merge/split with overlap fallback, dark gutter detection, Panel View markup, manga RTL ordering and cover selection, JPEG quality, ComicInfo.xml parsing, EPUB image extraction
+- **Comic CLI flags**: doc-type EBOK/PDOC, title/author/language overrides
 - **Compression**: PalmDOC LZ77 compress/decompress roundtrips for various sizes and encodings
-- **Regression tests**: Dictionary capability marker (0x50 vs 0x4850), JFIF density patching
+- **Regression tests**: Dictionary capability marker (0x50 vs 0x4850), JFIF density patching, RTL spread cover selection
 
 ## Known Kindle firmware issues
 
