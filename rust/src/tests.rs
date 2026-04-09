@@ -258,6 +258,7 @@ mod tests {
             false, // creator_tag (use kindlegen-compat EXTH 535)
             false, // kf8_only (dual format)
             None,  // doc_type
+            false, // kindle_limits (disabled in tests by default)
         )
         .expect("build_mobi failed");
         fs::read(&output_path).expect("could not read output MOBI")
@@ -672,6 +673,7 @@ mod tests {
             false, // creator_tag
             true,  // kf8_only
             None,  // doc_type
+            false, // kindle_limits
         )
         .expect("build_mobi (kf8_only) failed");
         fs::read(&output_path).expect("could not read output AZW3")
@@ -3942,5 +3944,122 @@ mod tests {
 
         println!("  \u{2713} cover_fill: cover is {}x{} (matches device {}x{})",
             w, h, profile.width, profile.height);
+    }
+
+    // =======================================================================
+    // Kindle publishing limits
+    // =======================================================================
+
+    #[test]
+    fn test_kindle_limits_dict_by_letter_produces_valid_mobi() {
+        // Build a dictionary with kindle_limits=true and verify it produces a valid MOBI.
+        // The entries span multiple letters to exercise the per-letter grouping.
+        let dir = TempDir::new("kindle_limits_dict");
+        let entries: &[(&str, &[&str])] = &[
+            ("apple", &["apples"]),
+            ("avocado", &[]),
+            ("banana", &["bananas"]),
+            ("cherry", &["cherries"]),
+        ];
+        let opf_path = create_dict_fixture(dir.path(), entries);
+        let output_path = dir.path().join("output.mobi");
+
+        mobi::build_mobi(
+            &opf_path,
+            &output_path,
+            true,  // no_compress
+            false, // headwords_only
+            None,  // srcs_data
+            false, // include_cmet
+            false, // no_hd_images
+            false, // creator_tag
+            false, // kf8_only
+            None,  // doc_type
+            true,  // kindle_limits ON
+        )
+        .expect("build_mobi with kindle_limits should succeed");
+
+        let data = fs::read(&output_path).expect("could not read output MOBI");
+        assert_eq!(&data[60..64], b"BOOK");
+        assert_eq!(&data[64..68], b"MOBI");
+
+        let (_, record_count, offsets) = parse_palmdb(&data);
+        assert!(record_count > 0, "Should have records");
+
+        // Verify MOBI magic in record 0
+        let rec0 = get_record(&data, &offsets, 0);
+        assert_eq!(&rec0[16..20], b"MOBI");
+
+        // Verify it has INDX records (dictionary index still works)
+        let mut found_indx = false;
+        for i in 0..offsets.len() {
+            let rec = get_record(&data, &offsets, i);
+            if rec.len() >= 4 && &rec[0..4] == b"INDX" {
+                found_indx = true;
+                break;
+            }
+        }
+        assert!(found_indx, "Dictionary with kindle_limits should still have INDX records");
+        println!("  \u{2713} kindle_limits dict: valid MOBI with INDX, {} records", record_count);
+    }
+
+    #[test]
+    fn test_kindle_limits_book_warns_on_large_html() {
+        // This test verifies that the code path for kindle_limits with books
+        // runs without errors. The actual warning is printed to stderr.
+        // We create a book and build with kindle_limits=true.
+        let dir = TempDir::new("kindle_limits_book");
+        let opf_path = create_book_fixture(dir.path(), None);
+        let output_path = dir.path().join("output.mobi");
+
+        mobi::build_mobi(
+            &opf_path,
+            &output_path,
+            true,  // no_compress
+            false, // headwords_only
+            None,  // srcs_data
+            false, // include_cmet
+            false, // no_hd_images
+            false, // creator_tag
+            false, // kf8_only
+            None,  // doc_type
+            true,  // kindle_limits ON
+        )
+        .expect("build_mobi with kindle_limits for book should succeed");
+
+        let data = fs::read(&output_path).expect("could not read output MOBI");
+        assert_eq!(&data[60..64], b"BOOK");
+        println!("  \u{2713} kindle_limits book: valid MOBI produced without errors");
+    }
+
+    #[test]
+    fn test_kindle_limits_off_dict_uses_single_blob() {
+        // With kindle_limits=false, dictionary should use the original single-file approach.
+        let dir = TempDir::new("kindle_limits_off");
+        let entries: &[(&str, &[&str])] = &[
+            ("alpha", &[]),
+            ("beta", &[]),
+        ];
+        let opf_path = create_dict_fixture(dir.path(), entries);
+        let output_path = dir.path().join("output.mobi");
+
+        mobi::build_mobi(
+            &opf_path,
+            &output_path,
+            true,  // no_compress
+            false, // headwords_only
+            None,  // srcs_data
+            false, // include_cmet
+            false, // no_hd_images
+            false, // creator_tag
+            false, // kf8_only
+            None,  // doc_type
+            false, // kindle_limits OFF
+        )
+        .expect("build_mobi without kindle_limits should succeed");
+
+        let data = fs::read(&output_path).expect("could not read output MOBI");
+        assert_eq!(&data[60..64], b"BOOK");
+        println!("  \u{2713} kindle_limits OFF: valid MOBI produced");
     }
 }

@@ -115,6 +115,8 @@ pub struct ComicOptions {
     pub panel_reading_order: Option<String>,
     /// Center-crop the cover image to fill the device screen (no borders).
     pub cover_fill: bool,
+    /// Enforce Kindle publishing limits (warn about large HTML files and file counts).
+    pub kindle_limits: bool,
 }
 
 impl Default for ComicOptions {
@@ -137,6 +139,7 @@ impl Default for ComicOptions {
             rotate_spreads: false,
             panel_reading_order: None,
             cover_fill: false,
+            kindle_limits: false,
         }
     }
 }
@@ -358,6 +361,7 @@ pub fn build_comic_with_options(
         false,  // default creator identity
         false,  // dual format (not KF8-only)
         options.doc_type.as_deref(),
+        options.kindle_limits,
     );
 
     // Step 6: Clean up temp dirs

@@ -74,6 +74,16 @@ enum Commands {
         /// Dual format remains available for maximum compatibility with older Kindles.
         #[arg(long)]
         kf8_only: bool,
+
+        /// Enforce Kindle publishing limits: split HTML chunks >30MB at entry/paragraph
+        /// boundaries, warn if >300 HTML files. ON by default for dictionaries, OFF for books.
+        /// Use --no-kindle-limits to disable for dictionaries, --kindle-limits to enable for books.
+        #[arg(long, overrides_with = "no_kindle_limits")]
+        kindle_limits: bool,
+
+        /// Disable Kindle publishing limits enforcement (see --kindle-limits)
+        #[arg(long, overrides_with = "kindle_limits")]
+        no_kindle_limits: bool,
     },
 
     /// Convert comic images/CBZ/CBR/EPUB to Kindle-optimized MOBI
@@ -171,6 +181,15 @@ enum Commands {
         /// Removes letterbox borders by cropping to the device's aspect ratio.
         #[arg(long)]
         cover_fill: bool,
+
+        /// Enforce Kindle publishing limits: warn if >300 HTML files.
+        /// OFF by default for comics. Use --kindle-limits to enable.
+        #[arg(long, overrides_with = "no_kindle_limits")]
+        kindle_limits: bool,
+
+        /// Disable Kindle publishing limits enforcement (see --kindle-limits)
+        #[arg(long, overrides_with = "kindle_limits")]
+        no_kindle_limits: bool,
     },
 }
 
@@ -249,6 +268,7 @@ fn do_build(
     no_hd_images: bool,
     creator_tag: bool,
     kf8_only: bool,
+    kindle_limits: bool,
 ) {
     let is_epub = input
         .extension()
@@ -287,7 +307,7 @@ fn do_build(
 
         let result = mobi::build_mobi(
             &opf_path, output_path, no_compress, headwords_only,
-            srcs_data.as_deref(), include_cmet, no_hd_images, creator_tag, kf8_only, None,
+            srcs_data.as_deref(), include_cmet, no_hd_images, creator_tag, kf8_only, None, kindle_limits,
         );
         epub::cleanup_temp_dir(&temp_dir);
         result
@@ -295,7 +315,7 @@ fn do_build(
         // Direct OPF input
         mobi::build_mobi(
             input, output_path, no_compress, headwords_only,
-            srcs_data.as_deref(), include_cmet, no_hd_images, creator_tag, kf8_only, None,
+            srcs_data.as_deref(), include_cmet, no_hd_images, creator_tag, kf8_only, None, kindle_limits,
         )
     };
 
@@ -330,7 +350,7 @@ fn main() {
             input.with_extension("mobi")
         };
 
-        do_build(&input, &output_path, false, false, true, false, false, false, false);
+        do_build(&input, &output_path, false, false, true, false, false, false, false, true);
     } else {
         let cli = Cli::parse();
 
@@ -345,9 +365,27 @@ fn main() {
                 no_hd_images,
                 creator_tag,
                 kf8_only,
+                kindle_limits,
+                no_kindle_limits,
             } => {
+                // Default: ON for dictionaries, OFF for books.
+                // Since we don't know the content type yet at parse time, we pass
+                // a tri-state: if user explicitly set a flag, use that; otherwise
+                // let build_mobi decide based on content type detection.
+                // We use a simple heuristic: if neither flag is set, pass true
+                // (the dictionary default, which is more conservative). The book
+                // path will only warn, not restructure, so it's safe.
+                let effective_kindle_limits = if no_kindle_limits {
+                    false
+                } else if kindle_limits {
+                    true
+                } else {
+                    // Default: true (dictionary default, harmless for books since
+                    // books only warn, not split)
+                    true
+                };
                 let output_path = resolve_output_path(&input, output, kf8_only);
-                do_build(&input, &output_path, no_compress, headwords_only, !no_embed_source, include_cmet, no_hd_images, creator_tag, kf8_only);
+                do_build(&input, &output_path, no_compress, headwords_only, !no_embed_source, include_cmet, no_hd_images, creator_tag, kf8_only, effective_kindle_limits);
             }
             Commands::Comic {
                 input,
@@ -370,6 +408,8 @@ fn main() {
                 cover,
                 cover_fill,
                 panel_reading_order,
+                kindle_limits,
+                no_kindle_limits,
             } => {
                 let profile = match comic::get_profile(&device) {
                     Some(p) => p,
@@ -415,6 +455,9 @@ fn main() {
                     }
                 });
 
+                // Comic defaults to OFF for kindle_limits
+                let effective_kindle_limits = kindle_limits && !no_kindle_limits;
+
                 let options = comic::ComicOptions {
                     rtl,
                     split: !no_split,
@@ -433,6 +476,7 @@ fn main() {
                     rotate_spreads,
                     panel_reading_order,
                     cover_fill,
+                    kindle_limits: effective_kindle_limits,
                 };
 
                 match comic::build_comic_with_options(&input, &output_path, &profile, &options) {

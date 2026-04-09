@@ -48,9 +48,12 @@ cd rust && cargo build --release
 kindling-cli build input.opf -o output.mobi
 kindling-cli build input.opf -o output.mobi --no-compress    # skip compression for fast dev builds
 kindling-cli build input.opf -o output.mobi --headwords-only  # index headwords only (no inflections)
+kindling-cli build input.opf -o output.mobi --no-kindle-limits  # skip per-letter HTML grouping
 ```
 
 The input OPF must reference HTML files with `<idx:entry>`, `<idx:orth>`, and `<idx:iform>` markup following the [Amazon Kindle Publishing Guidelines](http://kindlegen.s3.amazonaws.com/AmazonKindlePublishingGuidelines.pdf). Both headwords and inflected forms are indexed so that looking up any form on the Kindle finds the correct dictionary entry.
+
+By default, dictionaries enforce Kindle publishing limits (`--kindle-limits`): entries are grouped by first letter to keep individual HTML sections under 30 MB, and a warning is printed if the total exceeds 300 sections. Use `--no-kindle-limits` to disable this and produce a single flat HTML blob.
 
 ### Books
 
@@ -61,6 +64,7 @@ kindling-cli build input.epub --kf8-only               # KF8-only output (.azw3)
 kindling-cli build input.epub --kf8-only -o book.azw3  # explicit output path
 kindling-cli build input.epub --no-hd-images           # skip HD image container
 kindling-cli build input.epub --no-embed-source        # smaller file, but breaks Kindle Previewer
+kindling-cli build input.epub --kindle-limits          # warn about HTML files exceeding 30 MB
 ```
 
 Auto-detects dictionary vs book by checking for `<idx:entry>` tags. Book MOBIs include embedded images, HD image container (for high-DPI Kindle screens), and KF8 dual-format output. The original EPUB is embedded by default for Kindle Previewer compatibility (`--no-embed-source` to skip).

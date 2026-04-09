@@ -36,6 +36,7 @@ pub fn build_mobi(
     creator_tag: bool,
     kf8_only: bool,
     doc_type: Option<&str>,
+    kindle_limits: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let opf = OPFData::parse(opf_path)?;
 
@@ -47,14 +48,14 @@ pub fn build_mobi(
             return Err("KF8-only output is not supported for dictionaries (dictionaries use MOBI7 format)".into());
         }
         eprintln!("Detected dictionary content");
-        build_dictionary_mobi(&opf, output_path, no_compress, headwords_only, srcs_data, include_cmet, creator_tag)
+        build_dictionary_mobi(&opf, output_path, no_compress, headwords_only, srcs_data, include_cmet, creator_tag, kindle_limits)
     } else {
         if kf8_only {
             eprintln!("Detected book content, building KF8-only (.azw3)");
         } else {
             eprintln!("Detected book content (no idx:entry tags found)");
         }
-        build_book_mobi(&opf, output_path, no_compress, srcs_data, include_cmet, !no_hd_images, creator_tag, kf8_only, doc_type)
+        build_book_mobi(&opf, output_path, no_compress, srcs_data, include_cmet, !no_hd_images, creator_tag, kf8_only, doc_type, kindle_limits)
     }
 }
 
@@ -70,6 +71,12 @@ fn detect_dictionary(opf: &OPFData) -> bool {
     false
 }
 
+/// Kindle publishing limit: maximum size per HTML chunk (30 MB).
+const KINDLE_HTML_SIZE_LIMIT: usize = 30 * 1024 * 1024;
+
+/// Kindle publishing limit: maximum number of HTML files.
+const KINDLE_HTML_FILE_LIMIT: usize = 300;
+
 /// Build a dictionary MOBI file (existing behavior).
 fn build_dictionary_mobi(
     opf: &OPFData,
@@ -79,6 +86,7 @@ fn build_dictionary_mobi(
     srcs_data: Option<&[u8]>,
     include_cmet: bool,
     creator_tag: bool,
+    kindle_limits: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Parse all dictionary entries from HTML content
     let mut all_entries: Vec<DictionaryEntry> = Vec::new();
@@ -95,7 +103,11 @@ fn build_dictionary_mobi(
 
     // Build the text content (stripped HTML for all spine items)
     eprintln!("Building text content...");
-    let text_content = build_text_content(&opf, true);
+    let text_content = if kindle_limits {
+        build_text_content_by_letter(&all_entries)
+    } else {
+        build_text_content(&opf, true)
+    };
 
     // Insert the guide reference tag
     let text_content = insert_guide_reference(&text_content);
@@ -261,6 +273,7 @@ fn build_book_mobi(
     creator_tag: bool,
     kf8_only: bool,
     doc_type: Option<&str>,
+    kindle_limits: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Collect images from the OPF manifest
     let image_items = opf.get_image_items(); // Vec<(href, media_type)>
@@ -326,6 +339,27 @@ fn build_book_mobi(
     // Build KF8 section (used by both dual and KF8-only modes)
     eprintln!("Building KF8 section...");
     let html_parts = build_html_parts(opf);
+
+    // Kindle publishing limits checks for books
+    if kindle_limits {
+        let num_html_files = html_parts.len();
+        if num_html_files > KINDLE_HTML_FILE_LIMIT {
+            eprintln!(
+                "Warning: {} HTML files exceeds the Kindle limit of {} files",
+                num_html_files, KINDLE_HTML_FILE_LIMIT
+            );
+        }
+        for (i, part) in html_parts.iter().enumerate() {
+            let part_size = part.len();
+            if part_size > KINDLE_HTML_SIZE_LIMIT {
+                eprintln!(
+                    "Warning: HTML part {} is {} bytes, exceeds 30 MB Kindle limit ({} bytes)",
+                    i + 1, part_size, KINDLE_HTML_SIZE_LIMIT
+                );
+            }
+        }
+    }
+
     let css_content = extract_css_content(opf);
     let kf8_section = crate::kf8::build_kf8_section(
         &html_parts,
@@ -1120,6 +1154,87 @@ fn build_text_content(opf: &OPFData, strip_idx: bool) -> Vec<u8> {
     let combined = format!(
         "<html>{}<body>{}  <mbp:pagebreak/></body></html>",
         head, merged_body
+    );
+    combined.into_bytes()
+}
+
+/// Build text content for a dictionary grouped by the first letter of each headword.
+///
+/// Groups all entries by the first Unicode character of their headword (case-folded),
+/// producing one logical section per letter separated by `<mbp:pagebreak/>` tags.
+/// Each entry's HTML content has idx: markup stripped for the text blob.
+///
+/// This structure follows Amazon's recommendation for dictionary organization and
+/// keeps individual logical "file" sizes manageable.
+fn build_text_content_by_letter(entries: &[DictionaryEntry]) -> Vec<u8> {
+    use std::collections::BTreeMap;
+
+    // Group entries by first character (lowercased)
+    let mut letter_groups: BTreeMap<String, Vec<&DictionaryEntry>> = BTreeMap::new();
+    for entry in entries {
+        let key = entry.headword.chars().next()
+            .map(|c| c.to_lowercase().to_string())
+            .unwrap_or_else(|| "_".to_string());
+        letter_groups.entry(key).or_default().push(entry);
+    }
+
+    let num_groups = letter_groups.len();
+    eprintln!("Kindle limits: grouped {} entries into {} letter groups", entries.len(), num_groups);
+
+    if num_groups > KINDLE_HTML_FILE_LIMIT {
+        eprintln!(
+            "Warning: {} letter groups exceeds the Kindle limit of {} HTML files",
+            num_groups, KINDLE_HTML_FILE_LIMIT
+        );
+    }
+
+    // Build body sections per letter group
+    let mut body_sections: Vec<String> = Vec::new();
+    for (letter, group_entries) in &letter_groups {
+        let mut section_parts: Vec<String> = Vec::new();
+        for entry in group_entries {
+            let stripped = strip_idx_markup(&entry.html_content);
+            section_parts.push(stripped);
+        }
+        let section = section_parts.join("");
+        let section_size = section.len();
+        if section_size > KINDLE_HTML_SIZE_LIMIT {
+            eprintln!(
+                "Warning: letter group '{}' HTML is {} bytes, exceeds 30 MB Kindle limit ({} bytes). Splitting further at entry boundaries.",
+                letter,
+                section_size,
+                KINDLE_HTML_SIZE_LIMIT
+            );
+            // Split this letter's entries into sub-chunks under 30MB
+            let mut chunk = String::new();
+            for entry in group_entries {
+                let stripped = strip_idx_markup(&entry.html_content);
+                if !chunk.is_empty() && chunk.len() + stripped.len() > KINDLE_HTML_SIZE_LIMIT {
+                    body_sections.push(chunk);
+                    chunk = String::new();
+                }
+                chunk.push_str(&stripped);
+            }
+            if !chunk.is_empty() {
+                body_sections.push(chunk);
+            }
+        } else {
+            body_sections.push(section);
+        }
+    }
+
+    // Check total section count after potential sub-splitting
+    if body_sections.len() > KINDLE_HTML_FILE_LIMIT {
+        eprintln!(
+            "Warning: {} total HTML sections after splitting exceeds the Kindle limit of {} files",
+            body_sections.len(), KINDLE_HTML_FILE_LIMIT
+        );
+    }
+
+    let merged_body = body_sections.join("<mbp:pagebreak/>");
+    let combined = format!(
+        "<html><head><guide></guide></head><body>{}  <mbp:pagebreak/></body></html>",
+        merged_body
     );
     combined.into_bytes()
 }
