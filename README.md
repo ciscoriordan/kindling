@@ -290,6 +290,12 @@ Kindle firmware 5.19.2 introduced regressions for sideloaded fixed-layout conten
 - Deregistering the Kindle temporarily resolves the issue
 - Updating to firmware 5.19.3+ is recommended
 
+## Acknowledgements
+
+Kindling's comic mode was informed by the pioneering work of [AcidWeb](https://github.com/AcidWeb) on [KCC (Kindle Comic Converter)](https://github.com/ciromattia/kcc), who built the core architecture for panel detection, webtoon processing, and Kindle device compatibility over hundreds of commits. KCC remains the reference implementation for many comic-to-Kindle techniques.
+
+The MOBI format knowledge beyond what the [MobileRead wiki](https://wiki.mobileread.com/wiki/MOBI) covers was greatly aided by Dc5e's [KindleComicParser](https://www.mobileread.com/forums/showthread.php?t=192783), which provided detailed analysis of the binary format structures used by kindlegen for fixed-layout content.
+
 ## Related projects
 
 - [Lemma](https://github.com/ciscoriordan/lemma) - Greek-English Kindle dictionary built with Kindling
