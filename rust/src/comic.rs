@@ -289,6 +289,7 @@ pub fn build_comic_with_options(
         false,  // no CMET
         false,  // allow HD images
         false,  // default creator identity
+        false,  // dual format (not KF8-only)
     );
 
     // Step 6: Clean up temp dirs

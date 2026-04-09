@@ -67,6 +67,12 @@ enum Commands {
         /// Identify as kindling in EXTH metadata instead of kindlegen
         #[arg(long)]
         creator_tag: bool,
+
+        /// Output KF8-only format (.azw3) instead of dual MOBI7+KF8 (.mobi).
+        /// KF8-only files are smaller and handled better by Calibre.
+        /// Dual format remains available for maximum compatibility with older Kindles.
+        #[arg(long)]
+        kf8_only: bool,
     },
 
     /// Convert comic images/CBZ/CBR to Kindle-optimized MOBI
@@ -177,11 +183,15 @@ fn parse_kindlegen_args() -> (PathBuf, Option<String>) {
 ///
 /// If an explicit output is given, use it. For kindlegen compat mode, the -o flag
 /// specifies just a filename (output goes next to input). For the build subcommand,
-/// -o is a full path. If no output is specified, replace the input extension with .mobi.
-fn resolve_output_path(input: &PathBuf, output: Option<PathBuf>) -> PathBuf {
+/// -o is a full path. If no output is specified, replace the input extension with
+/// .azw3 (KF8-only) or .mobi (dual format).
+fn resolve_output_path(input: &PathBuf, output: Option<PathBuf>, kf8_only: bool) -> PathBuf {
     match output {
         Some(p) => p,
-        None => input.with_extension("mobi"),
+        None => {
+            let ext = if kf8_only { "azw3" } else { "mobi" };
+            input.with_extension(ext)
+        }
     }
 }
 
@@ -194,6 +204,7 @@ fn do_build(
     include_cmet: bool,
     no_hd_images: bool,
     creator_tag: bool,
+    kf8_only: bool,
 ) {
     let is_epub = input
         .extension()
@@ -232,7 +243,7 @@ fn do_build(
 
         let result = mobi::build_mobi(
             &opf_path, output_path, no_compress, headwords_only,
-            srcs_data.as_deref(), include_cmet, no_hd_images, creator_tag,
+            srcs_data.as_deref(), include_cmet, no_hd_images, creator_tag, kf8_only,
         );
         epub::cleanup_temp_dir(&temp_dir);
         result
@@ -240,7 +251,7 @@ fn do_build(
         // Direct OPF input
         mobi::build_mobi(
             input, output_path, no_compress, headwords_only,
-            srcs_data.as_deref(), include_cmet, no_hd_images, creator_tag,
+            srcs_data.as_deref(), include_cmet, no_hd_images, creator_tag, kf8_only,
         )
     };
 
@@ -275,7 +286,7 @@ fn main() {
             input.with_extension("mobi")
         };
 
-        do_build(&input, &output_path, false, false, true, false, false, false);
+        do_build(&input, &output_path, false, false, true, false, false, false, false);
     } else {
         let cli = Cli::parse();
 
@@ -289,9 +300,10 @@ fn main() {
                 include_cmet,
                 no_hd_images,
                 creator_tag,
+                kf8_only,
             } => {
-                let output_path = resolve_output_path(&input, output);
-                do_build(&input, &output_path, no_compress, headwords_only, !no_embed_source, include_cmet, no_hd_images, creator_tag);
+                let output_path = resolve_output_path(&input, output, kf8_only);
+                do_build(&input, &output_path, no_compress, headwords_only, !no_embed_source, include_cmet, no_hd_images, creator_tag, kf8_only);
             }
             Commands::Comic {
                 input,

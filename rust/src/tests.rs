@@ -256,6 +256,7 @@ mod tests {
             false, // include_cmet
             false, // no_hd_images
             false, // creator_tag (use kindlegen-compat EXTH 535)
+            false, // kf8_only (dual format)
         )
         .expect("build_mobi failed");
         fs::read(&output_path).expect("could not read output MOBI")
@@ -401,6 +402,44 @@ mod tests {
             version == 6 || version == 7,
             "MOBI version should be 6 or 7, got {}",
             version
+        );
+    }
+
+    /// Regression test for d4febe6: dictionaries must use 0x50 at MOBI header
+    /// offset 112 (capability marker). Using 0x4850 breaks dictionary recognition
+    /// on Kindle devices. Books must use 0x4850 for Kindle Previewer compatibility.
+    #[test]
+    fn test_dict_capability_marker_0x50() {
+        let dir = TempDir::new("dict_cap");
+        let opf = create_dict_fixture(dir.path(), &[("test", &["tests"])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // MOBI header offset 112 = PalmDOC(16) + 112 = rec0 offset 128
+        let cap_marker = read_u32_be(rec0, 128);
+        assert_eq!(
+            cap_marker, 0x50,
+            "Dictionary capability marker at offset 112 should be 0x50, got 0x{:X}",
+            cap_marker
+        );
+    }
+
+    #[test]
+    fn test_book_capability_marker_0x4850() {
+        let dir = TempDir::new("book_cap");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // Book KF7 Record 0 should use 0x4850
+        let cap_marker = read_u32_be(rec0, 128);
+        assert_eq!(
+            cap_marker, 0x4850,
+            "Book capability marker at offset 112 should be 0x4850, got 0x{:X}",
+            cap_marker
         );
     }
 
@@ -590,6 +629,193 @@ mod tests {
         // KF8 version should be 8
         let kf8_version = read_u32_be(kf8_rec0, 36);
         assert_eq!(kf8_version, 8, "KF8 version should be 8, got {}", kf8_version);
+    }
+
+    // =======================================================================
+    // 4b. KF8-only book structure
+    // =======================================================================
+
+    /// Build a KF8-only MOBI from an OPF path and return the raw bytes.
+    fn build_kf8_only_mobi_bytes(
+        opf_path: &Path,
+        output_dir: &Path,
+    ) -> Vec<u8> {
+        let output_path = output_dir.join("output.azw3");
+        mobi::build_mobi(
+            opf_path,
+            &output_path,
+            true,  // no_compress (faster tests)
+            false, // headwords_only
+            None,  // srcs_data
+            false, // include_cmet
+            false, // no_hd_images
+            false, // creator_tag
+            true,  // kf8_only
+        )
+        .expect("build_mobi (kf8_only) failed");
+        fs::read(&output_path).expect("could not read output AZW3")
+    }
+
+    #[test]
+    fn test_kf8_only_record0_version_8() {
+        let dir = TempDir::new("kf8only_ver");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_kf8_only_mobi_bytes(&opf, dir.path());
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // MOBI magic at offset 16
+        assert_eq!(&rec0[16..20], b"MOBI", "Record 0 should contain MOBI magic");
+
+        // File version at MOBI header offset 20 (rec0 offset 36)
+        let version = read_u32_be(rec0, 36);
+        assert_eq!(version, 8, "KF8-only version should be 8, got {}", version);
+
+        // Min version at MOBI header offset 88 (rec0 offset 104)
+        let min_version = read_u32_be(rec0, 104);
+        assert_eq!(min_version, 8, "KF8-only min_version should be 8, got {}", min_version);
+    }
+
+    #[test]
+    fn test_kf8_only_no_kf7_kf8_boundary() {
+        let dir = TempDir::new("kf8only_nobound");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_kf8_only_mobi_bytes(&opf, dir.path());
+        let (_, _, offsets) = parse_palmdb(&data);
+
+        // There should be no BOUNDARY record followed by a KF8 Record 0 (MOBI magic).
+        // The HD container has its own BOUNDARY records which are legitimate.
+        for i in 0..offsets.len().saturating_sub(1) {
+            let rec = get_record(&data, &offsets, i);
+            if rec.len() == 8 && &rec[0..8] == b"BOUNDARY" {
+                let next_rec = get_record(&data, &offsets, i + 1);
+                assert!(
+                    next_rec.len() < 20 || &next_rec[16..20] != b"MOBI",
+                    "KF8-only should not have a BOUNDARY separating KF7/KF8 sections (found at index {})", i
+                );
+            }
+        }
+
+        // Record 0 should be the only MOBI record header (no KF7 Record 0 + KF8 Record 0 pair)
+        let rec0 = get_record(&data, &offsets, 0);
+        assert_eq!(&rec0[16..20], b"MOBI");
+        let version = read_u32_be(rec0, 36);
+        assert_eq!(version, 8, "The sole Record 0 should be version 8 (KF8)");
+    }
+
+    #[test]
+    fn test_kf8_only_no_exth_121() {
+        let dir = TempDir::new("kf8only_noexth121");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_kf8_only_mobi_bytes(&opf, dir.path());
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let exth = parse_exth_records(rec0);
+
+        // EXTH 121 (KF8 boundary pointer) should NOT be present
+        assert!(
+            !exth.contains_key(&121),
+            "KF8-only should not have EXTH 121 (KF8 boundary pointer)"
+        );
+    }
+
+    #[test]
+    fn test_kf8_only_images_present() {
+        let dir = TempDir::new("kf8only_imgs");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_kf8_only_mobi_bytes(&opf, dir.path());
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // first_image_record at MOBI header offset 92 (rec0 offset 108)
+        let first_img = read_u32_be(rec0, 108) as usize;
+        assert_ne!(
+            first_img,
+            0xFFFFFFFF_u32 as usize,
+            "KF8-only with image should have first_image set"
+        );
+
+        // The image record should contain JPEG magic
+        let img_rec = get_record(&data, &offsets, first_img);
+        assert!(
+            img_rec.len() >= 2 && img_rec[0] == 0xFF && img_rec[1] == 0xD8,
+            "Image record should start with JPEG magic (FF D8)"
+        );
+    }
+
+    #[test]
+    fn test_kf8_only_has_fdst() {
+        let dir = TempDir::new("kf8only_fdst");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_kf8_only_mobi_bytes(&opf, dir.path());
+        let (_, _, offsets) = parse_palmdb(&data);
+
+        // Search for FDST record
+        let mut found_fdst = false;
+        for i in 0..offsets.len() {
+            let rec = get_record(&data, &offsets, i);
+            if rec.len() >= 4 && &rec[0..4] == b"FDST" {
+                found_fdst = true;
+                break;
+            }
+        }
+        assert!(found_fdst, "KF8-only should contain an FDST record");
+    }
+
+    #[test]
+    fn test_kf8_only_has_eof() {
+        let dir = TempDir::new("kf8only_eof");
+        let opf = create_book_fixture(dir.path(), None);
+        let data = build_kf8_only_mobi_bytes(&opf, dir.path());
+        let (_, _, offsets) = parse_palmdb(&data);
+
+        // Last record should be EOF marker
+        let last_rec = get_record(&data, &offsets, offsets.len() - 1);
+        assert_eq!(
+            last_rec,
+            &[0xE9, 0x8E, 0x0D, 0x0A],
+            "Last record should be EOF marker"
+        );
+    }
+
+    #[test]
+    fn test_kf8_only_smaller_than_dual() {
+        let dir_dual = TempDir::new("kf8only_cmp_dual");
+        let dir_kf8 = TempDir::new("kf8only_cmp_kf8");
+        let jpeg = make_test_jpeg();
+        let opf_dual = create_book_fixture(dir_dual.path(), Some(&jpeg));
+        let opf_kf8 = create_book_fixture(dir_kf8.path(), Some(&jpeg));
+
+        let dual_data = build_mobi_bytes(&opf_dual, dir_dual.path(), true, false, None);
+        let kf8_data = build_kf8_only_mobi_bytes(&opf_kf8, dir_kf8.path());
+
+        assert!(
+            kf8_data.len() < dual_data.len(),
+            "KF8-only ({} bytes) should be smaller than dual format ({} bytes)",
+            kf8_data.len(),
+            dual_data.len()
+        );
+    }
+
+    #[test]
+    fn test_kf8_only_exth_has_547() {
+        let dir = TempDir::new("kf8only_exth547");
+        let opf = create_book_fixture(dir.path(), None);
+        let data = build_kf8_only_mobi_bytes(&opf, dir.path());
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let exth = parse_exth_records(rec0);
+
+        // EXTH 547 (InMemory) should still be present
+        assert!(
+            exth.contains_key(&547),
+            "KF8-only should have EXTH 547 (InMemory)"
+        );
     }
 
     // =======================================================================

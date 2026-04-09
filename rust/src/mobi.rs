@@ -34,6 +34,7 @@ pub fn build_mobi(
     include_cmet: bool,
     no_hd_images: bool,
     creator_tag: bool,
+    kf8_only: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let opf = OPFData::parse(opf_path)?;
 
@@ -41,11 +42,18 @@ pub fn build_mobi(
     let is_dictionary = detect_dictionary(&opf);
 
     if is_dictionary {
+        if kf8_only {
+            return Err("KF8-only output is not supported for dictionaries (dictionaries use MOBI7 format)".into());
+        }
         eprintln!("Detected dictionary content");
         build_dictionary_mobi(&opf, output_path, no_compress, headwords_only, srcs_data, include_cmet, creator_tag)
     } else {
-        eprintln!("Detected book content (no idx:entry tags found)");
-        build_book_mobi(&opf, output_path, no_compress, srcs_data, include_cmet, !no_hd_images, creator_tag)
+        if kf8_only {
+            eprintln!("Detected book content, building KF8-only (.azw3)");
+        } else {
+            eprintln!("Detected book content (no idx:entry tags found)");
+        }
+        build_book_mobi(&opf, output_path, no_compress, srcs_data, include_cmet, !no_hd_images, creator_tag, kf8_only)
     }
 }
 
@@ -249,6 +257,7 @@ fn build_book_mobi(
     include_cmet: bool,
     hd_images: bool,
     creator_tag: bool,
+    kf8_only: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Collect images from the OPF manifest
     let image_items = opf.get_image_items(); // Vec<(href, media_type)>
@@ -311,39 +320,7 @@ fn build_book_mobi(
         );
     }
 
-    // Build the KF7 text content (stripped for KF7, with recindex for images)
-    eprintln!("Building KF7 text content...");
-    let text_content = build_text_content(opf, false);
-
-    // Rewrite image src attributes to recindex references for KF7
-    let text_content = if !href_to_recindex.is_empty() {
-        rewrite_image_src(&text_content, &href_to_recindex, &opf.spine_items)
-    } else {
-        text_content
-    };
-
-    // Build KF7 text records
-    let (text_records, text_length) = if no_compress {
-        eprintln!("Splitting KF7 text into uncompressed records...");
-        let result = split_text_uncompressed(&text_content);
-        eprintln!(
-            "Split KF7 text into {} uncompressed records ({} bytes)",
-            result.0.len(),
-            result.1
-        );
-        result
-    } else {
-        eprintln!("Compressing KF7 text...");
-        let result = compress_text(&text_content);
-        eprintln!(
-            "Compressed KF7 text into {} records ({} bytes uncompressed)",
-            result.0.len(),
-            result.1
-        );
-        result
-    };
-
-    // Build KF8 section
+    // Build KF8 section (used by both dual and KF8-only modes)
     eprintln!("Building KF8 section...");
     let html_parts = build_html_parts(opf);
     let css_content = extract_css_content(opf);
@@ -363,10 +340,9 @@ fn build_book_mobi(
 
     // Build optional SRCS and CMET records
     let srcs_record: Option<Vec<u8>> = srcs_data.map(|data| {
-        // SRCS record format: "SRCS" + header_len(u32) + unknown(u32) + count(u32) + epub_data
         let mut rec = Vec::with_capacity(16 + data.len());
         rec.extend_from_slice(b"SRCS");
-        rec.extend_from_slice(&0x10u32.to_be_bytes()); // header length = 16
+        rec.extend_from_slice(&0x10u32.to_be_bytes());
         rec.extend_from_slice(&(data.len() as u32).to_be_bytes());
         rec.extend_from_slice(&1u32.to_be_bytes());
         rec.extend_from_slice(data);
@@ -379,95 +355,7 @@ fn build_book_mobi(
     };
     let num_optional = srcs_record.as_ref().map_or(0, |_| 1) + cmet_record.as_ref().map_or(0, |_| 1);
 
-    // --- KF7 Section record layout ---
-    // [0]       KF7 Record 0
-    // [1..N]    KF7 text records
-    // [N+1..]   Image records (shared)
-    // [...]     FLIS, FCIS, [SRCS], [CMET]
     let num_image_records = image_records.len();
-    let kf7_first_non_book = text_records.len() + 1;
-    let kf7_first_image = if num_image_records > 0 {
-        text_records.len() + 1
-    } else {
-        0xFFFFFFFF
-    };
-    let kf7_flis = text_records.len() + 1 + num_image_records;
-    let kf7_fcis = kf7_flis + 1;
-    let kf7_srcs_idx = if srcs_record.is_some() {
-        Some(kf7_fcis + 1)
-    } else {
-        None
-    };
-
-    // BOUNDARY record index (global) - after FLIS, FCIS, and optional SRCS/CMET
-    let boundary_idx = 1 + text_records.len() + num_image_records + 2 + num_optional;
-
-    // KF8 Record 0 is the record after BOUNDARY
-    let kf8_record0_global = boundary_idx + 1;
-
-    // Total records in KF7 section (before boundary): record0 + text + images + FLIS + FCIS + [SRCS] + [CMET]
-    let kf7_total = 1 + text_records.len() + num_image_records + 2 + num_optional;
-
-    // --- KF8 Section record layout (KF8-relative indices) ---
-    // [0]       KF8 Record 0
-    // [1..M]    KF8 text records
-    // [M+1]     NULL padding
-    // [M+2..]   Fragment INDX records
-    // [...]     Skeleton INDX records
-    // [...]     NCX INDX records
-    // [...]     FDST record
-    // [...]     DATP record
-    // [...]     FLIS, FCIS, EOF
-    let kf8_text_count = kf8_section.text_records.len();
-    let kf8_null_pad = kf8_text_count + 1; // KF8-relative
-    let kf8_fragment_start = kf8_null_pad + 1;
-    let kf8_skeleton_start = kf8_fragment_start + kf8_section.fragment_indx.len();
-    let kf8_ncx_start = kf8_skeleton_start + kf8_section.skeleton_indx.len();
-    let kf8_fdst_idx = kf8_ncx_start + kf8_section.ncx_indx.len();
-    let kf8_datp_idx = kf8_fdst_idx + 1;
-    let kf8_flis_idx = kf8_datp_idx + 1;
-    let kf8_fcis_idx = kf8_flis_idx + 1;
-    let _kf8_eof_idx = kf8_fcis_idx + 1;
-
-    // KF8 first_image: images are in the KF7 section, so KF8 references them
-    // by their global record index minus the KF8 Record 0 global index.
-    // Wait, in the reference file, KF8 first_image was 14 (relative), and
-    // KF8 record 0 was at global 33, meaning images would be at global 47+.
-    // But images are shared in the KF7 section. The KF8 header's first_image
-    // is still relative, pointing to where images would be if they were in the
-    // KF8 section. For shared images, we don't set first_image in KF8 since
-    // kindle:embed URLs handle the mapping.
-    // Actually, looking at the reference: KF8 first_image=14 but there are only
-    // ~17 KF8 records. The images are shared from KF7. The kindle:embed URL
-    // encoding handles this. Let's set first_image to 0xFFFFFFFF for KF8.
-    // Actually, the reference file has first_image=14, which likely points past
-    // the KF8 text/index records into the shared image area via record number
-    // math. Let me just not set it for now.
-
-    let kf8_first_nonbook = kf8_text_count + 1; // after text records
-
-    // --- HD image container (CONT/CRES) ---
-    // Build HD container records if enabled and there are images.
-    // The HD container goes after the KF8 section's EOF.
-    let hd_container: Option<HdContainer> = if hd_images && num_image_records > 0 {
-        eprintln!("Building HD image container (CONT/CRES)...");
-        Some(build_hd_container(opf, &image_records))
-    } else {
-        None
-    };
-
-    // Count HD container records for total record calculation
-    let hd_record_count = hd_container.as_ref().map_or(0, |hd| hd.total_record_count());
-
-    // Total global records (kf7_total already includes optional SRCS/CMET)
-    let total_global_records = kf7_total + 1 + 1 + kf8_text_count + 1 // boundary + kf8rec0 + text + null
-        + kf8_section.fragment_indx.len()
-        + kf8_section.skeleton_indx.len()
-        + kf8_section.ncx_indx.len()
-        + 1  // FDST
-        + 1  // DATP
-        + 3  // FLIS + FCIS + EOF
-        + hd_record_count; // HD container (BOUNDARY + CONT + CRES slots + kindle:embed list + CONTBOUNDARY + EOF)
 
     // Build fixed-layout metadata if applicable
     let fixed_layout = if opf.is_fixed_layout {
@@ -481,129 +369,330 @@ fn build_book_mobi(
         None
     };
 
-    // Build HD geometry string for EXTH 536 (format: "WxH:start-end|")
-    let hd_geometry_string: Option<String> = hd_container.as_ref().map(|hd| {
-        hd.geometry_string()
-    });
-
-    // Build KF7 record 0 (version=6, with EXTH 121 pointing to KF8 record 0)
-    let empty_chars: HashSet<u32> = HashSet::new();
-    let kf7_record0 = build_record0(
-        opf,
-        text_length,
-        text_records.len(),
-        kf7_first_non_book,
-        0xFFFFFFFF_usize, // no orth index
-        total_global_records,
-        kf7_flis,
-        kf7_fcis,
-        no_compress,
-        &empty_chars,
-        false, // not a dictionary
-        kf7_first_image,
-        cover_offset,
-        fixed_layout.as_ref(),
-        Some(6),  // KF7 version = 6
-        Some(kf8_record0_global as u32), // EXTH 121 -> KF8 Record 0
-        kf7_srcs_idx,
-        hd_geometry_string.as_deref(),
-        creator_tag,
-    );
-
-    // Build KF8 record 0 (version=8, KF8-relative indices)
-    let kf8_record0 = build_kf8_record0(
-        opf,
-        kf8_section.text_length,
-        kf8_text_count,
-        kf8_first_nonbook,
-        kf8_fdst_idx,
-        kf8_section.flow_count,
-        kf8_skeleton_start,
-        kf8_fragment_start,
-        kf8_ncx_start,
-        kf8_datp_idx,
-        kf8_flis_idx,
-        kf8_fcis_idx,
-        no_compress,
-        cover_offset,
-        fixed_layout.as_ref(),
-        0xFFFFFFFF, // KF8 first_image (images are in KF7 section)
-        creator_tag,
-    );
-
-    // Build FLIS/FCIS/EOF for both sections
-    let kf7_flis_rec = build_flis();
-    let kf7_fcis_rec = build_fcis(text_length);
-    let kf8_flis_rec = build_flis();
-    let kf8_fcis_rec = build_fcis(kf8_section.text_length);
-    let eof = build_eof();
-    let boundary_rec = b"BOUNDARY".to_vec();
-    let null_pad_rec = vec![0x00u8]; // NULL padding record
-
-    // Assemble all records in order:
-    // KF7: record0 + text + images + FLIS + FCIS + [SRCS] + [CMET]
-    // BOUNDARY
-    // KF8: record0 + text + NULL + fragment_indx + skeleton_indx + ncx_indx + FDST + DATP + FLIS + FCIS + EOF
-    // [HD: BOUNDARY + CONT + CRES/placeholder records + kindle:embed list + CONTBOUNDARY + EOF]
-    let mut all_records: Vec<Vec<u8>> = Vec::new();
-
-    // KF7 section
-    all_records.push(kf7_record0);
-    all_records.extend(text_records);
-    all_records.extend(image_records);
-    all_records.push(kf7_flis_rec);
-    all_records.push(kf7_fcis_rec);
-    if let Some(srcs) = srcs_record {
-        all_records.push(srcs);
-    }
-    if let Some(cmet) = cmet_record {
-        all_records.push(cmet);
-    }
-
-    // Boundary
-    all_records.push(boundary_rec);
-
-    // KF8 section
-    all_records.push(kf8_record0);
-    all_records.extend(kf8_section.text_records);
-    all_records.push(null_pad_rec);
-    all_records.extend(kf8_section.fragment_indx);
-    all_records.extend(kf8_section.skeleton_indx);
-    all_records.extend(kf8_section.ncx_indx);
-    all_records.push(kf8_section.fdst);
-    all_records.push(kf8_section.datp);
-    all_records.push(kf8_flis_rec);
-    all_records.push(kf8_fcis_rec);
-    all_records.push(eof);
-
-    // HD image container (CONT/CRES)
-    if let Some(hd) = hd_container {
-        all_records.extend(hd.into_records());
-    }
-
-    let hd_str = if hd_record_count > 0 {
-        format!(", HD: {}", hd_record_count)
-    } else {
-        String::new()
-    };
-    eprintln!(
-        "Dual format: {} total records (KF7: {}, boundary: 1, KF8: {}{})",
-        all_records.len(),
-        kf7_total,
-        all_records.len() - kf7_total - 1 - hd_record_count,
-        hd_str,
-    );
-
-    // Build PalmDB header and write file
     let title = if opf.title.is_empty() {
         "Book"
     } else {
         &opf.title
     };
-    let palmdb = build_palmdb(title, &all_records);
 
-    std::fs::write(output_path, &palmdb)?;
-    eprintln!("Wrote {} ({} bytes)", output_path.display(), palmdb.len());
+    if kf8_only {
+        // --- KF8-only record layout ---
+        // [0]          Record 0 (KF8, version=8)
+        // [1..T]       KF8 text records
+        // [T+1]        NULL padding
+        // [T+2..T+I+1] Image records
+        // [T+I+2..]   Fragment INDX
+        // [...]        Skeleton INDX
+        // [...]        NCX INDX
+        // [...]        FDST
+        // [...]        DATP
+        // [...]        FLIS
+        // [...]        FCIS
+        // [...]        [SRCS]
+        // [...]        [CMET]
+        // [...]        EOF
+        // [HD container if enabled]
+        let kf8_text_count = kf8_section.text_records.len();
+        let kf8_null_pad = kf8_text_count + 1;
+        let kf8_first_image = if num_image_records > 0 {
+            kf8_null_pad + 1
+        } else {
+            0xFFFFFFFF
+        };
+        let kf8_fragment_start = kf8_null_pad + 1 + num_image_records;
+        let kf8_skeleton_start = kf8_fragment_start + kf8_section.fragment_indx.len();
+        let kf8_ncx_start = kf8_skeleton_start + kf8_section.skeleton_indx.len();
+        let kf8_fdst_idx = kf8_ncx_start + kf8_section.ncx_indx.len();
+        let kf8_datp_idx = kf8_fdst_idx + 1;
+        let kf8_flis_idx = kf8_datp_idx + 1;
+        let kf8_fcis_idx = kf8_flis_idx + 1;
+        let kf8_srcs_idx = if srcs_record.is_some() {
+            Some(kf8_fcis_idx + 1)
+        } else {
+            None
+        };
+        let kf8_first_nonbook = kf8_text_count + 1;
+
+        // HD container
+        let hd_container: Option<HdContainer> = if hd_images && num_image_records > 0 {
+            eprintln!("Building HD image container (CONT/CRES)...");
+            Some(build_hd_container(opf, &image_records))
+        } else {
+            None
+        };
+        let hd_record_count = hd_container.as_ref().map_or(0, |hd| hd.total_record_count());
+        let hd_geometry_string: Option<String> = hd_container.as_ref().map(|hd| hd.geometry_string());
+
+        let total_records = 1 + kf8_text_count + 1 + num_image_records
+            + kf8_section.fragment_indx.len()
+            + kf8_section.skeleton_indx.len()
+            + kf8_section.ncx_indx.len()
+            + 1 + 1 + 1 + 1  // FDST + DATP + FLIS + FCIS
+            + num_optional + 1  // [SRCS] + [CMET] + EOF
+            + hd_record_count;
+
+        // Build KF8 record 0
+        let kf8_record0 = build_kf8_record0(
+            opf,
+            kf8_section.text_length,
+            kf8_text_count,
+            kf8_first_nonbook,
+            kf8_fdst_idx,
+            kf8_section.flow_count,
+            kf8_skeleton_start,
+            kf8_fragment_start,
+            kf8_ncx_start,
+            kf8_datp_idx,
+            kf8_flis_idx,
+            kf8_fcis_idx,
+            no_compress,
+            cover_offset,
+            fixed_layout.as_ref(),
+            kf8_first_image,
+            creator_tag,
+            kf8_srcs_idx,
+            hd_geometry_string.as_deref(),
+            total_records,
+        );
+
+        let kf8_flis_rec = build_flis();
+        let kf8_fcis_rec = build_fcis(kf8_section.text_length);
+        let eof = build_eof();
+        let null_pad_rec = vec![0x00u8];
+
+        // Assemble KF8-only records
+        let mut all_records: Vec<Vec<u8>> = Vec::new();
+        all_records.push(kf8_record0);
+        all_records.extend(kf8_section.text_records);
+        all_records.push(null_pad_rec);
+        all_records.extend(image_records);
+        all_records.extend(kf8_section.fragment_indx);
+        all_records.extend(kf8_section.skeleton_indx);
+        all_records.extend(kf8_section.ncx_indx);
+        all_records.push(kf8_section.fdst);
+        all_records.push(kf8_section.datp);
+        all_records.push(kf8_flis_rec);
+        all_records.push(kf8_fcis_rec);
+        if let Some(srcs) = srcs_record {
+            all_records.push(srcs);
+        }
+        if let Some(cmet) = cmet_record {
+            all_records.push(cmet);
+        }
+        all_records.push(eof);
+
+        if let Some(hd) = hd_container {
+            all_records.extend(hd.into_records());
+        }
+
+        let hd_str = if hd_record_count > 0 {
+            format!(", HD: {}", hd_record_count)
+        } else {
+            String::new()
+        };
+        eprintln!(
+            "KF8-only: {} total records{}",
+            all_records.len(),
+            hd_str,
+        );
+
+        let palmdb = build_palmdb(title, &all_records);
+        std::fs::write(output_path, &palmdb)?;
+        eprintln!("Wrote {} ({} bytes)", output_path.display(), palmdb.len());
+    } else {
+        // --- Dual KF7+KF8 format ---
+
+        // Build the KF7 text content (stripped for KF7, with recindex for images)
+        eprintln!("Building KF7 text content...");
+        let text_content = build_text_content(opf, false);
+
+        // Rewrite image src attributes to recindex references for KF7
+        let text_content = if !href_to_recindex.is_empty() {
+            rewrite_image_src(&text_content, &href_to_recindex, &opf.spine_items)
+        } else {
+            text_content
+        };
+
+        // Build KF7 text records
+        let (text_records, text_length) = if no_compress {
+            eprintln!("Splitting KF7 text into uncompressed records...");
+            let result = split_text_uncompressed(&text_content);
+            eprintln!(
+                "Split KF7 text into {} uncompressed records ({} bytes)",
+                result.0.len(),
+                result.1
+            );
+            result
+        } else {
+            eprintln!("Compressing KF7 text...");
+            let result = compress_text(&text_content);
+            eprintln!(
+                "Compressed KF7 text into {} records ({} bytes uncompressed)",
+                result.0.len(),
+                result.1
+            );
+            result
+        };
+
+        // --- KF7 Section record layout ---
+        let kf7_first_non_book = text_records.len() + 1;
+        let kf7_first_image = if num_image_records > 0 {
+            text_records.len() + 1
+        } else {
+            0xFFFFFFFF
+        };
+        let kf7_flis = text_records.len() + 1 + num_image_records;
+        let kf7_fcis = kf7_flis + 1;
+        let kf7_srcs_idx = if srcs_record.is_some() {
+            Some(kf7_fcis + 1)
+        } else {
+            None
+        };
+
+        let boundary_idx = 1 + text_records.len() + num_image_records + 2 + num_optional;
+        let kf8_record0_global = boundary_idx + 1;
+        let kf7_total = 1 + text_records.len() + num_image_records + 2 + num_optional;
+
+        // --- KF8 Section record layout (KF8-relative indices) ---
+        let kf8_text_count = kf8_section.text_records.len();
+        let kf8_null_pad = kf8_text_count + 1;
+        let kf8_fragment_start = kf8_null_pad + 1;
+        let kf8_skeleton_start = kf8_fragment_start + kf8_section.fragment_indx.len();
+        let kf8_ncx_start = kf8_skeleton_start + kf8_section.skeleton_indx.len();
+        let kf8_fdst_idx = kf8_ncx_start + kf8_section.ncx_indx.len();
+        let kf8_datp_idx = kf8_fdst_idx + 1;
+        let kf8_flis_idx = kf8_datp_idx + 1;
+        let kf8_fcis_idx = kf8_flis_idx + 1;
+        let kf8_first_nonbook = kf8_text_count + 1;
+
+        // HD container
+        let hd_container: Option<HdContainer> = if hd_images && num_image_records > 0 {
+            eprintln!("Building HD image container (CONT/CRES)...");
+            Some(build_hd_container(opf, &image_records))
+        } else {
+            None
+        };
+        let hd_record_count = hd_container.as_ref().map_or(0, |hd| hd.total_record_count());
+        let hd_geometry_string: Option<String> = hd_container.as_ref().map(|hd| hd.geometry_string());
+
+        let total_global_records = kf7_total + 1 + 1 + kf8_text_count + 1
+            + kf8_section.fragment_indx.len()
+            + kf8_section.skeleton_indx.len()
+            + kf8_section.ncx_indx.len()
+            + 1 + 1 + 3  // FDST + DATP + FLIS + FCIS + EOF
+            + hd_record_count;
+
+        // Build KF7 record 0 (version=6, with EXTH 121 pointing to KF8 record 0)
+        let empty_chars: HashSet<u32> = HashSet::new();
+        let kf7_record0 = build_record0(
+            opf,
+            text_length,
+            text_records.len(),
+            kf7_first_non_book,
+            0xFFFFFFFF_usize,
+            total_global_records,
+            kf7_flis,
+            kf7_fcis,
+            no_compress,
+            &empty_chars,
+            false,
+            kf7_first_image,
+            cover_offset,
+            fixed_layout.as_ref(),
+            Some(6),
+            Some(kf8_record0_global as u32),
+            kf7_srcs_idx,
+            hd_geometry_string.as_deref(),
+            creator_tag,
+        );
+
+        // Build KF8 record 0 (version=8, KF8-relative indices)
+        let kf8_record0 = build_kf8_record0(
+            opf,
+            kf8_section.text_length,
+            kf8_text_count,
+            kf8_first_nonbook,
+            kf8_fdst_idx,
+            kf8_section.flow_count,
+            kf8_skeleton_start,
+            kf8_fragment_start,
+            kf8_ncx_start,
+            kf8_datp_idx,
+            kf8_flis_idx,
+            kf8_fcis_idx,
+            no_compress,
+            cover_offset,
+            fixed_layout.as_ref(),
+            0xFFFFFFFF, // KF8 first_image (images are in KF7 section)
+            creator_tag,
+            None,  // no SRCS in KF8 section of dual format
+            None,  // no HD geometry in KF8 section of dual format
+            0,     // total_records not used for KF8 section in dual format
+        );
+
+        // Build FLIS/FCIS/EOF for both sections
+        let kf7_flis_rec = build_flis();
+        let kf7_fcis_rec = build_fcis(text_length);
+        let kf8_flis_rec = build_flis();
+        let kf8_fcis_rec = build_fcis(kf8_section.text_length);
+        let eof = build_eof();
+        let boundary_rec = b"BOUNDARY".to_vec();
+        let null_pad_rec = vec![0x00u8];
+
+        // Assemble all records
+        let mut all_records: Vec<Vec<u8>> = Vec::new();
+
+        // KF7 section
+        all_records.push(kf7_record0);
+        all_records.extend(text_records);
+        all_records.extend(image_records);
+        all_records.push(kf7_flis_rec);
+        all_records.push(kf7_fcis_rec);
+        if let Some(srcs) = srcs_record {
+            all_records.push(srcs);
+        }
+        if let Some(cmet) = cmet_record {
+            all_records.push(cmet);
+        }
+
+        // Boundary
+        all_records.push(boundary_rec);
+
+        // KF8 section
+        all_records.push(kf8_record0);
+        all_records.extend(kf8_section.text_records);
+        all_records.push(null_pad_rec);
+        all_records.extend(kf8_section.fragment_indx);
+        all_records.extend(kf8_section.skeleton_indx);
+        all_records.extend(kf8_section.ncx_indx);
+        all_records.push(kf8_section.fdst);
+        all_records.push(kf8_section.datp);
+        all_records.push(kf8_flis_rec);
+        all_records.push(kf8_fcis_rec);
+        all_records.push(eof);
+
+        // HD image container
+        if let Some(hd) = hd_container {
+            all_records.extend(hd.into_records());
+        }
+
+        let hd_str = if hd_record_count > 0 {
+            format!(", HD: {}", hd_record_count)
+        } else {
+            String::new()
+        };
+        eprintln!(
+            "Dual format: {} total records (KF7: {}, boundary: 1, KF8: {}{})",
+            all_records.len(),
+            kf7_total,
+            all_records.len() - kf7_total - 1 - hd_record_count,
+            hd_str,
+        );
+
+        let palmdb = build_palmdb(title, &all_records);
+        std::fs::write(output_path, &palmdb)?;
+        eprintln!("Wrote {} ({} bytes)", output_path.display(), palmdb.len());
+    }
 
     Ok(())
 }
@@ -1699,6 +1788,9 @@ fn build_record0(
 /// Build KF8 Record 0: PalmDOC header + MOBI header (version=8) + EXTH + full name.
 ///
 /// All record indices are KF8-relative (relative to this record as index 0).
+/// In KF8-only mode, `srcs_record` points to the SRCS record and `hd_geometry`
+/// provides the HD image geometry string. `total_records` is used to set the
+/// MOBI header field at offset 176 (only meaningful in KF8-only mode).
 fn build_kf8_record0(
     opf: &OPFData,
     text_length: usize,
@@ -1717,6 +1809,9 @@ fn build_kf8_record0(
     fixed_layout: Option<&exth::FixedLayoutMeta>,
     first_image_record: usize,
     creator_tag: bool,
+    srcs_record: Option<usize>,
+    hd_geometry: Option<&str>,
+    total_records: usize,
 ) -> Vec<u8> {
     let full_name = if opf.title.is_empty() {
         "Book"
@@ -1783,9 +1878,16 @@ fn build_kf8_record0(
     put32(&mut mobi, 160, fdst_record as u32);
     put32(&mut mobi, 164, fdst_flow_count as u32);
 
-    // Offset 176: for KF8, this field differs from KF7
-    put32(&mut mobi, 176, 0);
-    put32(&mut mobi, 180, fdst_flow_count as u32);
+    // Offset 176: in KF8-only mode, this field mirrors KF7 behavior
+    if total_records > 0 {
+        // KF8-only: use the same encoding as KF7 record 0
+        put32(&mut mobi, 176, (1u32 << 16) | ((total_records - 1) as u32));
+        put32(&mut mobi, 180, 1);
+    } else {
+        // Dual format KF8 section
+        put32(&mut mobi, 176, 0);
+        put32(&mut mobi, 180, fdst_flow_count as u32);
+    }
 
     // FCIS/FLIS (KF8-relative)
     put32(&mut mobi, 184, fcis_record as u32);
@@ -1812,11 +1914,21 @@ fn build_kf8_record0(
     put32(&mut mobi, 232, 0xFFFFFFFF);
     put32(&mut mobi, 236, 0xFFFFFFFF);
     put32(&mut mobi, 240, 0xFFFFFFFF);
-    put32(&mut mobi, 244, 0xFFFFFFFF);
-    put32(&mut mobi, 248, 0xFFFFFFFF);
+
+    // SRCS record index and count (KF8-only mode)
+    // Note: offset 208/212 overlap with KF8 INDX fields, so use 244/248 only
+    if let Some(srcs_idx) = srcs_record {
+        put32(&mut mobi, 244, srcs_idx as u32);
+        put32(&mut mobi, 248, 1);
+    } else {
+        put32(&mut mobi, 244, 0xFFFFFFFF);
+        put32(&mut mobi, 248, 0xFFFFFFFF);
+    }
     put32(&mut mobi, 256, 0xFFFFFFFF);
 
-    // Build EXTH header (no EXTH 121 or 536 in KF8 section)
+    // Build EXTH header
+    // In KF8-only mode, include HD geometry (EXTH 536) if present.
+    // Never include EXTH 121 (KF8 boundary) since there's no KF7 section.
     let exth_data = exth::build_book_exth(
         full_name,
         &opf.author,
@@ -1825,7 +1937,7 @@ fn build_kf8_record0(
         cover_offset,
         fixed_layout,
         None, // no KF8 boundary in KF8 header itself
-        None, // no HD geometry in KF8 header
+        hd_geometry,
         creator_tag,
         None, // doc_type: default PDOC
         None, // description

@@ -20,11 +20,11 @@ Pre-built binaries for Mac (Apple Silicon, Intel), Linux (x86_64), and Windows (
 ## Features
 
 - **Dictionaries**: Full orth index with headword + inflection lookup, ORDT/SPL sort tables, fontsignature
-- **Books**: EPUB or OPF input, embedded images, KF8 dual-format (KF7+KF8), HD image container, fixed-layout support
+- **Books**: EPUB or OPF input, embedded images, KF8 dual-format (KF7+KF8) or KF8-only (.azw3), HD image container, fixed-layout support
 - **Comics**: Image folder or CBZ input, device-specific resizing, spread splitting, margin cropping, auto-contrast, manga RTL, webtoon support, Panel View markup
 - Drop-in *kindlegen* replacement (same CLI flags, same status codes)
 - Kindle Previewer compatible (EPUB source embedded by default)
-- 97 automated tests
+- Comprehensive test suite with CI on every push (see [Testing](#testing))
 
 ## Installation
 
@@ -57,11 +57,15 @@ The input OPF must reference HTML files with `<idx:entry>`, `<idx:orth>`, and `<
 ```bash
 kindling-cli build input.epub -o output.mobi
 kindling-cli build input.epub                          # output next to input as input.mobi
+kindling-cli build input.epub --kf8-only               # KF8-only output (.azw3), smaller files
+kindling-cli build input.epub --kf8-only -o book.azw3  # explicit output path
 kindling-cli build input.epub --no-hd-images           # skip HD image container
 kindling-cli build input.epub --no-embed-source        # smaller file, but breaks Kindle Previewer
 ```
 
 Auto-detects dictionary vs book by checking for `<idx:entry>` tags. Book MOBIs include embedded images, HD image container (for high-DPI Kindle screens), and KF8 dual-format output. The original EPUB is embedded by default for Kindle Previewer compatibility (`--no-embed-source` to skip).
+
+The `--kf8-only` flag outputs KF8-only format with `.azw3` extension instead of the default dual MOBI7+KF8 `.mobi`. KF8-only files are smaller (no redundant MOBI7 section) and handled better by Calibre. Dual format remains the default for maximum compatibility with older Kindle devices.
 
 ### Comics
 
@@ -185,7 +189,7 @@ All offsets are relative to the MOBI magic (`MOBI` at byte 16 of Record 0).
 | 84 | 4 | Output language | Dictionary target language locale code |
 | 88 | 4 | Min version | Minimum reader version required |
 | 92 | 4 | First image record | First image record index |
-| 112 | 4 | Capability marker | Must be `0x4850` for Kindle Previewer compatibility |
+| 112 | 4 | Capability marker | `0x50` for dictionaries (Kindle device recognition), `0x4850` for books (Kindle Previewer compatibility) |
 | 208 | 4 | SRCS index | Record index of embedded EPUB source. `0xFFFFFFFF` = none |
 
 ### EXTH records
@@ -233,6 +237,23 @@ Controls where the content appears on the Kindle home screen.
 | `PDOC` | Documents shelf | Safe default for sideloaded content |
 
 Dictionaries do NOT use EXTH 501. The Kindle identifies dictionaries by the combination of a valid orth index (MOBI header offset 24), EXTH 531/532 language records, and EXTH 547 `InMemory`. Adding an unrecognized EXTH 501 value (e.g. `"DICT"`) can prevent the Kindle from recognizing the file as a dictionary.
+
+## Testing
+
+Tests run automatically on every push and pull request via [GitHub Actions](.github/workflows/test.yml).
+
+```bash
+cd rust && cargo test
+```
+
+The test suite covers:
+
+- **MOBI structure**: PalmDB header, record offsets, MOBI header fields (magic, version, encoding, capability markers), FLIS/FCIS/EOF records
+- **Dictionary output**: Orth index presence and structure, INDX records, headword count, EXTH 531/532/547 language records, compressed vs uncompressed roundtrips
+- **Book output**: KF7+KF8 dual format (BOUNDARY record, KF8 section version), KF8-only output (.azw3), image record JPEG magic, EXTH metadata, SRCS embedding
+- **Comic pipeline**: Device profiles, spread detection and splitting, margin cropping, auto-contrast, webtoon merge/split, Panel View markup, manga RTL ordering, JPEG quality, ComicInfo.xml parsing
+- **Compression**: PalmDOC LZ77 compress/decompress roundtrips for various sizes and encodings
+- **Regression tests**: Dictionary capability marker (0x50 vs 0x4850), JFIF density patching
 
 ## Related projects
 
