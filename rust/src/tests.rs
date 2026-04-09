@@ -3543,4 +3543,404 @@ mod tests {
         assert_eq!(value, "ja", "EXTH 524 should be 'ja', got '{}'", value);
         println!("  \u{2713} Comic language=ja: EXTH 524='{}'", value);
     }
+
+    // =======================================================================
+    // EPUB comic input end-to-end test
+    // =======================================================================
+
+    #[test]
+    fn test_epub_comic_pipeline() {
+        use crate::comic;
+        use std::io::Write;
+
+        let dir = TempDir::new("epub_comic_pipeline");
+
+        // Create 2 small test JPEG images
+        let img1 = {
+            let img = image::RgbImage::from_fn(100, 150, |x, y| {
+                image::Rgb([(x as u8).wrapping_mul(2), (y as u8), 100])
+            });
+            let dyn_img = image::DynamicImage::ImageRgb8(img);
+            let mut buf = Vec::new();
+            let mut cursor = std::io::Cursor::new(&mut buf);
+            dyn_img.write_to(&mut cursor, image::ImageFormat::Jpeg).unwrap();
+            buf
+        };
+        let img2 = {
+            let img = image::RgbImage::from_fn(100, 150, |x, y| {
+                image::Rgb([50, (x as u8).wrapping_add(y as u8), 200])
+            });
+            let dyn_img = image::DynamicImage::ImageRgb8(img);
+            let mut buf = Vec::new();
+            let mut cursor = std::io::Cursor::new(&mut buf);
+            dyn_img.write_to(&mut cursor, image::ImageFormat::Jpeg).unwrap();
+            buf
+        };
+
+        // Build a minimal valid EPUB as a zip archive in memory
+        let epub_bytes = {
+            let buf = Vec::new();
+            let cursor = std::io::Cursor::new(buf);
+            let mut zip = zip::ZipWriter::new(cursor);
+
+            // mimetype must be first entry, stored uncompressed
+            let stored_opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("mimetype", stored_opts).unwrap();
+            zip.write_all(b"application/epub+zip").unwrap();
+
+            let deflate_opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+
+            // META-INF/container.xml
+            zip.start_file("META-INF/container.xml", deflate_opts).unwrap();
+            zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>"#).unwrap();
+
+            // OEBPS/content.opf
+            zip.start_file("OEBPS/content.opf", deflate_opts).unwrap();
+            zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>EPUB Comic Test</dc:title>
+    <dc:language>en</dc:language>
+    <dc:identifier id="uid">test-epub-comic-001</dc:identifier>
+    <dc:creator>Test Author</dc:creator>
+  </metadata>
+  <manifest>
+    <item id="page1" href="page1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="page2" href="page2.xhtml" media-type="application/xhtml+xml"/>
+    <item id="img1" href="images/img1.jpg" media-type="image/jpeg"/>
+    <item id="img2" href="images/img2.jpg" media-type="image/jpeg"/>
+  </manifest>
+  <spine>
+    <itemref idref="page1"/>
+    <itemref idref="page2"/>
+  </spine>
+</package>"#).unwrap();
+
+            // OEBPS/page1.xhtml
+            zip.start_file("OEBPS/page1.xhtml", deflate_opts).unwrap();
+            zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>Page 1</title></head>
+<body><img src="images/img1.jpg"/></body>
+</html>"#).unwrap();
+
+            // OEBPS/page2.xhtml
+            zip.start_file("OEBPS/page2.xhtml", deflate_opts).unwrap();
+            zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>Page 2</title></head>
+<body><img src="images/img2.jpg"/></body>
+</html>"#).unwrap();
+
+            // OEBPS/images/img1.jpg and img2.jpg
+            zip.start_file("OEBPS/images/img1.jpg", stored_opts).unwrap();
+            zip.write_all(&img1).unwrap();
+
+            zip.start_file("OEBPS/images/img2.jpg", stored_opts).unwrap();
+            zip.write_all(&img2).unwrap();
+
+            let cursor = zip.finish().unwrap();
+            cursor.into_inner()
+        };
+
+        // Write the EPUB to disk
+        let epub_path = dir.path().join("test_comic.epub");
+        fs::write(&epub_path, &epub_bytes).unwrap();
+
+        // Run the comic pipeline with the EPUB as input
+        let output_path = dir.path().join("comic_from_epub.mobi");
+        let profile = comic::get_profile("paperwhite").unwrap();
+        comic::build_comic(&epub_path, &output_path, &profile)
+            .expect("build_comic from EPUB should succeed");
+
+        // Verify output exists and has reasonable size
+        let data = fs::read(&output_path).expect("could not read output MOBI");
+        assert!(data.len() > 100, "Comic MOBI too small: {} bytes", data.len());
+
+        // PalmDB type/creator check
+        assert_eq!(&data[60..64], b"BOOK", "PalmDB type should be BOOK");
+        assert_eq!(&data[64..68], b"MOBI", "PalmDB creator should be MOBI");
+
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // MOBI magic in record 0
+        assert_eq!(&rec0[16..20], b"MOBI", "Record 0 should contain MOBI magic");
+
+        // Check for EXTH 122 = "true" (fixed-layout flag, expected for comics)
+        let exth = parse_exth_records(rec0);
+        let exth122 = exth.get(&122).expect("Comic EXTH should contain record 122 (fixed-layout)");
+        let value = std::str::from_utf8(&exth122[0]).unwrap();
+        assert_eq!(value, "true", "EXTH 122 should be 'true' for fixed-layout");
+
+        // Verify image records: first_image_record at MOBI header offset 92 (rec0 offset 108)
+        let first_img = read_u32_be(rec0, 108) as usize;
+        assert_ne!(
+            first_img,
+            0xFFFFFFFF_u32 as usize,
+            "Comic with images should have first_image set"
+        );
+
+        // Count image records (JPEG magic FF D8) starting from first_image_record
+        let mut image_count = 0;
+        for i in first_img..offsets.len() {
+            let rec = get_record(&data, &offsets, i);
+            if rec.len() >= 2 && rec[0] == 0xFF && rec[1] == 0xD8 {
+                image_count += 1;
+            }
+        }
+        // The pipeline processes 2 input images; each becomes at least one JPEG record.
+        // With panel view enabled (default), there may be additional panel crop images.
+        assert!(
+            image_count >= 2,
+            "Expected at least 2 image records from 2 EPUB pages, found {}",
+            image_count
+        );
+
+        println!(
+            "  \u{2713} EPUB comic pipeline: {} bytes, {} image records, EXTH 122=true",
+            data.len(),
+            image_count
+        );
+    }
+
+    #[test]
+    fn test_rotate_spreads() {
+        use crate::comic;
+        use image::GenericImageView;
+        // Create a landscape image (wider than tall) simulating a double-page spread.
+        // With rotate_spreads=true, it should be rotated 90 degrees clockwise
+        // instead of being split, producing a single portrait output.
+        let dir = TempDir::new("rotate_spreads");
+        let images_dir = dir.path().join("images");
+        fs::create_dir_all(&images_dir).unwrap();
+
+        // 300x150 landscape image
+        let img = image::DynamicImage::ImageRgb8(
+            image::RgbImage::from_fn(300, 150, |x, _| {
+                if x < 150 { image::Rgb([80, 80, 80]) } else { image::Rgb([180, 180, 180]) }
+            }),
+        );
+        img.save(images_dir.join("spread_001.jpg")).unwrap();
+
+        let output_path = dir.path().join("rotate_spreads.mobi");
+        let profile = comic::get_profile("paperwhite").unwrap();
+        let options = comic::ComicOptions {
+            rtl: false,
+            split: true, // split is true, but rotate_spreads overrides it for spreads
+            crop: false,
+            enhance: false,
+            webtoon: false,
+            panel_view: false,
+            jpeg_quality: 85,
+            max_height: 65536,
+            embed_source: false,
+            rotate_spreads: true,
+            ..Default::default()
+        };
+        comic::build_comic_with_options(&images_dir, &output_path, &profile, &options)
+            .expect("build_comic with rotate_spreads should succeed");
+
+        let data = fs::read(&output_path).expect("could not read rotate_spreads MOBI");
+        assert!(data.len() > 100, "Rotated spread comic MOBI too small");
+        assert_eq!(&data[60..64], b"BOOK", "Output should be a valid MOBI");
+
+        // Parse the PalmDB to count records. With rotation (not splitting), we should
+        // have fewer image records than splitting would produce: 1 page instead of 2.
+        let (_, record_count, _) = parse_palmdb(&data);
+
+        // Also build with split (no rotation) for comparison
+        let output_split = dir.path().join("split_spreads.mobi");
+        let split_options = comic::ComicOptions {
+            rtl: false,
+            split: true,
+            crop: false,
+            enhance: false,
+            webtoon: false,
+            panel_view: false,
+            jpeg_quality: 85,
+            max_height: 65536,
+            embed_source: false,
+            rotate_spreads: false,
+            ..Default::default()
+        };
+        comic::build_comic_with_options(&images_dir, &output_split, &profile, &split_options)
+            .expect("build_comic with split should succeed");
+
+        let split_data = fs::read(&output_split).unwrap();
+        let (_, split_record_count, _) = parse_palmdb(&split_data);
+
+        // Split produces 2 pages, rotate produces 1 page, so split should have more records
+        assert!(
+            split_record_count > record_count,
+            "Split version should have more records ({}) than rotated version ({})",
+            split_record_count, record_count,
+        );
+
+        // Verify the rotated image is portrait (height > width) by decoding the first
+        // image record from the MOBI
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let first_img_idx = read_u32_be(rec0, 108) as usize;
+        let img_rec = get_record(&data, &offsets, first_img_idx);
+        // Decode the JPEG to check dimensions
+        let decoded = image::load_from_memory(img_rec)
+            .expect("failed to decode rotated image from MOBI");
+        let (w, h) = decoded.dimensions();
+        assert!(
+            h > w,
+            "Rotated spread should be portrait (height > width), got {}x{}", w, h,
+        );
+        println!("  \u{2713} Rotated spread: {}x{} portrait, {} records (vs {} split records)",
+                 w, h, record_count, split_record_count);
+    }
+
+    // =======================================================================
+    // 21. Panel reading order
+    // =======================================================================
+
+    #[test]
+    fn test_panel_reading_order_sorting() {
+        use crate::comic;
+
+        // Create a 2x2 grid of panels with known positions:
+        //   Panel A (0,0)    Panel B (52,0)
+        //   Panel C (0,52)   Panel D (52,52)
+        let panels = vec![
+            comic::PanelRect { x: 0.0, y: 0.0, w: 47.0, h: 47.0 },   // A: top-left
+            comic::PanelRect { x: 52.0, y: 0.0, w: 47.0, h: 47.0 },  // B: top-right
+            comic::PanelRect { x: 0.0, y: 52.0, w: 47.0, h: 47.0 },  // C: bottom-left
+            comic::PanelRect { x: 52.0, y: 52.0, w: 47.0, h: 47.0 }, // D: bottom-right
+        ];
+
+        // horizontal-lr: A, B, C, D (left-to-right, top-to-bottom)
+        let mut lr = panels.clone();
+        comic::sort_panels_by_reading_order(&mut lr, "horizontal-lr");
+        assert_eq!(lr[0].x, 0.0);  assert_eq!(lr[0].y, 0.0);   // A
+        assert_eq!(lr[1].x, 52.0); assert_eq!(lr[1].y, 0.0);   // B
+        assert_eq!(lr[2].x, 0.0);  assert_eq!(lr[2].y, 52.0);  // C
+        assert_eq!(lr[3].x, 52.0); assert_eq!(lr[3].y, 52.0);  // D
+        println!("  \u{2713} horizontal-lr: A, B, C, D");
+
+        // horizontal-rl: B, A, D, C (right-to-left, top-to-bottom)
+        let mut rl = panels.clone();
+        comic::sort_panels_by_reading_order(&mut rl, "horizontal-rl");
+        assert_eq!(rl[0].x, 52.0); assert_eq!(rl[0].y, 0.0);   // B
+        assert_eq!(rl[1].x, 0.0);  assert_eq!(rl[1].y, 0.0);   // A
+        assert_eq!(rl[2].x, 52.0); assert_eq!(rl[2].y, 52.0);  // D
+        assert_eq!(rl[3].x, 0.0);  assert_eq!(rl[3].y, 52.0);  // C
+        println!("  \u{2713} horizontal-rl: B, A, D, C");
+
+        // vertical-lr: A, C, B, D (top-to-bottom, left-to-right)
+        let mut vlr = panels.clone();
+        comic::sort_panels_by_reading_order(&mut vlr, "vertical-lr");
+        assert_eq!(vlr[0].x, 0.0);  assert_eq!(vlr[0].y, 0.0);   // A
+        assert_eq!(vlr[1].x, 0.0);  assert_eq!(vlr[1].y, 52.0);  // C
+        assert_eq!(vlr[2].x, 52.0); assert_eq!(vlr[2].y, 0.0);   // B
+        assert_eq!(vlr[3].x, 52.0); assert_eq!(vlr[3].y, 52.0);  // D
+        println!("  \u{2713} vertical-lr: A, C, B, D");
+
+        // vertical-rl: B, D, A, C (top-to-bottom, right-to-left)
+        let mut vrl = panels.clone();
+        comic::sort_panels_by_reading_order(&mut vrl, "vertical-rl");
+        assert_eq!(vrl[0].x, 52.0); assert_eq!(vrl[0].y, 0.0);   // B
+        assert_eq!(vrl[1].x, 52.0); assert_eq!(vrl[1].y, 52.0);  // D
+        assert_eq!(vrl[2].x, 0.0);  assert_eq!(vrl[2].y, 0.0);   // A
+        assert_eq!(vrl[3].x, 0.0);  assert_eq!(vrl[3].y, 52.0);  // C
+        println!("  \u{2713} vertical-rl: B, D, A, C");
+
+        // Auto-detect: RTL should default to horizontal-rl
+        let order_rtl = comic::resolve_panel_reading_order(None, true);
+        assert_eq!(order_rtl, "horizontal-rl");
+        println!("  \u{2713} auto-detect RTL: {}", order_rtl);
+
+        // Auto-detect: LTR should default to horizontal-lr
+        let order_ltr = comic::resolve_panel_reading_order(None, false);
+        assert_eq!(order_ltr, "horizontal-lr");
+        println!("  \u{2713} auto-detect LTR: {}", order_ltr);
+
+        // Explicit override should take precedence over RTL
+        let order_override = comic::resolve_panel_reading_order(Some("vertical-lr"), true);
+        assert_eq!(order_override, "vertical-lr");
+        println!("  \u{2713} explicit override vertical-lr with RTL: {}", order_override);
+
+        // Verify panels are different with different reading orders
+        let mut order1 = panels.clone();
+        let mut order2 = panels.clone();
+        comic::sort_panels_by_reading_order(&mut order1, "horizontal-lr");
+        comic::sort_panels_by_reading_order(&mut order2, "horizontal-rl");
+        assert_ne!(order1, order2, "horizontal-lr and horizontal-rl should produce different orderings");
+        println!("  \u{2713} different reading orders produce different panel sequences");
+    }
+
+    #[test]
+    fn test_cover_fill_crops_to_aspect_ratio() {
+        use crate::comic;
+
+        // Create a square image (1:1 aspect ratio). The Paperwhite has a ~0.74:1
+        // aspect ratio (1072x1448), so this should get cropped vertically.
+        let dir = TempDir::new("cover_fill");
+        let images_dir = dir.path().join("images");
+        fs::create_dir_all(&images_dir).unwrap();
+
+        let img = image::DynamicImage::ImageRgb8(
+            image::RgbImage::from_fn(400, 400, |x, y| {
+                image::Rgb([(x % 256) as u8, (y % 256) as u8, 128])
+            }),
+        );
+        img.save(images_dir.join("page_001.jpg")).unwrap();
+
+        let output_path = dir.path().join("cover_fill.mobi");
+        let profile = comic::get_profile("paperwhite").unwrap();
+        let options = comic::ComicOptions {
+            cover_fill: true,
+            crop: false,
+            enhance: false,
+            split: false,
+            panel_view: false,
+            jpeg_quality: 95,
+            embed_source: false,
+            ..Default::default()
+        };
+        comic::build_comic_with_options(&images_dir, &output_path, &profile, &options)
+            .expect("build_comic with cover_fill failed");
+
+        let data = fs::read(&output_path).expect("could not read cover_fill MOBI");
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // Find the first image record
+        let first_img_idx = read_u32_be(rec0, 108) as usize;
+        let cover_rec = get_record(&data, &offsets, first_img_idx);
+        assert!(cover_rec.len() > 2 && cover_rec[0] == 0xFF && cover_rec[1] == 0xD8,
+            "Cover record should be a JPEG");
+
+        // Decode the cover and verify it matches the device aspect ratio
+        let cover_img = image::load_from_memory(cover_rec)
+            .expect("Failed to decode cover JPEG");
+        let (w, h) = (cover_img.width(), cover_img.height());
+
+        // The cover should have been resized to the device dimensions exactly.
+        // With cover_fill, the image is center-cropped to the device aspect ratio
+        // first, so resize produces exact device dimensions (no letterboxing).
+        assert_eq!(w, profile.width, "Cover width should match device width");
+        assert_eq!(h, profile.height, "Cover height should match device height");
+
+        // Verify the aspect ratio matches the device (within rounding tolerance)
+        let device_ratio = profile.width as f64 / profile.height as f64;
+        let cover_ratio = w as f64 / h as f64;
+        assert!((device_ratio - cover_ratio).abs() < 0.01,
+            "Cover aspect ratio ({:.4}) should match device ({:.4})",
+            cover_ratio, device_ratio);
+
+        println!("  \u{2713} cover_fill: cover is {}x{} (matches device {}x{})",
+            w, h, profile.width, profile.height);
+    }
 }

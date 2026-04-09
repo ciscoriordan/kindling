@@ -88,7 +88,7 @@ Converts image folders, CBZ files, and EPUB files to Kindle-optimized MOBI with:
 - **Moire correction**: Rainbow artifact removal for color e-ink screens (Colorsoft), applied automatically to grayscale source images
 - **Manga mode**: `--rtl` reverses page order and split direction
 - **Webtoon mode**: `--webtoon` merges vertical strips and splits at panel gutters with overlap fallback to prevent content loss
-- **Panel View**: Tap-to-zoom panel detection for Kindle (disable: `--no-panel-view`)
+- **Panel View**: Tap-to-zoom panel detection for Kindle (disable: `--no-panel-view`). Reading order configurable via `--panel-reading-order` (`horizontal-lr`, `horizontal-rl`, `vertical-lr`, `vertical-rl`); defaults to `horizontal-rl` with `--rtl`
 - **EPUB support**: Fixed-layout EPUB comics extracted in spine order (correct page sequence)
 - **ComicInfo.xml**: Auto-reads metadata and manga direction from CBZ files
 - **Metadata overrides**: `--title`, `--author`, `--language`, `--cover` (page number or file path)

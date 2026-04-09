@@ -102,6 +102,19 @@ pub struct ComicOptions {
     pub language: Option<String>,
     /// Override cover image selection.
     pub cover: Option<CoverSource>,
+    /// Rotate double-page spreads 90 degrees clockwise instead of splitting them.
+    /// Useful for tablet users who want a full-page spread view.
+    pub rotate_spreads: bool,
+    /// Panel reading order for Panel View. Controls the order panels are
+    /// navigated when tapping on Kindle.
+    /// - "horizontal-lr": left-to-right, top-to-bottom (Western comics)
+    /// - "horizontal-rl": right-to-left, top-to-bottom (manga)
+    /// - "vertical-lr": top-to-bottom, left-to-right (4-koma, vertical strips)
+    /// - "vertical-rl": top-to-bottom, right-to-left (4-koma RTL)
+    /// None means auto-detect: horizontal-rl if RTL, horizontal-lr otherwise.
+    pub panel_reading_order: Option<String>,
+    /// Center-crop the cover image to fill the device screen (no borders).
+    pub cover_fill: bool,
 }
 
 impl Default for ComicOptions {
@@ -121,6 +134,9 @@ impl Default for ComicOptions {
             author_override: None,
             language: None,
             cover: None,
+            rotate_spreads: false,
+            panel_reading_order: None,
+            cover_fill: false,
         }
     }
 }
@@ -224,6 +240,14 @@ pub fn build_comic_with_options(
         profile.name, profile.width, profile.height,
         if profile.grayscale { "grayscale" } else { "color" });
 
+    // Determine which source image index is the cover page (for cover_fill).
+    // For external file covers, cover_fill is applied separately below.
+    let cover_source_idx = match &options.cover {
+        Some(CoverSource::PageNumber(n)) => Some(n.saturating_sub(1)),
+        Some(CoverSource::FilePath(_)) => None, // handled separately
+        None => Some(0),
+    };
+
     let total = source_images.len();
     let processed_groups: Vec<Option<(usize, Vec<Vec<u8>>)>> = source_images
         .par_iter()
@@ -232,7 +256,8 @@ pub fn build_comic_with_options(
             if idx % 10 == 0 || idx == total - 1 {
                 eprintln!("Processing image {}/{}...", idx + 1, total);
             }
-            match process_image_pipeline(img_path, profile, options) {
+            let is_cover = options.cover_fill && cover_source_idx == Some(idx);
+            match process_image_pipeline(img_path, profile, options, is_cover) {
                 Ok(jpeg_pages) => Some((idx, jpeg_pages)),
                 Err(e) => {
                     eprintln!("Warning: skipping {} ({})", img_path.display(), e);
@@ -293,6 +318,19 @@ pub fn build_comic_with_options(
             processed[i].panels = panels;
         }
         eprintln!("Panel View: detected panels on {}/{} pages", panel_count, processed.len());
+
+        // Sort panels according to reading order
+        let reading_order = resolve_panel_reading_order(
+            options.panel_reading_order.as_deref(), options.rtl,
+        );
+        if reading_order != "horizontal-lr" {
+            eprintln!("Panel View: sorting panels in {} order", reading_order);
+        }
+        for page in processed.iter_mut() {
+            if let Some(ref mut panels) = page.panels {
+                sort_panels_by_reading_order(panels, reading_order);
+            }
+        }
     }
 
     // Step 4: Write OPF + XHTML + images to temp directory
@@ -693,6 +731,7 @@ fn process_image_pipeline(
     path: &Path,
     profile: &DeviceProfile,
     options: &ComicOptions,
+    cover_fill: bool,
 ) -> Result<Vec<Vec<u8>>, Box<dyn std::error::Error>> {
     let mut img = image::open(path)?;
 
@@ -726,7 +765,13 @@ fn process_image_pipeline(
     // yields [right, left], which is the correct RTL reading order for a spread.
     // Swapping here AND reversing globally would cancel out, producing the wrong
     // cover image (left half instead of right half for RTL).
-    let pages = if options.split && is_double_page_spread(&img) {
+    //
+    // When rotate_spreads is enabled, landscape spreads are rotated 90 degrees
+    // clockwise instead of being split, producing a single portrait page that
+    // preserves the full spread. This overrides the split behavior for spreads.
+    let pages = if options.rotate_spreads && is_double_page_spread(&img) {
+        vec![img.rotate90()]
+    } else if options.split && is_double_page_spread(&img) {
         let (left, right) = split_spread(&img);
         vec![left, right]
     } else {
@@ -735,9 +780,16 @@ fn process_image_pipeline(
 
     // Step 3-4: Process each page (enhance, resize, encode)
     let mut results = Vec::new();
-    for page in pages {
+    for (page_idx, page) in pages.into_iter().enumerate() {
         let page = if options.enhance && profile.grayscale {
             enhance_image(&page)
+        } else {
+            page
+        };
+
+        // Cover fill: center-crop to device aspect ratio (first page only)
+        let page = if cover_fill && page_idx == 0 {
+            cover_fill_crop(&page, profile.width, profile.height)
         } else {
             page
         };
@@ -758,6 +810,37 @@ fn process_image_pipeline(
     }
 
     Ok(results)
+}
+
+/// Center-crop an image to match the target aspect ratio.
+///
+/// If the image is wider than the target ratio, trims left and right equally.
+/// If the image is taller than the target ratio, trims top and bottom equally.
+/// Returns the original image unchanged if it already matches the target ratio.
+fn cover_fill_crop(img: &DynamicImage, target_width: u32, target_height: u32) -> DynamicImage {
+    let (w, h) = img.dimensions();
+    let target_ratio = target_width as f64 / target_height as f64;
+    let img_ratio = w as f64 / h as f64;
+
+    if (img_ratio - target_ratio).abs() < 0.001 {
+        // Already matches the target aspect ratio
+        return img.clone();
+    }
+
+    let (crop_w, crop_h) = if img_ratio > target_ratio {
+        // Image is wider than target: crop horizontally (keep full height)
+        let new_w = (h as f64 * target_ratio).round() as u32;
+        (new_w.min(w), h)
+    } else {
+        // Image is taller than target: crop vertically (keep full width)
+        let new_h = (w as f64 / target_ratio).round() as u32;
+        (w, new_h.min(h))
+    };
+
+    let x = (w - crop_w) / 2;
+    let y = (h - crop_h) / 2;
+
+    image::imageops::crop_imm(img, x, y, crop_w, crop_h).to_image().into()
 }
 
 /// Encode a DynamicImage as JPEG with a specific quality level (1-100).
@@ -1470,6 +1553,84 @@ pub fn detect_panels(img: &DynamicImage) -> Vec<PanelRect> {
     panels
 }
 
+/// Resolve the effective panel reading order string.
+///
+/// If an explicit reading order is provided, returns it. Otherwise returns
+/// "horizontal-rl" when RTL mode is active, or "horizontal-lr" as the default.
+pub fn resolve_panel_reading_order(explicit: Option<&str>, rtl: bool) -> &'static str {
+    match explicit {
+        Some("horizontal-lr") => "horizontal-lr",
+        Some("horizontal-rl") => "horizontal-rl",
+        Some("vertical-lr") => "vertical-lr",
+        Some("vertical-rl") => "vertical-rl",
+        Some(other) => {
+            eprintln!("Warning: unknown panel-reading-order '{}', using default", other);
+            if rtl { "horizontal-rl" } else { "horizontal-lr" }
+        }
+        None => {
+            if rtl { "horizontal-rl" } else { "horizontal-lr" }
+        }
+    }
+}
+
+/// Sort panels according to the specified reading order.
+///
+/// The panels produced by `detect_panels` are in row-major left-to-right order
+/// (horizontal-lr). This function re-sorts them for other reading orders:
+/// - "horizontal-lr": left-to-right, then top-to-bottom (no change needed)
+/// - "horizontal-rl": right-to-left, then top-to-bottom
+/// - "vertical-lr": top-to-bottom, then left-to-right
+/// - "vertical-rl": top-to-bottom, then right-to-left
+///
+/// Panels are grouped into rows/columns using a tolerance of 5% to account
+/// for slight misalignment in detected panel edges.
+pub fn sort_panels_by_reading_order(panels: &mut Vec<PanelRect>, reading_order: &str) {
+    if panels.len() <= 1 {
+        return;
+    }
+
+    let tolerance = 5.0; // percentage tolerance for grouping panels into rows/columns
+
+    match reading_order {
+        "horizontal-lr" => {
+            // Primary: top-to-bottom (by y), Secondary: left-to-right (by x)
+            // This is the default order from detect_panels, but sort explicitly
+            panels.sort_by(|a, b| {
+                let row_a = (a.y / tolerance).floor() as i64;
+                let row_b = (b.y / tolerance).floor() as i64;
+                row_a.cmp(&row_b).then_with(|| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal))
+            });
+        }
+        "horizontal-rl" => {
+            // Primary: top-to-bottom (by y), Secondary: right-to-left (by x, descending)
+            panels.sort_by(|a, b| {
+                let row_a = (a.y / tolerance).floor() as i64;
+                let row_b = (b.y / tolerance).floor() as i64;
+                row_a.cmp(&row_b).then_with(|| b.x.partial_cmp(&a.x).unwrap_or(std::cmp::Ordering::Equal))
+            });
+        }
+        "vertical-lr" => {
+            // Primary: left-to-right (by x), Secondary: top-to-bottom (by y)
+            panels.sort_by(|a, b| {
+                let col_a = (a.x / tolerance).floor() as i64;
+                let col_b = (b.x / tolerance).floor() as i64;
+                col_a.cmp(&col_b).then_with(|| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal))
+            });
+        }
+        "vertical-rl" => {
+            // Primary: right-to-left (by x, descending), Secondary: top-to-bottom (by y)
+            panels.sort_by(|a, b| {
+                let col_a = (a.x / tolerance).floor() as i64;
+                let col_b = (b.x / tolerance).floor() as i64;
+                col_b.cmp(&col_a).then_with(|| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal))
+            });
+        }
+        _ => {
+            // Unknown reading order - leave as-is (horizontal-lr default)
+        }
+    }
+}
+
 /// Find horizontal gutters - consecutive runs of low-variance rows.
 ///
 /// Returns a list of (start_y, end_y) pairs for each gutter.
@@ -1814,6 +1975,11 @@ fn write_fixed_layout_epub_v2(
         let cover_img = image::load_from_memory(&cover_data).map_err(|e| {
             format!("Could not decode cover image {}: {}", path.display(), e)
         })?;
+        let cover_img = if options.cover_fill {
+            cover_fill_crop(&cover_img, profile.width, profile.height)
+        } else {
+            cover_img
+        };
         let cover_resized = cover_img.resize(profile.width, profile.height, FilterType::Lanczos3);
         let cover_jpeg = encode_jpeg(&cover_resized, options.jpeg_quality)?;
         fs::write(images_dir.join(cover_filename), &cover_jpeg)?;

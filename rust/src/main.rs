@@ -98,6 +98,11 @@ enum Commands {
         #[arg(long)]
         no_split: bool,
 
+        /// Rotate double-page spreads 90 degrees clockwise instead of splitting.
+        /// Gives a full-page spread view, useful for tablet users.
+        #[arg(long)]
+        rotate_spreads: bool,
+
         /// Disable automatic border/margin cropping
         #[arg(long)]
         no_crop: bool,
@@ -113,6 +118,15 @@ enum Commands {
         /// Disable Kindle Panel View (tap-to-zoom panels). Panel View is ON by default.
         #[arg(long)]
         no_panel_view: bool,
+
+        /// Panel View reading order: controls which panel is shown first when
+        /// tapping to zoom. Options: horizontal-lr (left-to-right, default for
+        /// Western comics), horizontal-rl (right-to-left, default for manga
+        /// when --rtl is set), vertical-lr (top-to-bottom then left-to-right,
+        /// for 4-koma), vertical-rl (top-to-bottom then right-to-left).
+        /// If omitted, auto-detected from --rtl flag.
+        #[arg(long)]
+        panel_reading_order: Option<String>,
 
         /// JPEG encoding quality (1-100). Lower values produce smaller files.
         /// Some Kindle devices may show blank pages with very high quality JPEGs,
@@ -152,6 +166,11 @@ enum Commands {
         /// When provided, use that image as the cover instead of the first page.
         #[arg(long)]
         cover: Option<String>,
+
+        /// Center-crop the cover image to fill the device screen exactly.
+        /// Removes letterbox borders by cropping to the device's aspect ratio.
+        #[arg(long)]
+        cover_fill: bool,
     },
 }
 
@@ -336,6 +355,7 @@ fn main() {
                 device,
                 rtl,
                 no_split,
+                rotate_spreads,
                 no_crop,
                 no_enhance,
                 webtoon,
@@ -348,6 +368,8 @@ fn main() {
                 author,
                 language,
                 cover,
+                cover_fill,
+                panel_reading_order,
             } => {
                 let profile = match comic::get_profile(&device) {
                     Some(p) => p,
@@ -408,6 +430,9 @@ fn main() {
                     author_override: author,
                     language,
                     cover: cover_source,
+                    rotate_spreads,
+                    panel_reading_order,
+                    cover_fill,
                 };
 
                 match comic::build_comic_with_options(&input, &output_path, &profile, &options) {
