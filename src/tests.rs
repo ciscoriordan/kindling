@@ -2171,6 +2171,63 @@ mod tests {
         println!("  \u{2713} Special chars stripped: '{}'", name);
     }
 
+    #[test]
+    fn test_palmdb_name_filesystem_unsafe_chars_stripped() {
+        // Filesystem-unsafe characters (`:`, `/`, `\`, `*`, `?`, `"`, `<`, `>`,
+        // `|`) must be stripped from the PalmDB name. Kindle's FSCK indexer
+        // treats the PalmDB name as a filename candidate and will refuse to
+        // index files containing these characters.
+        let dir = TempDir::new("palmdb_fs_unsafe");
+
+        let html = r#"<html><head><guide></guide></head><body>
+<idx:entry><idx:orth value="z">z</idx:orth><b>z</b> test<hr/></idx:entry>
+</body></html>"#;
+        fs::write(dir.path().join("content.html"), html).unwrap();
+
+        // Mimic the Vader Down comic: title with colons.
+        let opf = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf">
+  <metadata>
+    <dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">Star Wars: Darth Vader: Vader Down</dc:title>
+    <dc:language xmlns:dc="http://purl.org/dc/elements/1.1/">en</dc:language>
+    <x-metadata>
+      <DictionaryInLanguage>en</DictionaryInLanguage>
+      <DictionaryOutLanguage>en</DictionaryOutLanguage>
+    </x-metadata>
+  </metadata>
+  <manifest>
+    <item id="content" href="content.html" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="content"/>
+  </spine>
+</package>"#;
+        let opf_path = dir.path().join("content.opf");
+        fs::write(&opf_path, opf).unwrap();
+
+        let data = build_mobi_bytes(&opf_path, dir.path(), true, false, None);
+        let (name_bytes, _, _) = parse_palmdb(&data);
+
+        let name_len = name_bytes.iter().position(|&b| b == 0).unwrap_or(32);
+        let name = std::str::from_utf8(&name_bytes[..name_len]).unwrap();
+
+        for bad in [':', '/', '\\', '*', '?', '"', '<', '>', '|'] {
+            assert!(
+                !name.contains(bad),
+                "PalmDB name should not contain {:?}: '{}'",
+                bad,
+                name
+            );
+        }
+        // Also: no double underscores from collapsing ": "
+        assert!(
+            !name.contains("__"),
+            "PalmDB name should not contain '__' (whitespace collapse broken): '{}'",
+            name
+        );
+        println!("  \u{2713} Filesystem-unsafe chars stripped: '{}'", name);
+    }
+
     // =======================================================================
     // 10. JFIF header patching
     // =======================================================================

@@ -2390,16 +2390,30 @@ fn build_palmdb(title: &str, records: &[Vec<u8>]) -> Vec<u8> {
     // Derive PalmDB name from title. The PalmDB name field is 32 bytes, and
     // we reserve 1 byte for a null terminator, leaving 31 bytes for the name.
     //
-    // If the name fits in 31 bytes we use it verbatim. Otherwise we truncate
-    // the prefix to 28 bytes (at a UTF-8 character boundary) and append "..."
-    // for a total of 31 bytes. This preserves the recognisable start of the
-    // title for both ASCII and non-ASCII content, and never splits a
-    // multi-byte codepoint.
+    // Filesystem-unsafe characters (`:`, `/`, `\`, `*`, `?`, `"`, `<`, `>`,
+    // `|`) are stripped because Kindle's FSCK indexer treats the PalmDB name
+    // as a filename candidate and will either rename or refuse to index files
+    // with these characters in their PalmDB name. Brackets and parentheses
+    // are stripped because they were historically problematic. Control
+    // characters and whitespace become underscores.
+    //
+    // If the cleaned name fits in 31 bytes we use it verbatim. Otherwise we
+    // truncate the prefix to 28 bytes (at a UTF-8 character boundary) and
+    // append "..." for a total of 31 bytes.
+    let strip_chars: &[char] = &[
+        '(', ')', '[', ']',
+        ':', '/', '\\', '*', '?', '"', '<', '>', '|',
+    ];
     let mut palmdb_name = title.to_string();
-    for ch in &['(', ')', '[', ']'] {
+    for ch in strip_chars {
         palmdb_name = palmdb_name.replace(*ch, "");
     }
-    palmdb_name = palmdb_name.replace(' ', "_");
+    // Collapse whitespace runs to a single underscore. This avoids things
+    // like "Star_Wars__Vader" (double underscore from ": ").
+    palmdb_name = palmdb_name
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("_");
     if palmdb_name.len() > 31 {
         // Truncate to the largest char boundary <= 28 bytes, then append "...".
         let mut cutoff = 28.min(palmdb_name.len());
