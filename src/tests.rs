@@ -7547,4 +7547,538 @@ mod tests {
             report.findings
         );
     }
+
+    // =======================================================================
+    // HTML/XHTML validation
+    //
+    // These tests guard against HTML well-formedness regressions in MOBI text
+    // blobs. Binary structure is already covered elsewhere, but bugs like
+    // `<hr/>` corruption, unclosed `<mbp:frameset>`/`<body>`/`<html>`,
+    // malformed attributes, and entry reordering leaving dangling tags only
+    // show up when the HTML itself is parsed.
+    // =======================================================================
+
+    /// Void element names that are allowed to appear without a matching close
+    /// tag when walking MOBI HTML. Includes both standard HTML voids (used in
+    /// book/comic output as `<br/>`, `<img/>` etc.) and MOBI-specific empties.
+    const VOID_ELEMENTS: &[&str] = &[
+        "area", "base", "br", "col", "embed", "hr", "img", "input", "link",
+        "meta", "param", "source", "track", "wbr",
+        // MOBI-specific empties
+        "mbp:pagebreak",
+        // XHTML processing tags occasionally seen empty in kindling output
+        "guide",
+    ];
+
+    /// Extract the text blob from a MOBI, automatically decompressing PalmDOC
+    /// if the record 0 compression type indicates compression.
+    ///
+    /// The existing `extract_text_blob` helper strips trailing bytes but does
+    /// NOT decompress, so it only works on `no_compress=true` builds. Comic
+    /// output is always compressed, so HTML validation needs this variant.
+    fn extract_text_blob_auto(data: &[u8]) -> Vec<u8> {
+        let (_, _, offsets) = parse_palmdb(data);
+        let rec0 = get_record(data, &offsets, 0);
+        // PalmDOC header: offset 0 = compression type (u16). 1=none, 2=palmdoc.
+        let comp_type = read_u16_be(rec0, 0);
+        let text_record_count = read_u16_be(rec0, 8) as usize;
+        let mut text_bytes = Vec::new();
+        for i in 1..=text_record_count {
+            if i >= offsets.len() {
+                break;
+            }
+            let rec = get_record(data, &offsets, i);
+            let body = strip_trailing_bytes(rec);
+            if comp_type == 2 {
+                let chunk = palmdoc_decompress(body);
+                text_bytes.extend_from_slice(&chunk);
+            } else {
+                text_bytes.extend_from_slice(body);
+            }
+        }
+        text_bytes
+    }
+
+    /// Parse the given HTML/XHTML string with `quick_xml::Reader` in relaxed
+    /// mode (no end-name checking, unmatched ends allowed). Returns `Ok(())`
+    /// iff the parser reaches EOF without a hard syntax error.
+    ///
+    /// Kindling output mixes HTML-ish void tags (`<br/>`, `<img/>`) with
+    /// MOBI-specific markup (`<mbp:pagebreak/>`, `<mbp:frameset>`). Strict XML
+    /// parsing would reject namespace prefixes without xmlns declarations,
+    /// so we disable end-name matching and allow unmatched ends. The goal
+    /// here is to catch token-level corruption (unclosed attributes, missing
+    /// `>`, stray null bytes), not to validate schema compliance.
+    fn try_parse_mobi_html(content: &str) -> Result<(), String> {
+        use quick_xml::events::Event;
+        use quick_xml::Reader;
+
+        let mut reader = Reader::from_str(content);
+        {
+            let cfg = reader.config_mut();
+            cfg.check_end_names = false;
+            cfg.allow_unmatched_ends = true;
+            cfg.check_comments = false;
+            cfg.trim_text_start = false;
+            cfg.trim_text_end = false;
+        }
+        let mut buf = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Eof) => return Ok(()),
+                Err(e) => {
+                    return Err(format!(
+                        "XML parse error at byte {}: {}",
+                        reader.buffer_position(),
+                        e
+                    ));
+                }
+                Ok(_) => {}
+            }
+            buf.clear();
+        }
+    }
+
+    /// Walk the event stream of the given HTML and assert that every Start
+    /// tag has a matching End, ignoring void elements listed in
+    /// `VOID_ELEMENTS`. Uses `check_end_names = false` so mismatched
+    /// namespaces don't blow up the walker, but we enforce our own stack
+    /// discipline. Returns `Err` with a descriptive message on mismatch.
+    fn check_balanced_tags(content: &str) -> Result<(), String> {
+        use quick_xml::events::Event;
+        use quick_xml::Reader;
+
+        let mut reader = Reader::from_str(content);
+        {
+            let cfg = reader.config_mut();
+            cfg.check_end_names = false;
+            cfg.allow_unmatched_ends = true;
+            cfg.check_comments = false;
+            cfg.trim_text_start = false;
+            cfg.trim_text_end = false;
+        }
+
+        let mut stack: Vec<String> = Vec::new();
+        let mut buf = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Eof) => break,
+                Ok(Event::Start(e)) => {
+                    let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                    // Start-tag for a void element (e.g. `<br>` without `/`)
+                    // is treated as empty. Kindling shouldn't emit these,
+                    // but be lenient.
+                    if VOID_ELEMENTS.iter().any(|v| v.eq_ignore_ascii_case(&name)) {
+                        // ignore
+                    } else {
+                        stack.push(name);
+                    }
+                }
+                Ok(Event::End(e)) => {
+                    let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                    if VOID_ELEMENTS.iter().any(|v| v.eq_ignore_ascii_case(&name)) {
+                        continue;
+                    }
+                    match stack.pop() {
+                        Some(open) => {
+                            if !open.eq_ignore_ascii_case(&name) {
+                                return Err(format!(
+                                    "mismatched close </{}>, expected </{}>",
+                                    name, open
+                                ));
+                            }
+                        }
+                        None => {
+                            return Err(format!(
+                                "close </{}> with no matching open",
+                                name
+                            ));
+                        }
+                    }
+                }
+                Ok(Event::Empty(_)) => {
+                    // self-closing tag - always balanced
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "walker parse error at byte {}: {}",
+                        reader.buffer_position(),
+                        e
+                    ));
+                }
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        if !stack.is_empty() {
+            return Err(format!(
+                "unclosed tags at EOF: {:?}",
+                stack
+            ));
+        }
+        Ok(())
+    }
+
+    /// Assert that the required structural tags are present AND properly
+    /// closed in the text blob.
+    fn assert_structural_tags_present(content: &str, require_frameset: bool) {
+        let must_have: &[&str] = if require_frameset {
+            &["html", "body", "mbp:frameset"]
+        } else {
+            &["html", "body"]
+        };
+        for tag in must_have {
+            let open_pat = format!("<{}", tag);
+            let close_pat = format!("</{}>", tag);
+            assert!(
+                content.contains(&open_pat),
+                "text blob is missing opening tag <{}>: first 200 bytes: {:?}",
+                tag,
+                &content[..content.len().min(200)]
+            );
+            assert!(
+                content.contains(&close_pat),
+                "text blob is missing closing tag </{}>: last 200 bytes: {:?}",
+                tag,
+                &content[content.len().saturating_sub(200)..]
+            );
+        }
+    }
+
+    /// Scan for malformed `<hr/` patterns where the `>` is missing or
+    /// clobbered, and for stray unclosed attribute quotes.
+    fn assert_no_html_corruption(content: &str) {
+        // A correct self-closing hr is "<hr/>". Anything else after "<hr/"
+        // (besides `>`) indicates corruption.
+        let bad_hr = regex::Regex::new(r"<hr/[^>]").unwrap();
+        if let Some(m) = bad_hr.find(content) {
+            panic!(
+                "malformed `<hr/` found at byte {}: {:?}",
+                m.start(),
+                &content[m.start()..(m.start() + 20).min(content.len())]
+            );
+        }
+
+        // Count `="` openers and find their matching closing `"` within a
+        // reasonable window. kindling attribute values should never span
+        // more than ~2 KiB (long style or class lists notwithstanding).
+        //
+        // For each `="`, find the next `"` and assert it exists within the
+        // next 4096 bytes AND before the next `<`.
+        let bytes = content.as_bytes();
+        let mut i = 0;
+        while i + 1 < bytes.len() {
+            if bytes[i] == b'=' && bytes[i + 1] == b'"' {
+                let start = i + 2;
+                let window_end = (start + 4096).min(bytes.len());
+                let mut found = false;
+                for j in start..window_end {
+                    if bytes[j] == b'"' {
+                        found = true;
+                        i = j + 1;
+                        break;
+                    }
+                    if bytes[j] == b'<' {
+                        // Next tag starts before we found a closing quote.
+                        panic!(
+                            "unclosed attribute quote at byte {}: {:?}",
+                            i,
+                            &content[i..(i + 60).min(content.len())]
+                        );
+                    }
+                }
+                if !found {
+                    panic!(
+                        "unclosed attribute quote (no `\"` within 4096 bytes) at byte {}: {:?}",
+                        i,
+                        &content[i..(i + 60).min(content.len())]
+                    );
+                }
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    /// Run the full HTML validation suite on a text blob: parse, structure,
+    /// corruption scan, and tag balance.
+    fn validate_mobi_text_blob(
+        blob: &[u8],
+        label: &str,
+        require_frameset: bool,
+    ) {
+        let content = std::str::from_utf8(blob)
+            .unwrap_or_else(|e| panic!("{}: text blob is not valid UTF-8: {}", label, e));
+
+        // 1. Parses at the token level (catches <hr/ corruption, missing >,
+        //    unclosed attributes, etc.).
+        if let Err(e) = try_parse_mobi_html(content) {
+            panic!("{}: HTML did not parse cleanly: {}", label, e);
+        }
+
+        // 2. Required structural tags are present and closed.
+        assert_structural_tags_present(content, require_frameset);
+
+        // 3. No obviously malformed hr or attribute quotes.
+        assert_no_html_corruption(content);
+
+        // 4. Balanced tag stack (ignoring void elements).
+        if let Err(e) = check_balanced_tags(content) {
+            panic!("{}: unbalanced tags: {}", label, e);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Dictionary text blob validation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_html_validation_dict_no_kindle_limits() {
+        let dir = TempDir::new("htmlval_dict_no_kl");
+        let entries: &[(&str, &[&str])] = &[
+            ("apple", &["apples"]),
+            ("banana", &["bananas"]),
+            ("cherry", &["cherries"]),
+        ];
+        let opf = create_dict_fixture(dir.path(), entries);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let blob = extract_text_blob_auto(&data);
+        // Plain create_dict_fixture doesn't wrap in <mbp:frameset>, so
+        // we don't require it here.
+        validate_mobi_text_blob(&blob, "dict no kindle_limits", false);
+        println!("  \u{2713} dict (no kindle_limits) text blob parses and is balanced");
+    }
+
+    #[test]
+    fn test_html_validation_dict_with_kindle_limits() {
+        let dir = TempDir::new("htmlval_dict_kl");
+        let entries: &[(&str, &[&str])] = &[
+            ("apple", &["apples"]),
+            ("banana", &["bananas"]),
+            ("cherry", &["cherries"]),
+            ("date", &["dates"]),
+        ];
+        let opf = create_dict_fixture(dir.path(), entries);
+        let data = build_mobi_bytes_with_kindle_limits(&opf, dir.path());
+        let blob = extract_text_blob_auto(&data);
+        validate_mobi_text_blob(&blob, "dict with kindle_limits", false);
+        println!("  \u{2713} dict (kindle_limits) text blob parses and is balanced");
+    }
+
+    #[test]
+    fn test_html_validation_dict_with_frameset() {
+        let dir = TempDir::new("htmlval_dict_frameset");
+        // Source HTML deliberately uses <mbp:frameset> so build_text_content_by_letter
+        // (kindle_limits path) preserves it in the output.
+        let html = r#"<html><head><guide></guide></head><body><mbp:frameset>
+<idx:entry><idx:orth value="alpha">alpha</idx:orth><b>alpha</b> first letter<hr/></idx:entry>
+<idx:entry><idx:orth value="beta">beta</idx:orth><b>beta</b> second letter<hr/></idx:entry>
+<idx:entry><idx:orth value="gamma">gamma</idx:orth><b>gamma</b> third letter<hr/></idx:entry>
+</mbp:frameset></body></html>"#;
+        fs::write(dir.path().join("content.html"), html).unwrap();
+        let opf_str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf">
+  <metadata>
+    <dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">Frameset Dict</dc:title>
+    <dc:language xmlns:dc="http://purl.org/dc/elements/1.1/">en</dc:language>
+    <dc:creator xmlns:dc="http://purl.org/dc/elements/1.1/">Tester</dc:creator>
+    <x-metadata>
+      <DictionaryInLanguage>en</DictionaryInLanguage>
+      <DictionaryOutLanguage>en</DictionaryOutLanguage>
+      <DefaultLookupIndex>default</DefaultLookupIndex>
+    </x-metadata>
+  </metadata>
+  <manifest>
+    <item id="content" href="content.html" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="content"/>
+  </spine>
+</package>"#;
+        let opf_path = dir.path().join("content.opf");
+        fs::write(&opf_path, opf_str).unwrap();
+        let data = build_mobi_bytes_with_kindle_limits(&opf_path, dir.path());
+        let blob = extract_text_blob_auto(&data);
+        validate_mobi_text_blob(&blob, "dict with frameset", true);
+        println!("  \u{2713} dict with <mbp:frameset> text blob parses and is balanced");
+    }
+
+    #[test]
+    fn test_html_validation_dict_with_cover() {
+        let dir = TempDir::new("htmlval_dict_cover");
+        // Create a cover image and reference it in the OPF so kindling
+        // exercises the cover-image code path during MOBI assembly.
+        let jpeg = make_test_jpeg();
+        fs::write(dir.path().join("cover.jpg"), &jpeg).unwrap();
+        let html = r#"<html><head><guide></guide></head><body>
+<idx:entry><idx:orth value="apple">apple</idx:orth><b>apple</b> a fruit<hr/></idx:entry>
+<idx:entry><idx:orth value="banana">banana</idx:orth><b>banana</b> another fruit<hr/></idx:entry>
+</body></html>"#;
+        fs::write(dir.path().join("content.html"), html).unwrap();
+        let opf_str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf">
+  <metadata>
+    <dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">Cover Dict</dc:title>
+    <dc:language xmlns:dc="http://purl.org/dc/elements/1.1/">en</dc:language>
+    <dc:creator xmlns:dc="http://purl.org/dc/elements/1.1/">Tester</dc:creator>
+    <meta name="cover" content="cover"/>
+    <x-metadata>
+      <DictionaryInLanguage>en</DictionaryInLanguage>
+      <DictionaryOutLanguage>en</DictionaryOutLanguage>
+      <DefaultLookupIndex>default</DefaultLookupIndex>
+    </x-metadata>
+  </metadata>
+  <manifest>
+    <item id="cover" href="cover.jpg" media-type="image/jpeg"/>
+    <item id="content" href="content.html" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="content"/>
+  </spine>
+</package>"#;
+        let opf_path = dir.path().join("content.opf");
+        fs::write(&opf_path, opf_str).unwrap();
+        let data = build_mobi_bytes(&opf_path, dir.path(), true, false, None);
+        let blob = extract_text_blob_auto(&data);
+        validate_mobi_text_blob(&blob, "dict with cover", false);
+        println!("  \u{2713} dict with cover text blob parses and is balanced");
+    }
+
+    // -----------------------------------------------------------------------
+    // Book text blob validation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_html_validation_book_no_image() {
+        let dir = TempDir::new("htmlval_book");
+        let opf = create_book_fixture(dir.path(), None);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let blob = extract_text_blob_auto(&data);
+        validate_mobi_text_blob(&blob, "book (no image)", false);
+        println!("  \u{2713} book text blob parses and is balanced");
+    }
+
+    #[test]
+    fn test_html_validation_book_with_cover() {
+        let dir = TempDir::new("htmlval_book_cover");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let blob = extract_text_blob_auto(&data);
+        validate_mobi_text_blob(&blob, "book with cover", false);
+        println!("  \u{2713} book with cover text blob parses and is balanced");
+    }
+
+    // -----------------------------------------------------------------------
+    // Comic text blob validation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_html_validation_comic() {
+        use crate::comic;
+
+        let dir = TempDir::new("htmlval_comic");
+        let images_dir = dir.path().join("images");
+        fs::create_dir_all(&images_dir).unwrap();
+
+        // A couple of small grayscale test images is enough to exercise the
+        // comic xhtml pipeline.
+        for i in 0..3u8 {
+            let img = image::DynamicImage::ImageLuma8(
+                image::GrayImage::from_fn(100, 150, |_, _| image::Luma([60 + i * 60])),
+            );
+            img.save(images_dir.join(format!("page_{:03}.jpg", i))).unwrap();
+        }
+
+        let output_path = dir.path().join("comic.mobi");
+        let profile = comic::get_profile("paperwhite").unwrap();
+        comic::build_comic(&images_dir, &output_path, &profile)
+            .expect("build_comic failed");
+
+        let data = fs::read(&output_path).expect("could not read comic MOBI");
+        let blob = extract_text_blob_auto(&data);
+        validate_mobi_text_blob(&blob, "comic", false);
+        println!("  \u{2713} comic text blob parses and is balanced");
+    }
+
+    // -----------------------------------------------------------------------
+    // Negative tests: the validator must actually catch broken HTML.
+    //
+    // These call the validation helpers directly on hand-crafted bad HTML
+    // (we can't easily force kindling to emit corrupt output, so we feed
+    // the helpers synthetic payloads that mimic past regressions).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_html_validator_catches_unclosed_p() {
+        // <p> never closed inside <body>.
+        let bad = r#"<html><head></head><body><p>hello</body></html>"#;
+        // check_balanced_tags should flag this. Parsing with relaxed mode
+        // will still succeed (check_end_names=false), so we rely on the
+        // structural walker.
+        let err = check_balanced_tags(bad).expect_err(
+            "validator should reject <p> without matching </p>",
+        );
+        assert!(
+            err.contains("mismatched") || err.contains("unclosed"),
+            "expected mismatched/unclosed error, got: {}",
+            err
+        );
+        println!("  \u{2713} validator rejected unclosed <p>: {}", err);
+    }
+
+    #[test]
+    fn test_html_validator_catches_corrupt_hr() {
+        // <hr/ with garbage instead of >
+        let bad = r#"<html><body>text<hr/X>more</body></html>"#;
+        let result = std::panic::catch_unwind(|| {
+            assert_no_html_corruption(bad);
+        });
+        assert!(
+            result.is_err(),
+            "validator should panic on corrupt <hr/X>"
+        );
+        println!("  \u{2713} validator rejected corrupt <hr/X>");
+    }
+
+    #[test]
+    fn test_html_validator_catches_unclosed_attribute_quote() {
+        // class="foo never closed, followed by another tag
+        let bad = r#"<html><body><p class="foo<b>bold</b></p></body></html>"#;
+        let result = std::panic::catch_unwind(|| {
+            assert_no_html_corruption(bad);
+        });
+        assert!(
+            result.is_err(),
+            "validator should panic on unclosed attribute quote"
+        );
+        println!("  \u{2713} validator rejected unclosed attribute quote");
+    }
+
+    #[test]
+    fn test_html_validator_catches_missing_body_close() {
+        let bad = r#"<html><head></head><body><p>hi</p></html>"#;
+        let result = std::panic::catch_unwind(|| {
+            assert_structural_tags_present(bad, false);
+        });
+        assert!(
+            result.is_err(),
+            "validator should panic when </body> is missing"
+        );
+        println!("  \u{2713} validator rejected missing </body>");
+    }
+
+    #[test]
+    fn test_html_validator_accepts_well_formed_fixture() {
+        // The same shape kindling emits for a dict: html/body/guide,
+        // with <hr/> separators, mbp:pagebreak, frameset wrapper, and
+        // self-closed img.
+        let good = r#"<html><head><guide></guide></head><body><mbp:frameset><b>apple</b> a fruit<hr/><b>banana</b> another<hr/><img src="x.jpg"/><mbp:pagebreak/></mbp:frameset></body></html>"#;
+        try_parse_mobi_html(good).expect("well-formed fixture should parse");
+        assert_structural_tags_present(good, true);
+        assert_no_html_corruption(good);
+        check_balanced_tags(good).expect("well-formed fixture should be balanced");
+        println!("  \u{2713} validator accepts well-formed fixture");
+    }
 }
