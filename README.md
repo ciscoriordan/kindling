@@ -100,6 +100,25 @@ Converts image folders, CBZ files, and EPUB files to Kindle-optimized MOBI with:
 - **Document type**: `--doc-type ebok` to appear under Books instead of Documents on Kindle (default: `pdoc`)
 - **KF8-only**: `--kf8-only` outputs `.azw3` with only the KF8 section (no MOBI7), producing smaller files handled better by Calibre
 
+### Validation
+
+```bash
+kindling-cli validate input.opf             # print findings, exit 1 on errors
+kindling-cli validate input.opf --strict    # exit 1 on any warning too
+```
+
+Runs pre-flight checks against the [Amazon Kindle Publishing Guidelines](http://kindlegen.s3.amazonaws.com/AmazonKindlePublishingGuidelines.pdf) (version 2026.1) before building, catching the most common authoring mistakes:
+
+- **4.2 Internal cover image**: must exist (Method 1 `properties="coverimage"` or Method 2 `<meta name="cover">`), no duplicate HTML cover page in the spine, shortest side >= 500 px
+- **5.2 Navigation**: NCX must be declared in the manifest and referenced via `<spine toc="...">`, TOC recommended for books > 20 pages
+- **6.1-6.5 HTML/CSS hygiene**: well-formed XHTML, no negative CSS values, no `<script>`, no nested `<p>`, file references match case
+- **10.3.1 Heading alignment**: warn on `<h1>`-`<h6>` with explicit `text-align`
+- **10.4.1-10.4.2 Images**: supported formats (JPEG/PNG/GIF/SVG), per-image size <= 127 KB, dimensions <= 5 megapixels
+- **10.5.1 Tables**: warn on > 50 rows
+- **17/18.1 Unsupported tags**: `<form>`, `<input>`, `<frame>`, `<iframe>`, `<canvas>`, `<object>`, etc.
+
+Output: one line per finding with severity (`info`/`warning`/`error`), KPG section, message, and file:line where applicable, followed by a summary (`X errors, Y warnings, Z info`). Exit code is 0 on success, 1 if any errors are present (or any warnings in `--strict` mode).
+
 ### Kindlegen compatibility
 
 ```bash

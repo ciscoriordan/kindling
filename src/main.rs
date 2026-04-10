@@ -19,6 +19,7 @@ mod opf;
 mod palmdoc;
 #[cfg(test)]
 mod tests;
+mod validate;
 mod vwi;
 
 use std::path::PathBuf;
@@ -196,6 +197,22 @@ enum Commands {
         /// Disable Kindle publishing limits enforcement (see --kindle-limits)
         #[arg(long, overrides_with = "kindle_limits")]
         no_kindle_limits: bool,
+    },
+
+    /// Validate an OPF manuscript against the Amazon Kindle Publishing Guidelines.
+    ///
+    /// Runs a set of pre-flight checks (cover image, NCX, HTML/CSS hygiene,
+    /// image formats/sizes, table size, unsupported tags) and prints one line
+    /// per finding with severity, KPG section, and message. Exits 0 if there
+    /// are no errors, 1 otherwise. With `--strict`, exits 1 on any warning too.
+    #[command(version)]
+    Validate {
+        /// Input OPF file
+        input: PathBuf,
+
+        /// Treat warnings as errors (exit non-zero on any warning).
+        #[arg(long)]
+        strict: bool,
     },
 }
 
@@ -494,6 +511,37 @@ fn main() {
                     }
                 }
             }
+            Commands::Validate { input, strict } => {
+                do_validate(&input, strict);
+            }
         }
+    }
+}
+
+/// Run the validator on an OPF and print the report.
+///
+/// Exits 0 if there are no errors (and no warnings when `strict` is set),
+/// 1 otherwise.
+fn do_validate(opf_path: &PathBuf, strict: bool) {
+    let report = match validate::validate_opf(opf_path) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Error: could not parse OPF {}: {}", opf_path.display(), e);
+            process::exit(2);
+        }
+    };
+
+    for finding in &report.findings {
+        println!("{}", finding);
+    }
+
+    let errors = report.error_count();
+    let warnings = report.warning_count();
+    let infos = report.info_count();
+    println!("{} errors, {} warnings, {} info", errors, warnings, infos);
+
+    let fail = errors > 0 || (strict && warnings > 0);
+    if fail {
+        process::exit(1);
     }
 }

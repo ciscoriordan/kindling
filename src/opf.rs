@@ -22,6 +22,8 @@ pub struct OPFData {
     pub default_lookup_index: String,
     pub spine_items: Vec<(String, String)>, // (id, href) tuples in spine order
     pub manifest: HashMap<String, (String, String)>, // id -> (href, media_type)
+    /// Manifest item id with properties="coverimage" (EPUB 3 cover method).
+    pub coverimage_id: Option<String>,
     /// True if the OPF declares fixed-layout (pre-paginated) rendering.
     pub is_fixed_layout: bool,
     /// Original resolution from OPF metadata (e.g. "1072x1448").
@@ -51,6 +53,7 @@ impl OPFData {
             default_lookup_index: String::from("default"),
             spine_items: Vec::new(),
             manifest: HashMap::new(),
+            coverimage_id: None,
             is_fixed_layout: false,
             original_resolution: None,
             page_progression_direction: None,
@@ -145,6 +148,7 @@ impl OPFData {
                             let mut id = String::new();
                             let mut href = String::new();
                             let mut media_type = String::new();
+                            let mut properties = String::new();
                             for attr in e.attributes().flatten() {
                                 match attr.key.as_ref() {
                                     b"id" => {
@@ -157,10 +161,18 @@ impl OPFData {
                                         media_type =
                                             String::from_utf8_lossy(&attr.value).to_string()
                                     }
+                                    b"properties" => {
+                                        properties =
+                                            String::from_utf8_lossy(&attr.value).to_string()
+                                    }
                                     _ => {}
                                 }
                             }
                             if !id.is_empty() {
+                                // EPUB 3 cover method: properties="coverimage"
+                                if properties.split_whitespace().any(|p| p == "coverimage") {
+                                    self.coverimage_id = Some(id.clone());
+                                }
                                 self.manifest.insert(id, (href, media_type));
                             }
                         }
@@ -251,11 +263,21 @@ impl OPFData {
 
     /// Find the cover image href from OPF metadata.
     ///
-    /// Looks for `<meta name="cover" content="..."/>` in the OPF, then resolves
-    /// the content attribute as a manifest item ID to get the image href.
+    /// Supports both cover image methods from the Amazon Kindle Publishing
+    /// Guidelines section 4.2:
+    /// - Method 1 (preferred, EPUB 3): `<item ... properties="coverimage"/>`
+    /// - Method 2: `<meta name="cover" content="..."/>` pointing to a manifest id
     pub fn get_cover_image_href(&self) -> Option<String> {
-        // The cover meta was already parsed into manifest, we need to re-parse
-        // the OPF to find the <meta name="cover" content="..."/> tag
+        // Method 1: check for properties="coverimage" captured during manifest parsing
+        if let Some(ref cover_id) = self.coverimage_id {
+            if let Some((href, media_type)) = self.manifest.get(cover_id) {
+                if media_type.starts_with("image/") {
+                    return Some(href.clone());
+                }
+            }
+        }
+
+        // Method 2: re-parse the OPF to find <meta name="cover" content="..."/>
         let opf_path = self.base_dir.join(
             // We need to find the OPF file - check common locations
             std::fs::read_dir(&self.base_dir)

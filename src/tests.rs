@@ -6982,4 +6982,569 @@ mod tests {
         assert_eq!(mobi_count, 1, "KF8-only should have exactly 1 MOBI header, found {}", mobi_count);
         println!("  \u{2713} KF8-only: single MOBI header, version 8 throughout");
     }
+
+    // =======================================================================
+    // 32. kindling validate: Kindle Publishing Guidelines checker
+    // =======================================================================
+    //
+    // Each test creates a minimal OPF + content files and runs
+    // `validate::validate_opf`, then asserts that the expected section shows
+    // up at the expected severity (or does not, for passing cases).
+
+    use crate::validate::{self, Level};
+
+    /// Build a minimal OPF with a given metadata block, manifest inner xml
+    /// and spine inner xml, writing to dir/content.opf.
+    fn write_opf(
+        dir: &Path,
+        extra_metadata: &str,
+        manifest_inner: &str,
+        spine_inner: &str,
+    ) -> PathBuf {
+        let opf = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Test</dc:title>
+    <dc:language>en</dc:language>
+    <dc:creator>Tester</dc:creator>
+    {extra_metadata}
+  </metadata>
+  <manifest>
+{manifest_inner}
+  </manifest>
+  <spine>
+{spine_inner}
+  </spine>
+</package>"#,
+            extra_metadata = extra_metadata,
+            manifest_inner = manifest_inner,
+            spine_inner = spine_inner,
+        );
+        let opf_path = dir.join("content.opf");
+        fs::write(&opf_path, opf).unwrap();
+        opf_path
+    }
+
+    /// Count findings at the given section with the given level.
+    fn count_findings(report: &validate::ValidationReport, section: &str, level: Level) -> usize {
+        report
+            .findings
+            .iter()
+            .filter(|f| f.section == section && f.level == level)
+            .count()
+    }
+
+    fn has_finding(report: &validate::ValidationReport, section: &str, level: Level) -> bool {
+        count_findings(report, section, level) > 0
+    }
+
+    // --- 4.1: marketing cover informational note ---
+
+    #[test]
+    fn test_validate_emits_marketing_cover_info() {
+        let dir = TempDir::new("validate_info_4_1");
+        let jpeg = make_test_jpeg();
+        fs::write(dir.path().join("cover.jpg"), &jpeg).unwrap();
+        fs::write(
+            dir.path().join("content.html"),
+            "<html><body><p>hi</p></body></html>",
+        )
+        .unwrap();
+        let opf = write_opf(
+            dir.path(),
+            r#"<meta name="cover" content="cover"/>"#,
+            r#"<item id="cover" href="cover.jpg" media-type="image/jpeg"/>
+   <item id="content" href="content.html" media-type="application/xhtml+xml"/>"#,
+            r#"<itemref idref="content"/>"#,
+        );
+        let report = validate::validate_opf(&opf).unwrap();
+        assert!(has_finding(&report, "4.1", Level::Info));
+    }
+
+    // --- 4.2: cover image declared / missing / Method 1 / Method 2 ---
+
+    #[test]
+    fn test_validate_missing_cover_errors() {
+        let dir = TempDir::new("validate_4_2_missing");
+        fs::write(
+            dir.path().join("content.html"),
+            "<html><body><p>hi</p></body></html>",
+        )
+        .unwrap();
+        let opf = write_opf(
+            dir.path(),
+            "",
+            r#"<item id="content" href="content.html" media-type="application/xhtml+xml"/>"#,
+            r#"<itemref idref="content"/>"#,
+        );
+        let report = validate::validate_opf(&opf).unwrap();
+        assert!(
+            has_finding(&report, "4.2", Level::Error),
+            "missing cover should error at 4.2"
+        );
+    }
+
+    #[test]
+    fn test_validate_cover_method_1_ok() {
+        let dir = TempDir::new("validate_4_2_m1");
+        // Make a large enough jpeg so we don't trigger the <500px warning
+        let img = image::GrayImage::from_fn(600, 800, |_, _| image::Luma([128u8]));
+        let mut buf = Vec::new();
+        let mut cursor = std::io::Cursor::new(&mut buf);
+        image::DynamicImage::ImageLuma8(img)
+            .write_to(&mut cursor, image::ImageFormat::Jpeg)
+            .unwrap();
+        fs::write(dir.path().join("cover.jpg"), &buf).unwrap();
+        fs::write(
+            dir.path().join("content.html"),
+            "<html><body><p>hi</p></body></html>",
+        )
+        .unwrap();
+        let opf = write_opf(
+            dir.path(),
+            "",
+            r#"<item id="cover" href="cover.jpg" media-type="image/jpeg" properties="coverimage"/>
+   <item id="content" href="content.html" media-type="application/xhtml+xml"/>"#,
+            r#"<itemref idref="content"/>"#,
+        );
+        let report = validate::validate_opf(&opf).unwrap();
+        assert!(
+            !has_finding(&report, "4.2", Level::Error),
+            "Method 1 cover should not error: {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn test_validate_cover_small_warns() {
+        let dir = TempDir::new("validate_4_2_small");
+        let jpeg = make_test_jpeg(); // 10x10
+        fs::write(dir.path().join("cover.jpg"), &jpeg).unwrap();
+        fs::write(
+            dir.path().join("content.html"),
+            "<html><body><p>hi</p></body></html>",
+        )
+        .unwrap();
+        let opf = write_opf(
+            dir.path(),
+            r#"<meta name="cover" content="cover"/>"#,
+            r#"<item id="cover" href="cover.jpg" media-type="image/jpeg"/>
+   <item id="content" href="content.html" media-type="application/xhtml+xml"/>"#,
+            r#"<itemref idref="content"/>"#,
+        );
+        let report = validate::validate_opf(&opf).unwrap();
+        assert!(
+            has_finding(&report, "4.2", Level::Warning),
+            "10x10 cover should warn about shortest side < 500"
+        );
+    }
+
+    #[test]
+    fn test_validate_html_cover_page_plus_cover_image_errors() {
+        let dir = TempDir::new("validate_4_2_dup");
+        let img = image::GrayImage::from_fn(600, 800, |_, _| image::Luma([128u8]));
+        let mut buf = Vec::new();
+        let mut cursor = std::io::Cursor::new(&mut buf);
+        image::DynamicImage::ImageLuma8(img)
+            .write_to(&mut cursor, image::ImageFormat::Jpeg)
+            .unwrap();
+        fs::write(dir.path().join("cover.jpg"), &buf).unwrap();
+        fs::write(
+            dir.path().join("cover.html"),
+            r#"<html><body><img src="cover.jpg"/></body></html>"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("content.html"),
+            "<html><body><p>hi</p></body></html>",
+        )
+        .unwrap();
+        let opf = write_opf(
+            dir.path(),
+            r#"<meta name="cover" content="coverimg"/>"#,
+            r#"<item id="coverimg" href="cover.jpg" media-type="image/jpeg"/>
+   <item id="coverhtml" href="cover.html" media-type="application/xhtml+xml"/>
+   <item id="content" href="content.html" media-type="application/xhtml+xml"/>"#,
+            r#"<itemref idref="coverhtml"/>
+   <itemref idref="content"/>"#,
+        );
+        let report = validate::validate_opf(&opf).unwrap();
+        let has_dup_error = report
+            .findings
+            .iter()
+            .any(|f| f.section == "4.2" && f.level == Level::Error && f.message.contains("HTML cover page"));
+        assert!(has_dup_error, "should error on HTML cover page in spine + cover image");
+    }
+
+    // --- 5.2: NCX presence and spine toc= attribute ---
+
+    #[test]
+    fn test_validate_missing_ncx_warns() {
+        let dir = TempDir::new("validate_5_2_missing");
+        fs::write(
+            dir.path().join("content.html"),
+            "<html><body><p>hi</p></body></html>",
+        )
+        .unwrap();
+        let opf = write_opf(
+            dir.path(),
+            "",
+            r#"<item id="content" href="content.html" media-type="application/xhtml+xml"/>"#,
+            r#"<itemref idref="content"/>"#,
+        );
+        let report = validate::validate_opf(&opf).unwrap();
+        assert!(has_finding(&report, "5.2", Level::Warning));
+    }
+
+    #[test]
+    fn test_validate_ncx_without_spine_toc_warns() {
+        let dir = TempDir::new("validate_5_2_no_spine_toc");
+        fs::write(
+            dir.path().join("content.html"),
+            "<html><body><p>hi</p></body></html>",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("toc.ncx"),
+            "<ncx><navMap></navMap></ncx>",
+        )
+        .unwrap();
+        let opf = write_opf(
+            dir.path(),
+            "",
+            r#"<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+   <item id="content" href="content.html" media-type="application/xhtml+xml"/>"#,
+            r#"<itemref idref="content"/>"#,
+        );
+        let report = validate::validate_opf(&opf).unwrap();
+        let has_spine_warn = report.findings.iter().any(|f| {
+            f.section == "5.2" && f.level == Level::Warning && f.message.contains("toc=")
+        });
+        assert!(has_spine_warn, "should warn about missing spine toc attribute");
+    }
+
+    #[test]
+    fn test_validate_ncx_with_spine_toc_ok() {
+        let dir = TempDir::new("validate_5_2_ok");
+        fs::write(
+            dir.path().join("content.html"),
+            "<html><body><p>hi</p></body></html>",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("toc.ncx"),
+            "<ncx><navMap></navMap></ncx>",
+        )
+        .unwrap();
+        // Write OPF manually so we can set spine toc="ncx"
+        let opf = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>T</dc:title>
+    <dc:language>en</dc:language>
+    <dc:creator>A</dc:creator>
+  </metadata>
+  <manifest>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+    <item id="content" href="content.html" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="content"/>
+  </spine>
+</package>"#;
+        let opf_path = dir.path().join("content.opf");
+        fs::write(&opf_path, opf).unwrap();
+        let report = validate::validate_opf(&opf_path).unwrap();
+        assert!(
+            !has_finding(&report, "5.2", Level::Warning),
+            "NCX + spine toc should not warn: {:?}",
+            report.findings
+        );
+    }
+
+    // --- 6.3: scripting ---
+
+    #[test]
+    fn test_validate_script_tag_errors() {
+        let dir = TempDir::new("validate_6_3_script");
+        fs::write(
+            dir.path().join("content.html"),
+            r#"<html><body><script>alert(1)</script><p>x</p></body></html>"#,
+        )
+        .unwrap();
+        let opf = write_opf(
+            dir.path(),
+            "",
+            r#"<item id="content" href="content.html" media-type="application/xhtml+xml"/>"#,
+            r#"<itemref idref="content"/>"#,
+        );
+        let report = validate::validate_opf(&opf).unwrap();
+        assert!(has_finding(&report, "6.3", Level::Error));
+    }
+
+    // --- 6.4: nested <p> ---
+
+    #[test]
+    fn test_validate_nested_p_errors() {
+        let dir = TempDir::new("validate_6_4_nested_p");
+        fs::write(
+            dir.path().join("content.html"),
+            r#"<html><body><p>outer <p>inner</p></p></body></html>"#,
+        )
+        .unwrap();
+        let opf = write_opf(
+            dir.path(),
+            "",
+            r#"<item id="content" href="content.html" media-type="application/xhtml+xml"/>"#,
+            r#"<itemref idref="content"/>"#,
+        );
+        let report = validate::validate_opf(&opf).unwrap();
+        assert!(has_finding(&report, "6.4", Level::Error));
+    }
+
+    #[test]
+    fn test_validate_non_nested_p_ok() {
+        let dir = TempDir::new("validate_6_4_ok");
+        fs::write(
+            dir.path().join("content.html"),
+            r#"<html><body><p>one</p><p>two</p></body></html>"#,
+        )
+        .unwrap();
+        let opf = write_opf(
+            dir.path(),
+            "",
+            r#"<item id="content" href="content.html" media-type="application/xhtml+xml"/>"#,
+            r#"<itemref idref="content"/>"#,
+        );
+        let report = validate::validate_opf(&opf).unwrap();
+        assert!(!has_finding(&report, "6.4", Level::Error));
+    }
+
+    // --- 6.2: negative CSS values ---
+
+    #[test]
+    fn test_validate_negative_css_warns() {
+        let dir = TempDir::new("validate_6_2");
+        fs::write(
+            dir.path().join("content.html"),
+            r#"<html><body><p style="margin-left: -5px;">x</p></body></html>"#,
+        )
+        .unwrap();
+        let opf = write_opf(
+            dir.path(),
+            "",
+            r#"<item id="content" href="content.html" media-type="application/xhtml+xml"/>"#,
+            r#"<itemref idref="content"/>"#,
+        );
+        let report = validate::validate_opf(&opf).unwrap();
+        assert!(has_finding(&report, "6.2", Level::Warning));
+    }
+
+    // --- 6.5: file case mismatch ---
+
+    #[test]
+    fn test_validate_file_case_mismatch_errors() {
+        let dir = TempDir::new("validate_6_5_case");
+        // Only matters on case-insensitive filesystems (macOS/Windows).
+        // Write the actual file with lowercase name; reference it as uppercase.
+        fs::write(dir.path().join("cover.jpg"), make_test_jpeg()).unwrap();
+        fs::write(
+            dir.path().join("content.html"),
+            "<html><body><p>hi</p></body></html>",
+        )
+        .unwrap();
+        let opf = write_opf(
+            dir.path(),
+            "",
+            r#"<item id="cover" href="Cover.jpg" media-type="image/jpeg" properties="coverimage"/>
+   <item id="content" href="content.html" media-type="application/xhtml+xml"/>"#,
+            r#"<itemref idref="content"/>"#,
+        );
+        let report = validate::validate_opf(&opf).unwrap();
+        // On case-insensitive filesystems (macOS/Windows) this should fire a
+        // 6.5 error. On case-sensitive filesystems (most Linux) the file
+        // wouldn't exist and we'd get a 4.2 error instead. Accept either:
+        // the important thing is that the manuscript does not silently pass.
+        let has_case_error = has_finding(&report, "6.5", Level::Error)
+            || has_finding(&report, "4.2", Level::Error);
+        assert!(has_case_error);
+    }
+
+    // --- 10.3.1: heading alignment ---
+
+    #[test]
+    fn test_validate_heading_text_align_warns() {
+        let dir = TempDir::new("validate_10_3_1");
+        fs::write(
+            dir.path().join("content.html"),
+            r#"<html><body><h1 style="text-align:center">Title</h1></body></html>"#,
+        )
+        .unwrap();
+        let opf = write_opf(
+            dir.path(),
+            "",
+            r#"<item id="content" href="content.html" media-type="application/xhtml+xml"/>"#,
+            r#"<itemref idref="content"/>"#,
+        );
+        let report = validate::validate_opf(&opf).unwrap();
+        assert!(has_finding(&report, "10.3.1", Level::Warning));
+    }
+
+    // --- 10.4.1: supported image formats ---
+
+    #[test]
+    fn test_validate_unsupported_image_format_errors() {
+        let dir = TempDir::new("validate_10_4_1");
+        fs::write(dir.path().join("pic.bmp"), b"fake bmp").unwrap();
+        fs::write(
+            dir.path().join("content.html"),
+            "<html><body><p>hi</p></body></html>",
+        )
+        .unwrap();
+        let opf = write_opf(
+            dir.path(),
+            "",
+            r#"<item id="pic" href="pic.bmp" media-type="image/bmp"/>
+   <item id="content" href="content.html" media-type="application/xhtml+xml"/>"#,
+            r#"<itemref idref="content"/>"#,
+        );
+        let report = validate::validate_opf(&opf).unwrap();
+        assert!(has_finding(&report, "10.4.1", Level::Error));
+    }
+
+    // --- 10.4.2: image file size / megapixels ---
+
+    #[test]
+    fn test_validate_image_file_over_127kb_warns() {
+        let dir = TempDir::new("validate_10_4_2");
+        // 128 KB file of zeros saved as .jpg - we only check file size, not
+        // decode, so that's fine.
+        fs::write(dir.path().join("pic.jpg"), vec![0u8; 130 * 1024]).unwrap();
+        fs::write(
+            dir.path().join("content.html"),
+            "<html><body><p>hi</p></body></html>",
+        )
+        .unwrap();
+        let opf = write_opf(
+            dir.path(),
+            "",
+            r#"<item id="pic" href="pic.jpg" media-type="image/jpeg"/>
+   <item id="content" href="content.html" media-type="application/xhtml+xml"/>"#,
+            r#"<itemref idref="content"/>"#,
+        );
+        let report = validate::validate_opf(&opf).unwrap();
+        assert!(has_finding(&report, "10.4.2", Level::Warning));
+    }
+
+    // --- 10.5.1: large tables ---
+
+    #[test]
+    fn test_validate_large_table_warns() {
+        let dir = TempDir::new("validate_10_5_1");
+        let mut rows = String::new();
+        for i in 0..60 {
+            rows.push_str(&format!("<tr><td>{}</td></tr>", i));
+        }
+        let html = format!(
+            r#"<html><body><table>{}</table></body></html>"#,
+            rows
+        );
+        fs::write(dir.path().join("content.html"), html).unwrap();
+        let opf = write_opf(
+            dir.path(),
+            "",
+            r#"<item id="content" href="content.html" media-type="application/xhtml+xml"/>"#,
+            r#"<itemref idref="content"/>"#,
+        );
+        let report = validate::validate_opf(&opf).unwrap();
+        assert!(has_finding(&report, "10.5.1", Level::Warning));
+    }
+
+    #[test]
+    fn test_validate_small_table_ok() {
+        let dir = TempDir::new("validate_10_5_1_ok");
+        fs::write(
+            dir.path().join("content.html"),
+            r#"<html><body><table><tr><td>1</td></tr><tr><td>2</td></tr></table></body></html>"#,
+        )
+        .unwrap();
+        let opf = write_opf(
+            dir.path(),
+            "",
+            r#"<item id="content" href="content.html" media-type="application/xhtml+xml"/>"#,
+            r#"<itemref idref="content"/>"#,
+        );
+        let report = validate::validate_opf(&opf).unwrap();
+        assert!(!has_finding(&report, "10.5.1", Level::Warning));
+    }
+
+    // --- 17: unsupported HTML tags ---
+
+    #[test]
+    fn test_validate_form_tag_errors() {
+        let dir = TempDir::new("validate_17_form");
+        fs::write(
+            dir.path().join("content.html"),
+            r#"<html><body><form action="x"><input type="text"/></form></body></html>"#,
+        )
+        .unwrap();
+        let opf = write_opf(
+            dir.path(),
+            "",
+            r#"<item id="content" href="content.html" media-type="application/xhtml+xml"/>"#,
+            r#"<itemref idref="content"/>"#,
+        );
+        let report = validate::validate_opf(&opf).unwrap();
+        assert!(has_finding(&report, "17", Level::Error));
+    }
+
+    // --- end-to-end: a valid minimal manuscript should have no errors ---
+
+    #[test]
+    fn test_validate_clean_manuscript_no_errors() {
+        let dir = TempDir::new("validate_clean");
+        let img = image::GrayImage::from_fn(600, 800, |_, _| image::Luma([128u8]));
+        let mut buf = Vec::new();
+        let mut cursor = std::io::Cursor::new(&mut buf);
+        image::DynamicImage::ImageLuma8(img)
+            .write_to(&mut cursor, image::ImageFormat::Jpeg)
+            .unwrap();
+        fs::write(dir.path().join("cover.jpg"), &buf).unwrap();
+        fs::write(
+            dir.path().join("toc.ncx"),
+            "<ncx><navMap></navMap></ncx>",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("content.html"),
+            r#"<html><body><h1>Title</h1><p>Paragraph one.</p><p>Paragraph two.</p></body></html>"#,
+        )
+        .unwrap();
+        let opf = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Clean Book</dc:title>
+    <dc:language>en</dc:language>
+    <dc:creator>Author</dc:creator>
+  </metadata>
+  <manifest>
+    <item id="cover" href="cover.jpg" media-type="image/jpeg" properties="coverimage"/>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+    <item id="content" href="content.html" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="content"/>
+  </spine>
+</package>"#;
+        let opf_path = dir.path().join("content.opf");
+        fs::write(&opf_path, opf).unwrap();
+        let report = validate::validate_opf(&opf_path).unwrap();
+        assert_eq!(
+            report.error_count(),
+            0,
+            "clean manuscript should have no errors: {:?}",
+            report.findings
+        );
+    }
 }
