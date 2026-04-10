@@ -29,7 +29,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -37,17 +37,16 @@ jobs:
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
-        working-directory: rust
 
       - name: Rename binary (Unix)
         if: runner.os != 'Windows'
-        run: cp rust/target/${{ matrix.target }}/release/kindling-cli ${{ matrix.name }}
+        run: cp target/${{ matrix.target }}/release/kindling-cli ${{ matrix.name }}
 
       - name: Rename binary (Windows)
         if: runner.os == 'Windows'
-        run: cp rust/target/${{ matrix.target }}/release/kindling-cli.exe ${{ matrix.name }}
+        run: cp target/${{ matrix.target }}/release/kindling-cli.exe ${{ matrix.name }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}
           path: ${{ matrix.name }}
@@ -56,7 +55,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
 
