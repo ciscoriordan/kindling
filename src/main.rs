@@ -11,6 +11,7 @@
 mod comic;
 mod epub;
 mod exth;
+mod html_check;
 mod indx;
 mod kdp_rules;
 mod kf8;
