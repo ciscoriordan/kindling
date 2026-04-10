@@ -1,21 +1,4 @@
-__pycache__/
-*.pyc
-*.pyo
-*.egg-info/
-dist/
-build/
-.eggs/
+target/
+.DS_Store
 *.mobi
 *.epub
-.DS_Store
-
-# Native extension build artifacts
-*.so
-*.dylib
-*.dll
-rust/target/
-__pycache__/
-*.pyc
-*.dylib
-*.dll
-*.so
