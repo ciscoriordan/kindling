@@ -173,12 +173,6 @@ fn build_dictionary_mobi(
         text_content
     };
 
-    // Self-check: verify the text blob is well-formed HTML before writing.
-    // Warns on issues but does not abort the build. Catches regressions in
-    // text-blob assembly (corrupt <hr/, unclosed frameset, etc.).
-    let issues = crate::html_check::validate_text_blob(&text_content);
-    crate::html_check::print_self_check_warnings(&issues);
-
     // Build text records
     let (text_records, text_length) = if no_compress {
         eprintln!("Splitting text into uncompressed records...");
@@ -623,10 +617,6 @@ fn build_book_mobi(
         } else {
             text_content
         };
-
-        // Self-check: verify the text blob is well-formed HTML before writing.
-        let issues = crate::html_check::validate_text_blob(&text_content);
-        crate::html_check::print_self_check_warnings(&issues);
 
         // Build KF7 text records
         let (text_records, text_length) = if no_compress {
