@@ -7549,6 +7549,212 @@ mod tests {
     }
 
     // =======================================================================
+    // 32b. kindling build: automatic pre-flight validation integration
+    //
+    // These tests exercise `run_preflight_validation`, the entry point
+    // `do_build` uses to enforce KDP compliance before invoking the MOBI
+    // writer. We cannot call `do_build` directly here because it calls
+    // `process::exit(1)` on validation failure, which would tear down the
+    // test runner. Instead we verify the decision function and also confirm
+    // that a validated OPF still builds successfully end-to-end.
+    // =======================================================================
+
+    /// Build a minimal clean book OPF fixture that passes KDP validation
+    /// (has cover image, NCX, well-formed HTML, no unsupported tags).
+    fn create_clean_book_opf(dir: &Path) -> PathBuf {
+        // Cover >= 500px shortest side, so no warning.
+        let img = image::GrayImage::from_fn(600, 800, |_, _| image::Luma([128u8]));
+        let mut buf = Vec::new();
+        let mut cursor = std::io::Cursor::new(&mut buf);
+        image::DynamicImage::ImageLuma8(img)
+            .write_to(&mut cursor, image::ImageFormat::Jpeg)
+            .unwrap();
+        fs::write(dir.join("cover.jpg"), &buf).unwrap();
+        fs::write(dir.join("toc.ncx"), "<ncx><navMap></navMap></ncx>").unwrap();
+        fs::write(
+            dir.join("content.html"),
+            r#"<html><body><h1>Title</h1><p>Paragraph one.</p><p>Paragraph two.</p></body></html>"#,
+        )
+        .unwrap();
+        let opf = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Clean Book</dc:title>
+    <dc:language>en</dc:language>
+    <dc:creator>Author</dc:creator>
+  </metadata>
+  <manifest>
+    <item id="cover" href="cover.jpg" media-type="image/jpeg" properties="coverimage"/>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+    <item id="content" href="content.html" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="content"/>
+  </spine>
+</package>"#;
+        let opf_path = dir.join("content.opf");
+        fs::write(&opf_path, opf).unwrap();
+        opf_path
+    }
+
+    /// Build a book OPF with no cover image declared: triggers an R4.2.1
+    /// error ("cover image must be declared") during validation.
+    fn create_broken_book_opf_missing_cover(dir: &Path) -> PathBuf {
+        fs::write(dir.join("toc.ncx"), "<ncx><navMap></navMap></ncx>").unwrap();
+        fs::write(
+            dir.join("content.html"),
+            r#"<html><body><h1>Title</h1><p>Paragraph.</p></body></html>"#,
+        )
+        .unwrap();
+        let opf = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>No Cover Book</dc:title>
+    <dc:language>en</dc:language>
+    <dc:creator>Author</dc:creator>
+  </metadata>
+  <manifest>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+    <item id="content" href="content.html" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="content"/>
+  </spine>
+</package>"#;
+        let opf_path = dir.join("content.opf");
+        fs::write(&opf_path, opf).unwrap();
+        opf_path
+    }
+
+    /// Build a book OPF with a small (10x10) cover image: triggers an R4.2.3
+    /// warning (shortest side < 500 px) but NO errors.
+    fn create_warning_book_opf_small_cover(dir: &Path) -> PathBuf {
+        let jpeg = make_test_jpeg(); // 10x10
+        fs::write(dir.join("cover.jpg"), &jpeg).unwrap();
+        fs::write(dir.join("toc.ncx"), "<ncx><navMap></navMap></ncx>").unwrap();
+        fs::write(
+            dir.join("content.html"),
+            r#"<html><body><h1>Title</h1><p>Paragraph.</p></body></html>"#,
+        )
+        .unwrap();
+        let opf = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Small Cover Book</dc:title>
+    <dc:language>en</dc:language>
+    <dc:creator>Author</dc:creator>
+    <meta name="cover" content="cover"/>
+  </metadata>
+  <manifest>
+    <item id="cover" href="cover.jpg" media-type="image/jpeg"/>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+    <item id="content" href="content.html" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="content"/>
+  </spine>
+</package>"#;
+        let opf_path = dir.join("content.opf");
+        fs::write(&opf_path, opf).unwrap();
+        opf_path
+    }
+
+    /// A valid OPF passes pre-flight and the subsequent MOBI build also
+    /// succeeds. This is the happy path for `kindling build` with default
+    /// validation enabled.
+    #[test]
+    fn test_build_preflight_valid_opf_passes() {
+        let dir = TempDir::new("preflight_valid");
+        let opf = create_clean_book_opf(dir.path());
+
+        // Pre-flight should succeed with zero errors.
+        crate::run_preflight_validation(&opf, false)
+            .expect("clean OPF should pass pre-flight validation");
+
+        // And the MOBI build itself should still succeed end-to-end.
+        let output = dir.path().join("out.mobi");
+        mobi::build_mobi(
+            &opf, &output, true, false, None, false, false, false, false, None, false,
+        )
+        .expect("build should succeed for clean OPF");
+        assert!(output.exists(), "MOBI output file must exist");
+        let size = fs::metadata(&output).unwrap().len();
+        assert!(size > 0, "MOBI output must be non-empty");
+        println!("  \u{2713} clean OPF passes pre-flight + builds ({} bytes)", size);
+    }
+
+    /// An OPF with a missing cover image triggers a validation error, which
+    /// must cause `run_preflight_validation` to return `Err(n)` with n >= 1.
+    /// In the real build flow this aborts the build with exit code 1.
+    #[test]
+    fn test_build_preflight_validation_error_aborts() {
+        let dir = TempDir::new("preflight_broken");
+        let opf = create_broken_book_opf_missing_cover(dir.path());
+
+        let result = crate::run_preflight_validation(&opf, false);
+        match result {
+            Err(errors) => {
+                assert!(
+                    errors >= 1,
+                    "missing-cover OPF should report >= 1 validation error, got {}",
+                    errors
+                );
+                println!("  \u{2713} missing-cover OPF aborts pre-flight ({} errors)", errors);
+            }
+            Ok(()) => panic!(
+                "missing-cover OPF should fail pre-flight validation, but it passed"
+            ),
+        }
+    }
+
+    /// Passing `no_validate = true` short-circuits pre-flight entirely: even
+    /// an OPF that would otherwise error out is allowed through, matching
+    /// the `--no-validate` CLI escape hatch.
+    #[test]
+    fn test_build_preflight_no_validate_bypasses_errors() {
+        let dir = TempDir::new("preflight_skip");
+        let opf = create_broken_book_opf_missing_cover(dir.path());
+
+        // Even though the OPF has validation errors, --no-validate makes
+        // pre-flight a no-op that returns Ok.
+        crate::run_preflight_validation(&opf, true)
+            .expect("--no-validate should skip pre-flight regardless of errors");
+        println!("  \u{2713} --no-validate bypasses validation errors");
+    }
+
+    /// An OPF with only warnings (no errors) must not abort the build.
+    /// `run_preflight_validation` should return `Ok(())` and the caller
+    /// should continue with MOBI generation.
+    #[test]
+    fn test_build_preflight_warnings_do_not_abort() {
+        let dir = TempDir::new("preflight_warn");
+        let opf = create_warning_book_opf_small_cover(dir.path());
+
+        // Sanity check: the underlying validator must actually produce
+        // warnings (not errors) for this fixture.
+        let report = validate::validate_opf(&opf).unwrap();
+        assert_eq!(
+            report.error_count(),
+            0,
+            "small-cover fixture should produce zero errors, got: {:?}",
+            report.findings
+        );
+        assert!(
+            report.warning_count() >= 1,
+            "small-cover fixture should produce >= 1 warning, got: {:?}",
+            report.findings
+        );
+
+        // Pre-flight passes despite warnings.
+        crate::run_preflight_validation(&opf, false)
+            .expect("warnings alone must not abort pre-flight");
+        println!(
+            "  \u{2713} warnings-only OPF passes pre-flight ({} warnings)",
+            report.warning_count()
+        );
+    }
+
+    // =======================================================================
     // HTML/XHTML validation
     //
     // These tests guard against HTML well-formedness regressions in MOBI text

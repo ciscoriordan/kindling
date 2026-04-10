@@ -49,11 +49,14 @@ kindling-cli build input.opf -o output.mobi
 kindling-cli build input.opf -o output.mobi --no-compress    # skip compression for fast dev builds
 kindling-cli build input.opf -o output.mobi --headwords-only  # index headwords only (no inflections)
 kindling-cli build input.opf -o output.mobi --no-kindle-limits  # skip per-letter HTML grouping
+kindling-cli build input.opf -o output.mobi --no-validate     # skip KDP pre-flight validation
 ```
 
 The input OPF must reference HTML files with `<idx:entry>`, `<idx:orth>`, and `<idx:iform>` markup following the [Amazon Kindle Publishing Guidelines](http://kindlegen.s3.amazonaws.com/AmazonKindlePublishingGuidelines.pdf). Both headwords and inflected forms are indexed so that looking up any form on the Kindle finds the correct dictionary entry.
 
 By default, dictionaries enforce Kindle publishing limits (`--kindle-limits`): entries are grouped by first letter to keep individual HTML sections under 30 MB, and a warning is printed if the total exceeds 300 sections. Use `--no-kindle-limits` to disable this and produce a single flat HTML blob.
+
+Every `build` also runs the Kindle Publishing Guidelines validator as an automatic pre-flight step before writing the MOBI. If validation reports any errors, the build is aborted with exit code 1; warnings are printed but do not block the build. Pass `--no-validate` to skip the check. See [Validation](#validation) for the full list of rules.
 
 ### Books
 
@@ -65,9 +68,12 @@ kindling-cli build input.epub --kf8-only -o book.azw3  # explicit output path
 kindling-cli build input.epub --no-hd-images           # skip HD image container
 kindling-cli build input.epub --no-embed-source        # smaller file, but breaks Kindle Previewer
 kindling-cli build input.epub --kindle-limits          # warn about HTML files exceeding 30 MB
+kindling-cli build input.epub --no-validate            # skip KDP pre-flight validation
 ```
 
 Auto-detects dictionary vs book by checking for `<idx:entry>` tags. Book MOBIs include embedded images, HD image container (for high-DPI Kindle screens), and KF8 dual-format output. The original EPUB is embedded by default for Kindle Previewer compatibility (`--no-embed-source` to skip).
+
+Every `build` runs the Kindle Publishing Guidelines validator automatically before writing the MOBI. Findings are printed with severity, rule id, and file:line; the build is aborted on any error (warnings are advisory). Pass `--no-validate` to skip pre-flight entirely.
 
 The `--kf8-only` flag outputs KF8-only format with `.azw3` extension instead of the default dual MOBI7+KF8 `.mobi`. KF8-only files are smaller (no redundant MOBI7 section) and handled better by Calibre. Dual format remains the default for maximum compatibility with older Kindle devices. Available for both books and comics.
 
@@ -107,6 +113,8 @@ kindling-cli validate input.opf             # print findings, exit 1 on errors
 kindling-cli validate input.opf --strict    # exit 1 on any warning too
 ```
 
+Validation also runs **automatically** as a pre-flight step inside every `kindling build` invocation (including kindlegen-compat mode `kindling input.opf`). Any validation errors abort the build with exit code 1; warnings are printed but do not block the build. Pass `--no-validate` to `build` to skip the pre-flight entirely. Comic builds (`kindling comic`) do not run the validator because comics have different structural requirements that the book-oriented rules do not cover.
+
 Runs pre-flight checks against the [Amazon Kindle Publishing Guidelines](http://kindlegen.s3.amazonaws.com/AmazonKindlePublishingGuidelines.pdf) (version 2026.1) before building, catching the most common authoring mistakes:
 
 - **4.2 Internal cover image**: must exist (Method 1 `properties="coverimage"` or Method 2 `<meta name="cover">`), no duplicate HTML cover page in the spine, shortest side >= 500 px
@@ -125,9 +133,10 @@ Output: one line per finding with severity (`info`/`warning`/`error`), KPG secti
 kindling-cli input.epub                          # same as kindlegen
 kindling-cli input.epub -dont_append_source      # flag accepted
 kindling-cli input.epub -o output.mobi           # explicit output path
+kindling-cli input.opf  -no_validate             # skip KDP pre-flight validation
 ```
 
-Drop-in replacement. Same CLI syntax, same status codes (`:I1036:` on success, `:E23026:` on failure).
+Drop-in replacement. Same CLI syntax, same status codes (`:I1036:` on success, `:E23026:` on failure). The KDP pre-flight validator runs by default in kindlegen-compat mode too; pass `-no_validate` (or `--no-validate`) to skip it.
 
 ## Performance and Comparisons
 

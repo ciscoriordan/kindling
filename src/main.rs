@@ -23,7 +23,7 @@ mod tests;
 mod validate;
 mod vwi;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
 
 use clap::{Parser, Subcommand};
@@ -86,6 +86,12 @@ enum Commands {
         /// Disable Kindle publishing limits enforcement (see --kindle-limits)
         #[arg(long, overrides_with = "kindle_limits")]
         no_kindle_limits: bool,
+
+        /// Skip the automatic Kindle Publishing Guidelines pre-flight check.
+        /// Validation runs by default before every build; use this flag to
+        /// bypass it (e.g. when a known-benign finding would otherwise abort).
+        #[arg(long)]
+        no_validate: bool,
     },
 
     /// Convert comic images/CBZ/CBR/EPUB to Kindle-optimized MOBI
@@ -233,12 +239,13 @@ fn is_kindlegen_compat_mode() -> bool {
 
 /// Parse kindlegen-compatible arguments.
 /// Accepts: kindling <input_file> [-o <filename>] [-dont_append_source] [-locale <value>]
-///          [-c0] [-c1] [-c2] [-verbose]
-/// Returns (input, output_override)
-fn parse_kindlegen_args() -> (PathBuf, Option<String>) {
+///          [-c0] [-c1] [-c2] [-verbose] [-no_validate | --no-validate]
+/// Returns (input, output_override, no_validate)
+fn parse_kindlegen_args() -> (PathBuf, Option<String>, bool) {
     let args: Vec<String> = std::env::args().collect();
     let input = PathBuf::from(&args[1]);
     let mut output_name: Option<String> = None;
+    let mut no_validate = false;
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
@@ -258,13 +265,17 @@ fn parse_kindlegen_args() -> (PathBuf, Option<String>) {
                 // Silently ignore these flags
                 i += 1;
             }
+            "-no_validate" | "--no-validate" => {
+                no_validate = true;
+                i += 1;
+            }
             _ => {
                 // Unknown flag, skip
                 i += 1;
             }
         }
     }
-    (input, output_name)
+    (input, output_name, no_validate)
 }
 
 /// Resolve the output path for a build.
@@ -294,6 +305,7 @@ fn do_build(
     creator_tag: bool,
     kf8_only: bool,
     kindle_limits: bool,
+    no_validate: bool,
 ) {
     let is_epub = input
         .extension()
@@ -330,6 +342,17 @@ fn do_build(
             }
         };
 
+        // Pre-flight KDP validation on the extracted OPF.
+        if let Err(errors) = run_preflight_validation(&opf_path, no_validate) {
+            epub::cleanup_temp_dir(&temp_dir);
+            eprintln!(
+                "Build aborted: {} validation errors. Run with --no-validate to skip.",
+                errors
+            );
+            println!("Error(prcgen):E24000: Could not build Mobi file");
+            process::exit(1);
+        }
+
         let result = mobi::build_mobi(
             &opf_path, output_path, no_compress, headwords_only,
             srcs_data.as_deref(), include_cmet, no_hd_images, creator_tag, kf8_only, None, kindle_limits,
@@ -337,7 +360,16 @@ fn do_build(
         epub::cleanup_temp_dir(&temp_dir);
         result
     } else {
-        // Direct OPF input
+        // Direct OPF input: run pre-flight validation first.
+        if let Err(errors) = run_preflight_validation(input, no_validate) {
+            eprintln!(
+                "Build aborted: {} validation errors. Run with --no-validate to skip.",
+                errors
+            );
+            println!("Error(prcgen):E24000: Could not build Mobi file");
+            process::exit(1);
+        }
+
         mobi::build_mobi(
             input, output_path, no_compress, headwords_only,
             srcs_data.as_deref(), include_cmet, no_hd_images, creator_tag, kf8_only, None, kindle_limits,
@@ -365,7 +397,7 @@ fn do_build(
 fn main() {
     if is_kindlegen_compat_mode() {
         // Kindlegen-compatible invocation: kindling <file> [-o name] [flags...]
-        let (input, output_name) = parse_kindlegen_args();
+        let (input, output_name, no_validate) = parse_kindlegen_args();
 
         // In kindlegen compat mode, -o specifies just a filename next to the input
         let output_path = if let Some(name) = output_name {
@@ -375,7 +407,7 @@ fn main() {
             input.with_extension("mobi")
         };
 
-        do_build(&input, &output_path, false, false, true, false, false, false, false, true);
+        do_build(&input, &output_path, false, false, true, false, false, false, false, true, no_validate);
     } else {
         let cli = Cli::parse();
 
@@ -392,6 +424,7 @@ fn main() {
                 kf8_only,
                 kindle_limits,
                 no_kindle_limits,
+                no_validate,
             } => {
                 // Default: ON for dictionaries, OFF for books.
                 // Since we don't know the content type yet at parse time, we pass
@@ -410,7 +443,7 @@ fn main() {
                     true
                 };
                 let output_path = resolve_output_path(&input, output, kf8_only);
-                do_build(&input, &output_path, no_compress, headwords_only, !no_embed_source, include_cmet, no_hd_images, creator_tag, kf8_only, effective_kindle_limits);
+                do_build(&input, &output_path, no_compress, headwords_only, !no_embed_source, include_cmet, no_hd_images, creator_tag, kf8_only, effective_kindle_limits, no_validate);
             }
             Commands::Comic {
                 input,
@@ -552,4 +585,58 @@ fn do_validate(opf_path: &PathBuf, strict: bool) {
     if fail {
         process::exit(1);
     }
+}
+
+/// Run the KDP validator as a pre-flight step inside `do_build` and friends.
+///
+/// When `no_validate` is true, prints a skip notice and returns `Ok(())`.
+/// Otherwise runs `validate_opf`, prints each finding, and prints the summary
+/// line. Returns `Err(error_count)` if the report contains any errors (caller
+/// should abort the build); `Ok(())` otherwise. Warnings never abort but a
+/// "validation passed with N warnings" notice is printed.
+///
+/// Unlike `do_validate`, this function does NOT call `process::exit` on error
+/// so the caller can clean up temp directories before aborting.
+fn run_preflight_validation(opf_path: &Path, no_validate: bool) -> Result<(), usize> {
+    if no_validate {
+        println!("Skipping KDP validation (--no-validate)");
+        return Ok(());
+    }
+
+    println!(
+        "Validating {} against Kindle Publishing Guidelines v{}",
+        opf_path.display(),
+        kdp_rules::KPG_VERSION
+    );
+
+    let report = match validate::validate_opf(opf_path) {
+        Ok(r) => r,
+        Err(e) => {
+            // Can't parse the OPF at all: print a warning and continue; the
+            // build itself will produce a clearer error below.
+            eprintln!(
+                "Warning: could not parse OPF for pre-flight validation ({}): {}",
+                opf_path.display(),
+                e
+            );
+            return Ok(());
+        }
+    };
+
+    for finding in &report.findings {
+        println!("{}", finding);
+    }
+
+    let errors = report.error_count();
+    let warnings = report.warning_count();
+    let infos = report.info_count();
+    println!("{} errors, {} warnings, {} info", errors, warnings, infos);
+
+    if errors > 0 {
+        return Err(errors);
+    }
+    if warnings > 0 {
+        println!("Validation passed with {} warnings", warnings);
+    }
+    Ok(())
 }
