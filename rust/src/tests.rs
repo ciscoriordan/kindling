@@ -4270,4 +4270,664 @@ mod tests {
         );
         println!("  \u{2713} <hr/> separators present between dictionary entries ({} found)", hr_count);
     }
+
+    // =======================================================================
+    // MOBI structural validation tests
+    // =======================================================================
+
+    // -----------------------------------------------------------------------
+    // Helper: build a dictionary MOBI with kindle_limits enabled
+    // -----------------------------------------------------------------------
+
+    fn build_mobi_bytes_with_kindle_limits(
+        opf_path: &Path,
+        output_dir: &Path,
+    ) -> Vec<u8> {
+        let output_path = output_dir.join("output_kl.mobi");
+        mobi::build_mobi(
+            opf_path,
+            &output_path,
+            true,  // no_compress (faster tests)
+            false, // headwords_only
+            None,  // srcs_data
+            false, // include_cmet
+            false, // no_hd_images
+            false, // creator_tag
+            false, // kf8_only
+            None,  // doc_type
+            true,  // kindle_limits ON
+        )
+        .expect("build_mobi with kindle_limits failed");
+        fs::read(&output_path).expect("could not read output MOBI")
+    }
+
+    // -----------------------------------------------------------------------
+    // Helper: decode inverted VWI from INDX entry tag data
+    // -----------------------------------------------------------------------
+
+    fn decode_vwi_inv(data: &[u8], start: usize) -> (u32, usize) {
+        let mut value: u32 = 0;
+        let mut pos = start;
+        loop {
+            if pos >= data.len() {
+                break;
+            }
+            let b = data[pos];
+            value = (value << 7) | (b as u32 & 0x7F);
+            pos += 1;
+            if b & 0x80 != 0 {
+                // High bit set = last byte in inverted VWI
+                break;
+            }
+        }
+        (value, pos)
+    }
+
+    // -----------------------------------------------------------------------
+    // Helper: strip trailing bytes from an uncompressed text record
+    // -----------------------------------------------------------------------
+
+    /// Strip the trailing bytes (TBS + multibyte indicator) from a text record.
+    /// Returns just the text content portion.
+    fn strip_trailing_bytes(rec: &[u8]) -> &[u8] {
+        if rec.len() >= 2 {
+            &rec[..rec.len() - 2]
+        } else {
+            rec
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Helper: extract text blob by concatenating stripped text records
+    // -----------------------------------------------------------------------
+
+    fn extract_text_blob(data: &[u8]) -> Vec<u8> {
+        let (_, _, offsets) = parse_palmdb(data);
+        let rec0 = get_record(data, &offsets, 0);
+        let text_record_count = read_u16_be(rec0, 8) as usize;
+        let mut text_bytes = Vec::new();
+        for i in 1..=text_record_count {
+            if i < offsets.len() {
+                let rec = get_record(data, &offsets, i);
+                text_bytes.extend_from_slice(strip_trailing_bytes(rec));
+            }
+        }
+        text_bytes
+    }
+
+    // -----------------------------------------------------------------------
+    // Helper: parse INDX data records and extract (start_pos, text_len) pairs
+    // -----------------------------------------------------------------------
+
+    /// Parse all INDX data records starting from the primary header record
+    /// and return a Vec of (start_pos, text_len) for each headword entry.
+    fn parse_indx_entries(data: &[u8], offsets: &[u32], orth_idx: usize) -> Vec<(u32, u32)> {
+        let primary_rec = get_record(data, offsets, orth_idx);
+
+        // Primary INDX header: offset 24 = number of data records
+        let num_data_records = read_u32_be(primary_rec, 24) as usize;
+
+        let mut entries = Vec::new();
+
+        // Data records follow immediately after the primary record
+        for dr in 0..num_data_records {
+            let data_rec_idx = orth_idx + 1 + dr;
+            if data_rec_idx >= offsets.len() {
+                break;
+            }
+            let data_rec = get_record(data, offsets, data_rec_idx);
+            if data_rec.len() < 4 || &data_rec[0..4] != b"INDX" {
+                break;
+            }
+
+            // INDX data record header: offset 24 = entry count
+            let entry_count = read_u32_be(data_rec, 24) as usize;
+            // IDXT offset at header offset 20
+            let idxt_offset = read_u32_be(data_rec, 20) as usize;
+
+            // IDXT starts with "IDXT" magic followed by 2-byte offsets
+            if idxt_offset + 4 + entry_count * 2 > data_rec.len() {
+                continue;
+            }
+            if &data_rec[idxt_offset..idxt_offset + 4] != b"IDXT" {
+                continue;
+            }
+
+            for e in 0..entry_count {
+                let entry_offset = read_u16_be(data_rec, idxt_offset + 4 + e * 2) as usize;
+                if entry_offset >= data_rec.len() {
+                    continue;
+                }
+
+                // Parse entry: byte0 = (prefix_len << 5) | new_label_len
+                let byte0 = data_rec[entry_offset];
+                let new_label_len = (byte0 & 0x1F) as usize;
+                let after_label = entry_offset + 1 + new_label_len;
+                if after_label >= data_rec.len() {
+                    continue;
+                }
+
+                // Control byte follows the label
+                let _control = data_rec[after_label];
+                let tag_data_start = after_label + 1;
+
+                // Tag 1 = start_pos, Tag 2 = text_len (both inverted VWI)
+                let (start_pos, next) = decode_vwi_inv(data_rec, tag_data_start);
+                let (text_len, _) = decode_vwi_inv(data_rec, next);
+
+                entries.push((start_pos, text_len));
+            }
+        }
+
+        entries
+    }
+
+    // -----------------------------------------------------------------------
+    // Helper: create a dict fixture with unambiguous definitions
+    // (avoids repeating the headword in the definition text, which can
+    // cause find_entry_positions to match the wrong occurrence)
+    // -----------------------------------------------------------------------
+
+    fn create_dict_fixture_unambiguous(
+        dir: &Path,
+        entries: &[(&str, &[&str])],
+    ) -> PathBuf {
+        let mut html_body = String::new();
+        for (i, (hw, iforms)) in entries.iter().enumerate() {
+            html_body.push_str(&format!(
+                "<idx:entry><idx:orth value=\"{hw}\">{hw}</idx:orth>",
+                hw = hw
+            ));
+            for iform in *iforms {
+                html_body.push_str(&format!(
+                    "<idx:infl><idx:iform value=\"{iform}\"/></idx:infl>",
+                    iform = iform
+                ));
+            }
+            // Use a unique numeric definition that does NOT contain the headword
+            html_body.push_str(&format!(
+                "<b>{hw}</b> entry number {i}<hr/></idx:entry>\n",
+                hw = hw, i = i
+            ));
+        }
+
+        let html = format!(
+            r#"<html><head><guide></guide></head><body>{}</body></html>"#,
+            html_body
+        );
+        fs::write(dir.join("content.html"), &html).unwrap();
+
+        let opf = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf">
+  <metadata>
+    <dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">Test Dict</dc:title>
+    <dc:language xmlns:dc="http://purl.org/dc/elements/1.1/">en</dc:language>
+    <dc:creator xmlns:dc="http://purl.org/dc/elements/1.1/">Tester</dc:creator>
+    <x-metadata>
+      <DictionaryInLanguage>en</DictionaryInLanguage>
+      <DictionaryOutLanguage>en</DictionaryOutLanguage>
+      <DefaultLookupIndex>default</DefaultLookupIndex>
+    </x-metadata>
+  </metadata>
+  <manifest>
+    <item id="content" href="content.html" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="content"/>
+  </spine>
+</package>"#;
+        let opf_path = dir.join("content.opf");
+        fs::write(&opf_path, opf).unwrap();
+        opf_path
+    }
+
+    // =======================================================================
+    // 1. INDX offset validation
+    // =======================================================================
+
+    #[test]
+    fn test_indx_entries_point_to_valid_text() {
+        let dir = TempDir::new("indx_offset_valid");
+        let entries: &[(&str, &[&str])] = &[
+            ("apple", &["apples"]),
+            ("banana", &["bananas"]),
+            ("cherry", &["cherries"]),
+            ("date", &["dates"]),
+            ("elderberry", &["elderberries"]),
+        ];
+        let opf = create_dict_fixture_unambiguous(dir.path(), entries);
+        let data = build_mobi_bytes(&opf, dir.path(), true, true, None);
+
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let orth_idx = read_u32_be(rec0, 40) as usize;
+
+        let text_blob = extract_text_blob(&data);
+        let indx_entries = parse_indx_entries(&data, &offsets, orth_idx);
+
+        assert!(
+            !indx_entries.is_empty(),
+            "Should have parsed INDX entries"
+        );
+
+        for (i, &(start_pos, text_len)) in indx_entries.iter().enumerate() {
+            let sp = start_pos as usize;
+            let tl = text_len as usize;
+
+            // text_len must be > 0
+            assert!(
+                tl > 0,
+                "INDX entry {} has text_len=0 (start_pos={})",
+                i, sp
+            );
+
+            // start_pos + text_len must not exceed the text blob
+            assert!(
+                sp + tl <= text_blob.len(),
+                "INDX entry {} out of bounds: start_pos={}, text_len={}, text_blob_len={}",
+                i, sp, tl, text_blob.len()
+            );
+
+            // The entry's text region should contain "<b>" near the start.
+            // The start_pos may point to the idx:orth inner content (bare
+            // headword text) that precedes the <b>headword</b> markup, so
+            // we check the first 50 bytes of the entry region for <b>.
+            let search_end = (sp + 50).min(sp + tl).min(text_blob.len());
+            let region = &text_blob[sp..search_end];
+            let has_bold = region.windows(3).any(|w| w == b"<b>");
+            assert!(
+                has_bold,
+                "INDX entry {} at start_pos={} should contain '<b>' near the start, got {:?}",
+                i, sp,
+                String::from_utf8_lossy(region)
+            );
+        }
+
+        println!(
+            "  \u{2713} {} INDX entries all point to valid text with '<b>' in {} byte text blob",
+            indx_entries.len(),
+            text_blob.len()
+        );
+    }
+
+    // =======================================================================
+    // 2. Record 0 header cross-checks
+    // =======================================================================
+
+    #[test]
+    fn test_record0_text_length_matches_uncompressed_size() {
+        let dir = TempDir::new("rec0_text_len");
+        let entries: &[(&str, &[&str])] = &[
+            ("apple", &["apples"]),
+            ("banana", &["bananas"]),
+            ("cherry", &["cherries"]),
+        ];
+        let opf = create_dict_fixture(dir.path(), entries);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // PalmDOC header: offset 4 = text_length (u32)
+        let text_length = read_u32_be(rec0, 4) as usize;
+        // PalmDOC header: offset 8 = text_record_count (u16)
+        let text_record_count = read_u16_be(rec0, 8) as usize;
+
+        // Sum the uncompressed content of all text records (strip trailing bytes)
+        let mut total_uncompressed = 0usize;
+        for i in 1..=text_record_count {
+            if i < offsets.len() {
+                let rec = get_record(&data, &offsets, i);
+                total_uncompressed += strip_trailing_bytes(rec).len();
+            }
+        }
+
+        assert_eq!(
+            text_length, total_uncompressed,
+            "PalmDOC text_length ({}) should match sum of uncompressed text record sizes ({})",
+            text_length, total_uncompressed
+        );
+        println!(
+            "  \u{2713} text_length={} matches sum of {} text records",
+            text_length, text_record_count
+        );
+    }
+
+    #[test]
+    fn test_record0_text_record_count_matches_actual() {
+        let dir = TempDir::new("rec0_text_count");
+        let entries: &[(&str, &[&str])] = &[
+            ("apple", &[]),
+            ("banana", &[]),
+        ];
+        let opf = create_dict_fixture(dir.path(), entries);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        let text_record_count = read_u16_be(rec0, 8) as usize;
+
+        // The first non-text record after record 0 should be INDX (for dicts).
+        // orth_index_record tells us where INDX starts; text records are 1..orth_idx-1
+        let orth_idx = read_u32_be(rec0, 40) as usize;
+        // Text records = records 1 through orth_idx-1
+        // So actual count = orth_idx - 1
+        let actual_text_records = orth_idx - 1;
+
+        assert_eq!(
+            text_record_count, actual_text_records,
+            "text_record_count in header ({}) should match actual text records before INDX ({})",
+            text_record_count, actual_text_records
+        );
+        println!(
+            "  \u{2713} text_record_count={} matches INDX boundary at record {}",
+            text_record_count, orth_idx
+        );
+    }
+
+    #[test]
+    fn test_record0_orth_index_points_to_indx_magic() {
+        let dir = TempDir::new("rec0_orth_indx");
+        let entries: &[(&str, &[&str])] = &[
+            ("alpha", &["alphas"]),
+            ("beta", &["betas"]),
+            ("gamma", &["gammas"]),
+        ];
+        let opf = create_dict_fixture(dir.path(), entries);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // MOBI header offset 24 = orth_index_record, stored at rec0 offset 16+24 = 40
+        let orth_idx = read_u32_be(rec0, 40) as usize;
+        assert!(
+            orth_idx < offsets.len(),
+            "orth_index_record {} exceeds record count {}",
+            orth_idx, offsets.len()
+        );
+
+        let indx_rec = get_record(&data, &offsets, orth_idx);
+        assert_eq!(
+            &indx_rec[0..4], b"INDX",
+            "Record at orth_index_record={} should start with INDX magic, got {:?}",
+            orth_idx, &indx_rec[0..4]
+        );
+        println!("  \u{2713} orth_index_record={} -> INDX magic verified", orth_idx);
+    }
+
+    #[test]
+    fn test_record0_extra_record_data_flags() {
+        let dir = TempDir::new("rec0_extra_flags");
+        let opf = create_dict_fixture(dir.path(), &[("word", &[])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // MOBI header offset 224, stored at rec0 offset 16+224 = 240
+        let extra_flags = read_u32_be(rec0, 240);
+        assert_eq!(
+            extra_flags, 3,
+            "extra_record_data_flags should be 3 (multibyte + TBS), got {}",
+            extra_flags
+        );
+        println!("  \u{2713} extra_record_data_flags = {} (multibyte + TBS)", extra_flags);
+    }
+
+    // =======================================================================
+    // 3. Text record trailing bytes
+    // =======================================================================
+
+    #[test]
+    fn test_text_records_have_trailing_bytes() {
+        let dir = TempDir::new("trailing_bytes");
+        let entries: &[(&str, &[&str])] = &[
+            ("apple", &["apples"]),
+            ("banana", &["bananas"]),
+            ("cherry", &["cherries"]),
+        ];
+        let opf = create_dict_fixture(dir.path(), entries);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let text_record_count = read_u16_be(rec0, 8) as usize;
+
+        for i in 1..=text_record_count {
+            if i >= offsets.len() {
+                break;
+            }
+            let rec = get_record(&data, &offsets, i);
+            let len = rec.len();
+
+            assert!(
+                len >= 2,
+                "Text record {} too short ({} bytes) to have trailing bytes",
+                i, len
+            );
+
+            // Last two bytes should be 0x81 (TBS) and 0x00 (multibyte indicator)
+            assert_eq!(
+                rec[len - 2], 0x81,
+                "Text record {} trailing byte[-2] should be 0x81 (TBS), got 0x{:02X}",
+                i, rec[len - 2]
+            );
+            assert_eq!(
+                rec[len - 1], 0x00,
+                "Text record {} trailing byte[-1] should be 0x00 (multibyte), got 0x{:02X}",
+                i, rec[len - 1]
+            );
+        }
+
+        println!(
+            "  \u{2713} All {} text records end with [0x81, 0x00] trailing bytes",
+            text_record_count
+        );
+    }
+
+    #[test]
+    fn test_text_records_expected_size() {
+        let dir = TempDir::new("text_rec_size");
+        // Create enough entries to produce text > 4096 bytes so we get multiple records
+        let mut entries_vec: Vec<(&str, &[&str])> = Vec::new();
+        let words: &[&str] = &[
+            "aardvark", "abacus", "abandon", "abbreviation", "abdomen",
+            "aberration", "ability", "abnormal", "abolish", "abominable",
+        ];
+        for w in words {
+            entries_vec.push((w, &[]));
+        }
+        let opf = create_dict_fixture(dir.path(), &entries_vec);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let text_record_count = read_u16_be(rec0, 8) as usize;
+
+        // RECORD_SIZE = 4096, plus 2 trailing bytes = 4098
+        let expected_full_size = 4096 + 2;
+        for i in 1..=text_record_count {
+            if i >= offsets.len() {
+                break;
+            }
+            let rec = get_record(&data, &offsets, i);
+            if i < text_record_count {
+                // Non-last records should be exactly RECORD_SIZE + 2 trailing bytes
+                assert_eq!(
+                    rec.len(), expected_full_size,
+                    "Text record {} (non-last) should be {} bytes, got {}",
+                    i, expected_full_size, rec.len()
+                );
+            } else {
+                // Last record can be smaller but must still have trailing bytes
+                assert!(
+                    rec.len() >= 3, // at least 1 byte of text + 2 trailing
+                    "Last text record {} should have at least 3 bytes, got {}",
+                    i, rec.len()
+                );
+                assert!(
+                    rec.len() <= expected_full_size,
+                    "Last text record {} should be <= {} bytes, got {}",
+                    i, expected_full_size, rec.len()
+                );
+            }
+        }
+
+        println!(
+            "  \u{2713} {} text records: non-last={} bytes, last <= {} bytes",
+            text_record_count, expected_full_size, expected_full_size
+        );
+    }
+
+    // =======================================================================
+    // 4. find_entry_positions completeness (no (0,0) results)
+    // =======================================================================
+
+    #[test]
+    fn test_find_entry_positions_no_zeros_no_kindle_limits() {
+        let dir = TempDir::new("entry_pos_no_kl");
+        let entries: &[(&str, &[&str])] = &[
+            ("apple", &["apples"]),
+            ("banana", &["bananas"]),
+            ("cherry", &["cherries"]),
+            ("date", &["dates"]),
+        ];
+        let opf = create_dict_fixture(dir.path(), entries);
+        let data = build_mobi_bytes(&opf, dir.path(), true, true, None);
+
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let orth_idx = read_u32_be(rec0, 40) as usize;
+
+        let indx_entries = parse_indx_entries(&data, &offsets, orth_idx);
+
+        assert_eq!(
+            indx_entries.len(), entries.len(),
+            "INDX should have {} entries (headwords_only), got {}",
+            entries.len(), indx_entries.len()
+        );
+
+        for (i, &(start_pos, text_len)) in indx_entries.iter().enumerate() {
+            assert!(
+                start_pos > 0 || text_len > 0,
+                "INDX entry {} has (start_pos=0, text_len=0) - find_entry_positions failed for this entry (no kindle_limits)",
+                i
+            );
+        }
+
+        println!(
+            "  \u{2713} All {} INDX entries have non-zero positions (no kindle_limits)",
+            indx_entries.len()
+        );
+    }
+
+    #[test]
+    fn test_find_entry_positions_no_zeros_with_kindle_limits() {
+        let dir = TempDir::new("entry_pos_kl");
+        let entries: &[(&str, &[&str])] = &[
+            ("apple", &["apples"]),
+            ("banana", &["bananas"]),
+            ("cherry", &["cherries"]),
+            ("date", &["dates"]),
+        ];
+        let opf = create_dict_fixture(dir.path(), entries);
+        let data = build_mobi_bytes_with_kindle_limits(&opf, dir.path());
+
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let orth_idx = read_u32_be(rec0, 40) as usize;
+
+        let indx_entries = parse_indx_entries(&data, &offsets, orth_idx);
+
+        assert!(
+            !indx_entries.is_empty(),
+            "INDX should have entries with kindle_limits"
+        );
+
+        for (i, &(start_pos, text_len)) in indx_entries.iter().enumerate() {
+            assert!(
+                start_pos > 0 || text_len > 0,
+                "INDX entry {} has (start_pos=0, text_len=0) - find_entry_positions failed for this entry (with kindle_limits)",
+                i
+            );
+        }
+
+        println!(
+            "  \u{2713} All {} INDX entries have non-zero positions (with kindle_limits)",
+            indx_entries.len()
+        );
+    }
+
+    // =======================================================================
+    // 5. Decompression roundtrip (full MOBI text records)
+    // =======================================================================
+
+    #[test]
+    fn test_decompression_roundtrip_compressed_mobi() {
+        let dir = TempDir::new("decomp_roundtrip");
+        let entries: &[(&str, &[&str])] = &[
+            ("apple", &["apples"]),
+            ("banana", &["bananas"]),
+            ("cherry", &["cherries"]),
+        ];
+        let opf = create_dict_fixture(dir.path(), entries);
+
+        // Build both compressed and uncompressed versions
+        let data_uncomp = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let output_comp = dir.path().join("output_comp.mobi");
+        mobi::build_mobi(
+            &opf,
+            &output_comp,
+            false, // compress
+            false, // headwords_only
+            None,
+            false,
+            false,
+            false,
+            false,
+            None,
+            false,
+        )
+        .expect("compressed build_mobi failed");
+        let data_comp = fs::read(&output_comp).expect("could not read compressed MOBI");
+
+        // Extract uncompressed text blob
+        let text_uncomp = extract_text_blob(&data_uncomp);
+
+        // Extract and decompress text records from the compressed version
+        let (_, _, offsets_c) = parse_palmdb(&data_comp);
+        let rec0_c = get_record(&data_comp, &offsets_c, 0);
+        let text_record_count_c = read_u16_be(rec0_c, 8) as usize;
+
+        let mut decompressed_text = Vec::new();
+        for i in 1..=text_record_count_c {
+            if i >= offsets_c.len() {
+                break;
+            }
+            let rec = get_record(&data_comp, &offsets_c, i);
+            // Strip trailing bytes before decompression
+            let compressed_data = strip_trailing_bytes(rec);
+            let chunk = palmdoc_decompress(compressed_data);
+            decompressed_text.extend_from_slice(&chunk);
+        }
+
+        assert_eq!(
+            text_uncomp.len(),
+            decompressed_text.len(),
+            "Decompressed text length ({}) should match uncompressed text length ({})",
+            decompressed_text.len(),
+            text_uncomp.len()
+        );
+        assert_eq!(
+            text_uncomp, decompressed_text,
+            "Decompressed text should exactly match uncompressed text"
+        );
+
+        println!(
+            "  \u{2713} Decompression roundtrip: {} bytes match between compressed and uncompressed",
+            text_uncomp.len()
+        );
+    }
 }
