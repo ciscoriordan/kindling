@@ -14,4 +14,3 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Run tests
         run: cargo test -- --show-output
-        working-directory: rust
