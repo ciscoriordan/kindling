@@ -104,7 +104,7 @@ fn build_dictionary_mobi(
     // Build the text content (stripped HTML for all spine items)
     eprintln!("Building text content...");
     let text_content = if kindle_limits {
-        build_text_content_by_letter(&all_entries)
+        build_text_content_by_letter(&opf, &all_entries)
     } else {
         build_text_content(&opf, true)
     };
@@ -1164,10 +1164,46 @@ fn build_text_content(opf: &OPFData, strip_idx: bool) -> Vec<u8> {
 /// producing one logical section per letter separated by `<mbp:pagebreak/>` tags.
 /// Each entry's HTML content has idx: markup stripped for the text blob.
 ///
+/// Non-dictionary spine items (cover, usage guide, copyright, etc.) are included
+/// before the dictionary entries so that front matter is preserved.
+///
 /// This structure follows Amazon's recommendation for dictionary organization and
 /// keeps individual logical "file" sizes manageable.
-fn build_text_content_by_letter(entries: &[DictionaryEntry]) -> Vec<u8> {
+fn build_text_content_by_letter(opf: &OPFData, entries: &[DictionaryEntry]) -> Vec<u8> {
     use std::collections::BTreeMap;
+
+    // Collect non-dictionary spine items (front matter) and extract styles
+    let mut front_matter_sections: Vec<String> = Vec::new();
+    let mut first_style: Option<String> = None;
+    let body_re = Regex::new(r"(?s)<body[^>]*>(.*?)</body>").unwrap();
+    let style_re = Regex::new(r"(?s)<style[^>]*>.*?</style>").unwrap();
+    for html_path in opf.get_content_html_paths() {
+        if let Ok(content) = std::fs::read_to_string(&html_path) {
+            if content.contains("<idx:entry") {
+                // Dictionary file - extract style from first dictionary file if available
+                if first_style.is_none() {
+                    let head_re = Regex::new(r"(?s)<head>.*?</head>").unwrap();
+                    if let Some(head_match) = head_re.find(&content) {
+                        let styles: Vec<String> = style_re
+                            .find_iter(head_match.as_str())
+                            .map(|m| m.as_str().to_string())
+                            .collect();
+                        if !styles.is_empty() {
+                            first_style = Some(styles.join(""));
+                        }
+                    }
+                }
+                continue; // Skip dictionary files, they'll be handled by letter grouping
+            }
+            // Non-dictionary file: clean it and extract body content
+            let cleaned = strip_idx_markup(&content);
+            if let Some(cap) = body_re.captures(&cleaned) {
+                front_matter_sections.push(cap.get(1).unwrap().as_str().trim().to_string());
+            } else {
+                front_matter_sections.push(cleaned);
+            }
+        }
+    }
 
     // Group entries by first character (lowercased)
     let mut letter_groups: BTreeMap<String, Vec<&DictionaryEntry>> = BTreeMap::new();
@@ -1190,6 +1226,12 @@ fn build_text_content_by_letter(entries: &[DictionaryEntry]) -> Vec<u8> {
 
     // Build body sections per letter group
     let mut body_sections: Vec<String> = Vec::new();
+
+    // Prepend front matter sections
+    for fm in &front_matter_sections {
+        body_sections.push(fm.clone());
+    }
+
     for (letter, group_entries) in &letter_groups {
         let mut section_parts: Vec<String> = Vec::new();
         for entry in group_entries {
@@ -1231,10 +1273,11 @@ fn build_text_content_by_letter(entries: &[DictionaryEntry]) -> Vec<u8> {
         );
     }
 
+    let style_block = first_style.unwrap_or_default();
     let merged_body = body_sections.join("<mbp:pagebreak/>");
     let combined = format!(
-        "<html><head><guide></guide></head><body>{}  <mbp:pagebreak/></body></html>",
-        merged_body
+        "<html><head>{}<guide></guide></head><body>{}  <mbp:pagebreak/></body></html>",
+        style_block, merged_body
     );
     combined.into_bytes()
 }
@@ -1251,10 +1294,26 @@ fn strip_idx_markup(html: &str) -> String {
     let xmlns = Regex::new(r#"\s+xmlns:\w+="[^"]*""#).unwrap();
     result = xmlns.replace_all(&result, "").to_string();
 
-    // Remove <head>...</head>, replace with kindlegen style
+    // Extract any <style>...</style> blocks from the <head> before replacing it
+    let style_re = Regex::new(r"(?s)<style[^>]*>.*?</style>").unwrap();
     let head_re = Regex::new(r"(?s)<head>.*?</head>").unwrap();
+    let style_block: String = head_re
+        .find(&result)
+        .map(|head_match| {
+            style_re
+                .find_iter(head_match.as_str())
+                .map(|m| m.as_str().to_string())
+                .collect::<Vec<_>>()
+                .join("")
+        })
+        .unwrap_or_default();
+    let new_head = if style_block.is_empty() {
+        "<head><guide></guide></head>".to_string()
+    } else {
+        format!("<head>{}<guide></guide></head>", style_block)
+    };
     result = head_re
-        .replace_all(&result, "<head><guide></guide></head>")
+        .replace_all(&result, new_head.as_str())
         .to_string();
 
     // Remove idx:iform tags entirely
@@ -1285,12 +1344,13 @@ fn strip_idx_markup(html: &str) -> String {
     let short_close = Regex::new(r"\s*</idx:short>").unwrap();
     result = short_close.replace_all(&result, "").to_string();
 
-    // Remove idx:entry tags but keep inner content
+    // Remove idx:entry open tags but keep inner content;
+    // replace close tags with <hr/> to visually separate entries
     let entry_open = Regex::new(r"<idx:entry[^>]*>\s*").unwrap();
     result = entry_open.replace_all(&result, "").to_string();
 
     let entry_close = Regex::new(r"\s*</idx:entry>").unwrap();
-    result = entry_close.replace_all(&result, "").to_string();
+    result = entry_close.replace_all(&result, "<hr/>").to_string();
 
     // Collapse whitespace
     let ws = Regex::new(r"\s+").unwrap();

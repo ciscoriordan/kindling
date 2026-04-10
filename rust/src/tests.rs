@@ -4062,4 +4062,212 @@ mod tests {
         assert_eq!(&data[60..64], b"BOOK");
         println!("  \u{2713} kindle_limits OFF: valid MOBI produced");
     }
+
+    // =======================================================================
+    // Regression tests for dictionary output fixes
+    // =======================================================================
+
+    /// Helper: extract the full text content from an uncompressed MOBI file
+    /// by concatenating text records (records 1..N where N is text record count).
+    fn extract_text_from_uncompressed_mobi(data: &[u8]) -> String {
+        let (_, _, offsets) = parse_palmdb(data);
+        let rec0 = get_record(data, &offsets, 0);
+        // PalmDOC header: offset 8 = text record count (u16)
+        let text_record_count = read_u16_be(rec0, 8) as usize;
+        let mut text_bytes = Vec::new();
+        for i in 1..=text_record_count {
+            if i < offsets.len() {
+                let rec = get_record(data, &offsets, i);
+                text_bytes.extend_from_slice(rec);
+            }
+        }
+        String::from_utf8_lossy(&text_bytes).to_string()
+    }
+
+    #[test]
+    fn test_dict_css_preserved_in_text() {
+        let dir = TempDir::new("dict_css_preserved");
+
+        // Build HTML with a <style> block in the <head>
+        let html = r#"<html><head><style>.def { margin-left: 20px; }</style><guide></guide></head><body>
+<idx:entry><idx:orth value="apple">apple</idx:orth><span class="def">a fruit</span></idx:entry>
+<idx:entry><idx:orth value="banana">banana</idx:orth><span class="def">another fruit</span></idx:entry>
+</body></html>"#;
+        fs::write(dir.path().join("content.html"), html).unwrap();
+
+        let opf = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf">
+  <metadata>
+    <dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">CSS Dict</dc:title>
+    <dc:language xmlns:dc="http://purl.org/dc/elements/1.1/">en</dc:language>
+    <dc:creator xmlns:dc="http://purl.org/dc/elements/1.1/">Tester</dc:creator>
+    <x-metadata>
+      <DictionaryInLanguage>en</DictionaryInLanguage>
+      <DictionaryOutLanguage>en</DictionaryOutLanguage>
+      <DefaultLookupIndex>default</DefaultLookupIndex>
+    </x-metadata>
+  </metadata>
+  <manifest>
+    <item id="content" href="content.html" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="content"/>
+  </spine>
+</package>"#;
+        let opf_path = dir.path().join("content.opf");
+        fs::write(&opf_path, opf).unwrap();
+
+        let data = build_mobi_bytes(&opf_path, dir.path(), true, false, None);
+        let text = extract_text_from_uncompressed_mobi(&data);
+
+        assert!(
+            text.contains(".def { margin-left: 20px; }"),
+            "CSS style block should be preserved in text output, got: {}",
+            &text[..text.len().min(500)]
+        );
+        assert!(
+            text.contains("<style>"),
+            "Style tag should be present in text output"
+        );
+        println!("  \u{2713} CSS <style> block preserved in dictionary text output");
+    }
+
+    #[test]
+    fn test_dict_front_matter_included() {
+        let dir = TempDir::new("dict_front_matter");
+
+        // Create front matter HTML (no idx:entry tags)
+        let cover_html = r#"<html><head></head><body><h1>My Dictionary</h1><p>Copyright 2026</p></body></html>"#;
+        fs::write(dir.path().join("cover.html"), cover_html).unwrap();
+
+        // Create dictionary content HTML
+        let dict_html = r#"<html><head><guide></guide></head><body>
+<idx:entry><idx:orth value="alpha">alpha</idx:orth><b>alpha</b> first letter</idx:entry>
+<idx:entry><idx:orth value="beta">beta</idx:orth><b>beta</b> second letter</idx:entry>
+</body></html>"#;
+        fs::write(dir.path().join("dict.html"), dict_html).unwrap();
+
+        // OPF with cover.html before dict.html in spine
+        let opf = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf">
+  <metadata>
+    <dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">FM Dict</dc:title>
+    <dc:language xmlns:dc="http://purl.org/dc/elements/1.1/">en</dc:language>
+    <dc:creator xmlns:dc="http://purl.org/dc/elements/1.1/">Tester</dc:creator>
+    <x-metadata>
+      <DictionaryInLanguage>en</DictionaryInLanguage>
+      <DictionaryOutLanguage>en</DictionaryOutLanguage>
+      <DefaultLookupIndex>default</DefaultLookupIndex>
+    </x-metadata>
+  </metadata>
+  <manifest>
+    <item id="cover" href="cover.html" media-type="application/xhtml+xml"/>
+    <item id="dict" href="dict.html" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="cover"/>
+    <itemref idref="dict"/>
+  </spine>
+</package>"#;
+        let opf_path = dir.path().join("content.opf");
+        fs::write(&opf_path, opf).unwrap();
+
+        // Build with kindle_limits=true to exercise build_text_content_by_letter
+        let output_path = dir.path().join("output.mobi");
+        mobi::build_mobi(
+            &opf_path,
+            &output_path,
+            true,  // no_compress
+            false, // headwords_only
+            None,  // srcs_data
+            false, // include_cmet
+            false, // no_hd_images
+            false, // creator_tag
+            false, // kf8_only
+            None,  // doc_type
+            true,  // kindle_limits ON
+        )
+        .expect("build_mobi with kindle_limits should succeed");
+
+        let data = fs::read(&output_path).expect("could not read output MOBI");
+        let text = extract_text_from_uncompressed_mobi(&data);
+
+        assert!(
+            text.contains("My Dictionary"),
+            "Front matter title should be present in kindle_limits output, got: {}",
+            &text[..text.len().min(500)]
+        );
+        assert!(
+            text.contains("Copyright 2026"),
+            "Front matter copyright should be present in kindle_limits output"
+        );
+
+        // Verify front matter comes before dictionary content
+        let fm_pos = text.find("My Dictionary").unwrap();
+        let dict_pos = text.find("first letter").unwrap();
+        assert!(
+            fm_pos < dict_pos,
+            "Front matter should appear before dictionary entries (fm at {}, dict at {})",
+            fm_pos, dict_pos
+        );
+        println!("  \u{2713} Front matter included and appears before dictionary entries in kindle_limits mode");
+    }
+
+    #[test]
+    fn test_dict_entry_separators() {
+        let dir = TempDir::new("dict_entry_separators");
+
+        // Create dictionary with multiple entries but NO <hr/> in source
+        let html = r#"<html><head><guide></guide></head><body>
+<idx:entry><idx:orth value="cat">cat</idx:orth><b>cat</b> a small animal</idx:entry>
+<idx:entry><idx:orth value="dog">dog</idx:orth><b>dog</b> a loyal animal</idx:entry>
+<idx:entry><idx:orth value="fish">fish</idx:orth><b>fish</b> an aquatic animal</idx:entry>
+</body></html>"#;
+        fs::write(dir.path().join("content.html"), html).unwrap();
+
+        let opf = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf">
+  <metadata>
+    <dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">Sep Dict</dc:title>
+    <dc:language xmlns:dc="http://purl.org/dc/elements/1.1/">en</dc:language>
+    <dc:creator xmlns:dc="http://purl.org/dc/elements/1.1/">Tester</dc:creator>
+    <x-metadata>
+      <DictionaryInLanguage>en</DictionaryInLanguage>
+      <DictionaryOutLanguage>en</DictionaryOutLanguage>
+      <DefaultLookupIndex>default</DefaultLookupIndex>
+    </x-metadata>
+  </metadata>
+  <manifest>
+    <item id="content" href="content.html" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="content"/>
+  </spine>
+</package>"#;
+        let opf_path = dir.path().join("content.opf");
+        fs::write(&opf_path, opf).unwrap();
+
+        let data = build_mobi_bytes(&opf_path, dir.path(), true, false, None);
+        let text = extract_text_from_uncompressed_mobi(&data);
+
+        // Count <hr/> separators - should have at least 2 (one between each pair of entries)
+        let hr_count = text.matches("<hr/>").count();
+        assert!(
+            hr_count >= 2,
+            "Should have at least 2 <hr/> separators between 3 entries, found {}. Text: {}",
+            hr_count,
+            &text[..text.len().min(500)]
+        );
+
+        // Verify separators appear between entries, not entries running together
+        assert!(
+            text.contains("a small animal<hr/>"),
+            "Entry content should be followed by <hr/> separator"
+        );
+        assert!(
+            text.contains("a loyal animal<hr/>"),
+            "Entry content should be followed by <hr/> separator"
+        );
+        println!("  \u{2713} <hr/> separators present between dictionary entries ({} found)", hr_count);
+    }
 }
