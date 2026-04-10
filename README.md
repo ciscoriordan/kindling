@@ -35,10 +35,12 @@ Download the latest release for your platform from [Releases](https://github.com
 - **Linux** - `kindling-cli-linux`
 - **Windows** - `kindling-cli-windows.exe`
 
-Or build from source:
+Or build from source. Kindling uses Rust edition 2024 and requires Rust 1.85 or newer. Run from the repo root:
 ```bash
-cd rust && cargo build --release
+cargo build --release
 ```
+
+The binary is written to `target/release/kindling-cli`.
 
 ## Usage
 
@@ -53,6 +55,8 @@ kindling-cli build input.opf -o output.mobi --no-validate     # skip KDP pre-fli
 ```
 
 The input OPF must reference HTML files with `<idx:entry>`, `<idx:orth>`, and `<idx:iform>` markup following the [Amazon Kindle Publishing Guidelines](http://kindlegen.s3.amazonaws.com/AmazonKindlePublishingGuidelines.pdf). Both headwords and inflected forms are indexed so that looking up any form on the Kindle finds the correct dictionary entry.
+
+If the OPF references a cover image (Method 1 `<item properties="coverimage"/>` or Method 2 `<meta name="cover">`), Kindling embeds it in the dictionary MOBI via EXTH 201 so it shows up on the Kindle home screen next to regular books and comics.
 
 By default, dictionaries enforce Kindle publishing limits (`--kindle-limits`): entries are grouped by first letter to keep individual HTML sections under 30 MB, and a warning is printed if the total exceeds 300 sections. Use `--no-kindle-limits` to disable this and produce a single flat HTML blob.
 
@@ -117,7 +121,7 @@ Validation also runs **automatically** as a pre-flight step inside every `kindli
 
 Runs pre-flight checks against the [Amazon Kindle Publishing Guidelines](http://kindlegen.s3.amazonaws.com/AmazonKindlePublishingGuidelines.pdf) (version 2026.1) before building, catching the most common authoring mistakes:
 
-- **4.2 Internal cover image**: must exist (Method 1 `properties="coverimage"` or Method 2 `<meta name="cover">`), no duplicate HTML cover page in the spine, shortest side >= 500 px
+- **4.2 Internal cover image**: must exist via Method 1 (EPUB 3 `<item properties="coverimage"/>`, preferred per KPG 4.2) or Method 2 (`<meta name="cover">`), no duplicate HTML cover page in the spine, shortest side >= 500 px
 - **5.2 Navigation**: NCX must be declared in the manifest and referenced via `<spine toc="...">`, TOC recommended for books > 20 pages
 - **6.1-6.5 HTML/CSS hygiene**: well-formed XHTML, no negative CSS values, no `<script>`, no nested `<p>`, file references match case
 - **10.3.1 Heading alignment**: warn on `<h1>`-`<h6>` with explicit `text-align`
@@ -125,7 +129,9 @@ Runs pre-flight checks against the [Amazon Kindle Publishing Guidelines](http://
 - **10.5.1 Tables**: warn on > 50 rows
 - **17/18.1 Unsupported tags**: `<form>`, `<input>`, `<frame>`, `<iframe>`, `<canvas>`, `<object>`, etc.
 
-Output: one line per finding with severity (`info`/`warning`/`error`), KPG section, message, and file:line where applicable, followed by a summary (`X errors, Y warnings, Z info`). Exit code is 0 on success, 1 if any errors are present (or any warnings in `--strict` mode).
+Output: one line per finding with severity (`info`/`warning`/`error`), rule id (e.g. `R4.2.1`), KPG section, PDF page reference, message, and file:line where applicable, followed by a summary (`X errors, Y warnings, Z info`). Exit code is 0 on success, 1 if any errors are present (or any warnings in `--strict` mode).
+
+The rule catalog is a single Rust const array in [`src/kdp_rules.rs`](src/kdp_rules.rs) with a `KPG_VERSION` constant and a `Rule` struct holding id, section, level, title, PDF page, and description. Check functions in `src/validate.rs` reference rules by id and inherit their severity and metadata, so updating the guidelines version touches one file plus any affected checks.
 
 ### Kindlegen compatibility
 
@@ -280,23 +286,58 @@ Controls where the content appears on the Kindle home screen.
 
 Dictionaries do NOT use EXTH 501. The Kindle identifies dictionaries by the combination of a valid orth index (MOBI header offset 24), EXTH 531/532 language records, and EXTH 547 `InMemory`. Adding an unrecognized EXTH 501 value (e.g. `"DICT"`) can prevent the Kindle from recognizing the file as a dictionary.
 
-## Testing
+## Project layout
 
-Tests run automatically on every push and pull request via [GitHub Actions](.github/workflows/test.yml).
+Standard Rust layout with `Cargo.toml` at the repo root:
 
-```bash
-cd rust && cargo test -- --show-output
+```
+kindling/
+├── Cargo.toml            # edition 2024, Rust 1.85+
+├── src/
+│   ├── main.rs           # CLI: build, comic, validate, kindlegen-compat
+│   ├── mobi.rs           # PalmDB + MOBI record 0 + EXTH writer
+│   ├── kf8.rs            # KF8 section, BOUNDARY, FDST, skeleton/fragment indexes
+│   ├── indx.rs           # Orthographic INDX records for dictionaries
+│   ├── palmdoc.rs        # PalmDOC LZ77 compression
+│   ├── exth.rs           # EXTH record encoding
+│   ├── vwi.rs            # Variable-width integer encoding
+│   ├── opf.rs            # OPF and EPUB parsing (Method 1 and Method 2 covers)
+│   ├── epub.rs           # EPUB extraction for books and comics
+│   ├── comic.rs          # Comic pipeline (crop, split, enhance, Panel View)
+│   ├── moire.rs          # Moire correction for color e-ink
+│   ├── validate.rs       # KDP pre-flight checks
+│   ├── kdp_rules.rs      # Rule catalog (KPG_VERSION, Rule struct, RULES array)
+│   └── tests.rs          # Unit tests
+├── tests/
+│   ├── cli_validate.rs   # CLI smoke test (runs compiled binary)
+│   └── fixtures/         # OPF fixtures (clean_book, clean_dict, book_with_errors, book_with_warnings)
+└── target/release/kindling-cli   # compiled binary
 ```
 
-The test suite covers:
+## Testing
 
-- **MOBI structure**: PalmDB header, record offsets, MOBI header fields (magic, version, encoding, capability markers), FLIS/FCIS/EOF records
-- **Dictionary output**: Orth index presence and structure, INDX records, headword count, EXTH 531/532/547 language records, compressed vs uncompressed roundtrips
-- **Book output**: KF7+KF8 dual format (BOUNDARY record, KF8 section version), KF8-only output (.azw3), image record JPEG magic, EXTH metadata, SRCS embedding
+Tests run automatically on every push and pull request via [GitHub Actions](.github/workflows/test.yml). All `cargo` commands run from the repo root.
+
+```bash
+cargo test                    # full suite
+cargo test -- --show-output   # include println! output
+cargo test --test cli_validate  # CLI smoke tests only
+```
+
+The suite currently contains around 280 tests spanning unit tests in `src/tests.rs` and a CLI integration test in `tests/cli_validate.rs` that invokes the compiled `kindling-cli validate` binary against OPF fixtures under `tests/fixtures/`.
+
+- **PalmDB and MOBI structure**: PalmDB header fields, record count and offset tables, MOBI header (magic, version, encoding, language, capability marker 0x50 vs 0x4850), text record count, image record ranges, boundary records, FLIS/FCIS/EOF/SRCS records, trailing byte order
+- **Record 0 cross-checks**: MOBI header offsets are internally consistent with the PalmDOC header, EXTH block, full name, and image/INDX record indexes
+- **Dictionary output**: Orth INDX presence and structure, headword count, EXTH 531/532/547 language and `InMemory` records, EXTH 201 cover embedding, compressed and uncompressed roundtrips
+- **Book and KF8 output**: Dual KF7+KF8 format (BOUNDARY record, KF8 section version), KF8-only `.azw3` output, image record JPEG magic, complete EXTH metadata set, SRCS embedding
+- **EXTH records**: Every documented EXTH record in the table above is checked for both dictionaries and books, including KF8-only cases
+- **HTML/XHTML validation**: Text blobs extracted from MOBI output are reparsed with a relaxed quick-xml pass plus a custom balanced-tag walker, catching unclosed tags, malformed `<hr/`, unclosed attribute quotes, and stray `<` / `>`
+- **KDP validator**: One test per rule in `src/kdp_rules.rs`, asserting both the positive case (rule fires on bad input) and the negative case (clean input passes)
+- **CLI smoke test**: `tests/cli_validate.rs` builds the `kindling-cli` binary via Cargo and runs `validate` against `tests/fixtures/clean_book`, `clean_dict`, `book_with_warnings`, and `book_with_errors`, asserting exit codes and expected findings
 - **Comic pipeline**: Device profiles (including kpw5, scribe2025, kindle2024), spread detection and splitting, crop-before-split symmetry, margin cropping, auto-contrast, moire wiring for color devices, webtoon merge/split with overlap fallback, dark gutter detection, Panel View markup, manga RTL ordering and cover selection, JPEG quality, ComicInfo.xml parsing, EPUB image extraction
-- **Comic CLI flags**: doc-type EBOK/PDOC, title/author/language overrides, KF8-only output
+- **Comic CLI flags**: doc-type EBOK/PDOC, title/author/language overrides, `--kf8-only` output
 - **Compression**: PalmDOC LZ77 compress/decompress roundtrips for various sizes and encodings
-- **Regression tests**: Dictionary capability marker (0x50 vs 0x4850), JFIF density patching, RTL spread cover selection
+- **Regression tests**: Dictionary capability marker (0x50 vs 0x4850), JFIF density patching, RTL spread cover selection, dictionary text record trailing byte order
 
 ## Known Kindle firmware issues
 
