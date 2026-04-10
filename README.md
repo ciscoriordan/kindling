@@ -133,6 +133,20 @@ Output: one line per finding with severity (`info`/`warning`/`error`), rule id (
 
 The rule catalog is a single Rust const array in [`src/kdp_rules.rs`](src/kdp_rules.rs) with a `KPG_VERSION` constant and a `Rule` struct holding id, section, level, title, PDF page, and description. Check functions in `src/validate.rs` reference rules by id and inherit their severity and metadata, so updating the guidelines version touches one file plus any affected checks.
 
+### Build-time self-check
+
+Every `build` and `comic` run now performs an HTML self-check on the assembled MOBI text blob before writing the output file. The check catches regressions like dangling `<body>` / `<mbp:frameset>` tags, `<hr/` corruption, and unclosed attribute quotes that would otherwise reach a user's Kindle as a white screen.
+
+The check runs once on the full assembled blob (not per record) and typically adds 50-200 ms to a large dictionary build. It **never aborts the build**: when something is wrong, kindling prints a warning block pointing at the issue and writes the MOBI anyway, so you can still inspect the output.
+
+```bash
+kindling-cli build input.opf --no-self-check       # skip the self-check (not recommended)
+kindling-cli comic input.cbz --no-self-check       # skip the self-check for comics
+kindling-cli input.epub --no-self-check            # also works in kindlegen compat mode
+```
+
+A self-check warning indicates a likely kindling bug; please [open an issue](https://github.com/ciscoriordan/kindling/issues) with the failing OPF/EPUB if you hit one.
+
 ### Kindlegen compatibility
 
 ```bash

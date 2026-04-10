@@ -14,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use regex::Regex;
 
 use crate::exth;
+use crate::html_check;
 use crate::indx::{self, encode_indx_label, LookupTerm};
 use crate::opf::{self, DictionaryEntry, OPFData};
 use crate::palmdoc;
@@ -37,6 +38,7 @@ pub fn build_mobi(
     kf8_only: bool,
     doc_type: Option<&str>,
     kindle_limits: bool,
+    self_check: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let opf = OPFData::parse(opf_path)?;
 
@@ -48,14 +50,14 @@ pub fn build_mobi(
             return Err("KF8-only output is not supported for dictionaries (dictionaries use MOBI7 format)".into());
         }
         eprintln!("Detected dictionary content");
-        build_dictionary_mobi(&opf, output_path, no_compress, headwords_only, srcs_data, include_cmet, creator_tag, kindle_limits)
+        build_dictionary_mobi(&opf, output_path, no_compress, headwords_only, srcs_data, include_cmet, creator_tag, kindle_limits, self_check)
     } else {
         if kf8_only {
             eprintln!("Detected book content, building KF8-only (.azw3)");
         } else {
             eprintln!("Detected book content (no idx:entry tags found)");
         }
-        build_book_mobi(&opf, output_path, no_compress, srcs_data, include_cmet, !no_hd_images, creator_tag, kf8_only, doc_type, kindle_limits)
+        build_book_mobi(&opf, output_path, no_compress, srcs_data, include_cmet, !no_hd_images, creator_tag, kf8_only, doc_type, kindle_limits, self_check)
     }
 }
 
@@ -87,6 +89,7 @@ fn build_dictionary_mobi(
     include_cmet: bool,
     creator_tag: bool,
     kindle_limits: bool,
+    self_check: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Parse all dictionary entries from HTML content
     let mut all_entries: Vec<DictionaryEntry> = Vec::new();
@@ -172,6 +175,18 @@ fn build_dictionary_mobi(
     } else {
         text_content
     };
+
+    // Self-check: validate the final HTML blob before we split it into
+    // records. This is the last chance to notice structural corruption
+    // (unclosed tags, `<hr/` garbage, unclosed attribute quotes) before
+    // the blob is locked into binary form. The check runs once on the
+    // full assembled blob; it does not abort the build, only warns.
+    if self_check {
+        let issues = html_check::validate_text_blob(&text_content);
+        if !issues.is_empty() {
+            html_check::print_self_check_warnings(&issues);
+        }
+    }
 
     // Build text records
     let (text_records, text_length) = if no_compress {
@@ -341,6 +356,7 @@ fn build_book_mobi(
     kf8_only: bool,
     doc_type: Option<&str>,
     kindle_limits: bool,
+    self_check: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Collect images from the OPF manifest
     let image_items = opf.get_image_items(); // Vec<(href, media_type)>
@@ -441,6 +457,17 @@ fn build_book_mobi(
         kf8_section.text_length,
         kf8_section.flow_count,
     );
+
+    // Self-check: validate the assembled KF8 HTML flow before any records
+    // are written. Books, comics, and KF8-only builds all pass through
+    // here, so this covers every non-dictionary MOBI path. The check runs
+    // once on the full blob and does not abort the build.
+    if self_check {
+        let issues = html_check::validate_text_blob(&kf8_section.html_bytes);
+        if !issues.is_empty() {
+            html_check::print_self_check_warnings(&issues);
+        }
+    }
 
     // Build optional SRCS and CMET records
     let srcs_record: Option<Vec<u8>> = srcs_data.map(|data| {

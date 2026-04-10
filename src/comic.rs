@@ -119,6 +119,10 @@ pub struct ComicOptions {
     pub kindle_limits: bool,
     /// Output KF8-only format (.azw3) instead of dual MOBI7+KF8 (.mobi).
     pub kf8_only: bool,
+    /// Run the build-time HTML self-check on the assembled MOBI text
+    /// blob. Default: true. When a bad blob is detected the build emits
+    /// warnings but does not abort.
+    pub self_check: bool,
 }
 
 impl Default for ComicOptions {
@@ -143,6 +147,7 @@ impl Default for ComicOptions {
             cover_fill: false,
             kindle_limits: false,
             kf8_only: false,
+            self_check: true,
         }
     }
 }
@@ -365,6 +370,7 @@ pub fn build_comic_with_options(
         options.kf8_only,
         options.doc_type.as_deref(),
         options.kindle_limits,
+        options.self_check,
     );
 
     // Step 6: Clean up temp dirs

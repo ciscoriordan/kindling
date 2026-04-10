@@ -259,6 +259,7 @@ mod tests {
             false, // kf8_only (dual format)
             None,  // doc_type
             false, // kindle_limits (disabled in tests by default)
+            false, // self_check (off in tests; dedicated tests cover the checker)
         )
         .expect("build_mobi failed");
         fs::read(&output_path).expect("could not read output MOBI")
@@ -674,6 +675,7 @@ mod tests {
             true,  // kf8_only
             None,  // doc_type
             false, // kindle_limits
+            false, // self_check (off in tests for speed)
         )
         .expect("build_mobi (kf8_only) failed");
         fs::read(&output_path).expect("could not read output AZW3")
@@ -3976,6 +3978,7 @@ mod tests {
             false, // kf8_only
             None,  // doc_type
             true,  // kindle_limits ON
+            false, // self_check
         )
         .expect("build_mobi with kindle_limits should succeed");
 
@@ -4024,6 +4027,7 @@ mod tests {
             false, // kf8_only
             None,  // doc_type
             true,  // kindle_limits ON
+            false, // self_check
         )
         .expect("build_mobi with kindle_limits for book should succeed");
 
@@ -4055,6 +4059,7 @@ mod tests {
             false, // kf8_only
             None,  // doc_type
             false, // kindle_limits OFF
+            false, // self_check
         )
         .expect("build_mobi without kindle_limits should succeed");
 
@@ -4186,6 +4191,7 @@ mod tests {
             false, // kf8_only
             None,  // doc_type
             true,  // kindle_limits ON
+            false, // self_check
         )
         .expect("build_mobi with kindle_limits should succeed");
 
@@ -4296,6 +4302,7 @@ mod tests {
             false, // kf8_only
             None,  // doc_type
             true,  // kindle_limits ON
+            false, // self_check
         )
         .expect("build_mobi with kindle_limits failed");
         fs::read(&output_path).expect("could not read output MOBI")
@@ -4889,6 +4896,7 @@ mod tests {
             false,
             None,
             false,
+            false, // self_check
         )
         .expect("compressed build_mobi failed");
         let data_comp = fs::read(&output_comp).expect("could not read compressed MOBI");
@@ -6226,7 +6234,7 @@ mod tests {
         // Compressed
         let output_c = dir_c.path().join("output_comp.mobi");
         mobi::build_mobi(
-            &opf_c, &output_c, false, false, None, false, false, false, false, None, false,
+            &opf_c, &output_c, false, false, None, false, false, false, false, None, false, false,
         ).expect("compressed build failed");
         let data_c = fs::read(&output_c).unwrap();
 
@@ -7674,7 +7682,7 @@ mod tests {
         // And the MOBI build itself should still succeed end-to-end.
         let output = dir.path().join("out.mobi");
         mobi::build_mobi(
-            &opf, &output, true, false, None, false, false, false, false, None, false,
+            &opf, &output, true, false, None, false, false, false, false, None, false, false,
         )
         .expect("build should succeed for clean OPF");
         assert!(output.exists(), "MOBI output file must exist");
@@ -7764,18 +7772,6 @@ mod tests {
     // show up when the HTML itself is parsed.
     // =======================================================================
 
-    /// Void element names that are allowed to appear without a matching close
-    /// tag when walking MOBI HTML. Includes both standard HTML voids (used in
-    /// book/comic output as `<br/>`, `<img/>` etc.) and MOBI-specific empties.
-    const VOID_ELEMENTS: &[&str] = &[
-        "area", "base", "br", "col", "embed", "hr", "img", "input", "link",
-        "meta", "param", "source", "track", "wbr",
-        // MOBI-specific empties
-        "mbp:pagebreak",
-        // XHTML processing tags occasionally seen empty in kindling output
-        "guide",
-    ];
-
     /// Extract the text blob from a MOBI, automatically decompressing PalmDOC
     /// if the record 0 compression type indicates compression.
     ///
@@ -7805,125 +7801,22 @@ mod tests {
         text_bytes
     }
 
-    /// Parse the given HTML/XHTML string with `quick_xml::Reader` in relaxed
-    /// mode (no end-name checking, unmatched ends allowed). Returns `Ok(())`
-    /// iff the parser reaches EOF without a hard syntax error.
-    ///
-    /// Kindling output mixes HTML-ish void tags (`<br/>`, `<img/>`) with
-    /// MOBI-specific markup (`<mbp:pagebreak/>`, `<mbp:frameset>`). Strict XML
-    /// parsing would reject namespace prefixes without xmlns declarations,
-    /// so we disable end-name matching and allow unmatched ends. The goal
-    /// here is to catch token-level corruption (unclosed attributes, missing
-    /// `>`, stray null bytes), not to validate schema compliance.
-    fn try_parse_mobi_html(content: &str) -> Result<(), String> {
-        use quick_xml::events::Event;
-        use quick_xml::Reader;
+    // The three HTML-level checks below now live in `crate::html_check` so
+    // they can be shared between tests and the build-time self-check. The
+    // wrappers here convert `&str` to `&[u8]` and preserve the existing
+    // test API (Result for parse/balance, panic for corruption).
+    //
+    // `assert_structural_tags_present` stays test-only because it asserts
+    // that `<html>`/`<body>` substrings are present, which is stricter than
+    // what the build-time self-check enforces (very small or front-matter-
+    // only fixtures wouldn't necessarily include them).
 
-        let mut reader = Reader::from_str(content);
-        {
-            let cfg = reader.config_mut();
-            cfg.check_end_names = false;
-            cfg.allow_unmatched_ends = true;
-            cfg.check_comments = false;
-            cfg.trim_text_start = false;
-            cfg.trim_text_end = false;
-        }
-        let mut buf = Vec::new();
-        loop {
-            match reader.read_event_into(&mut buf) {
-                Ok(Event::Eof) => return Ok(()),
-                Err(e) => {
-                    return Err(format!(
-                        "XML parse error at byte {}: {}",
-                        reader.buffer_position(),
-                        e
-                    ));
-                }
-                Ok(_) => {}
-            }
-            buf.clear();
-        }
+    fn try_parse_mobi_html(content: &str) -> Result<(), String> {
+        crate::html_check::parse_mobi_html(content.as_bytes())
     }
 
-    /// Walk the event stream of the given HTML and assert that every Start
-    /// tag has a matching End, ignoring void elements listed in
-    /// `VOID_ELEMENTS`. Uses `check_end_names = false` so mismatched
-    /// namespaces don't blow up the walker, but we enforce our own stack
-    /// discipline. Returns `Err` with a descriptive message on mismatch.
     fn check_balanced_tags(content: &str) -> Result<(), String> {
-        use quick_xml::events::Event;
-        use quick_xml::Reader;
-
-        let mut reader = Reader::from_str(content);
-        {
-            let cfg = reader.config_mut();
-            cfg.check_end_names = false;
-            cfg.allow_unmatched_ends = true;
-            cfg.check_comments = false;
-            cfg.trim_text_start = false;
-            cfg.trim_text_end = false;
-        }
-
-        let mut stack: Vec<String> = Vec::new();
-        let mut buf = Vec::new();
-        loop {
-            match reader.read_event_into(&mut buf) {
-                Ok(Event::Eof) => break,
-                Ok(Event::Start(e)) => {
-                    let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                    // Start-tag for a void element (e.g. `<br>` without `/`)
-                    // is treated as empty. Kindling shouldn't emit these,
-                    // but be lenient.
-                    if VOID_ELEMENTS.iter().any(|v| v.eq_ignore_ascii_case(&name)) {
-                        // ignore
-                    } else {
-                        stack.push(name);
-                    }
-                }
-                Ok(Event::End(e)) => {
-                    let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                    if VOID_ELEMENTS.iter().any(|v| v.eq_ignore_ascii_case(&name)) {
-                        continue;
-                    }
-                    match stack.pop() {
-                        Some(open) => {
-                            if !open.eq_ignore_ascii_case(&name) {
-                                return Err(format!(
-                                    "mismatched close </{}>, expected </{}>",
-                                    name, open
-                                ));
-                            }
-                        }
-                        None => {
-                            return Err(format!(
-                                "close </{}> with no matching open",
-                                name
-                            ));
-                        }
-                    }
-                }
-                Ok(Event::Empty(_)) => {
-                    // self-closing tag - always balanced
-                }
-                Err(e) => {
-                    return Err(format!(
-                        "walker parse error at byte {}: {}",
-                        reader.buffer_position(),
-                        e
-                    ));
-                }
-                _ => {}
-            }
-            buf.clear();
-        }
-
-        if !stack.is_empty() {
-            return Err(format!(
-                "unclosed tags at EOF: {:?}",
-                stack
-            ));
-        }
-        Ok(())
+        crate::html_check::check_balanced_tags(content.as_bytes())
     }
 
     /// Assert that the required structural tags are present AND properly
@@ -7952,58 +7845,11 @@ mod tests {
         }
     }
 
-    /// Scan for malformed `<hr/` patterns where the `>` is missing or
-    /// clobbered, and for stray unclosed attribute quotes.
+    /// Panic-style wrapper around `html_check::check_no_corruption` so the
+    /// existing negative tests continue to work. Panics on the first issue.
     fn assert_no_html_corruption(content: &str) {
-        // A correct self-closing hr is "<hr/>". Anything else after "<hr/"
-        // (besides `>`) indicates corruption.
-        let bad_hr = regex::Regex::new(r"<hr/[^>]").unwrap();
-        if let Some(m) = bad_hr.find(content) {
-            panic!(
-                "malformed `<hr/` found at byte {}: {:?}",
-                m.start(),
-                &content[m.start()..(m.start() + 20).min(content.len())]
-            );
-        }
-
-        // Count `="` openers and find their matching closing `"` within a
-        // reasonable window. kindling attribute values should never span
-        // more than ~2 KiB (long style or class lists notwithstanding).
-        //
-        // For each `="`, find the next `"` and assert it exists within the
-        // next 4096 bytes AND before the next `<`.
-        let bytes = content.as_bytes();
-        let mut i = 0;
-        while i + 1 < bytes.len() {
-            if bytes[i] == b'=' && bytes[i + 1] == b'"' {
-                let start = i + 2;
-                let window_end = (start + 4096).min(bytes.len());
-                let mut found = false;
-                for j in start..window_end {
-                    if bytes[j] == b'"' {
-                        found = true;
-                        i = j + 1;
-                        break;
-                    }
-                    if bytes[j] == b'<' {
-                        // Next tag starts before we found a closing quote.
-                        panic!(
-                            "unclosed attribute quote at byte {}: {:?}",
-                            i,
-                            &content[i..(i + 60).min(content.len())]
-                        );
-                    }
-                }
-                if !found {
-                    panic!(
-                        "unclosed attribute quote (no `\"` within 4096 bytes) at byte {}: {:?}",
-                        i,
-                        &content[i..(i + 60).min(content.len())]
-                    );
-                }
-            } else {
-                i += 1;
-            }
+        if let Err(e) = crate::html_check::check_no_corruption(content.as_bytes()) {
+            panic!("{}", e);
         }
     }
 
@@ -8286,5 +8132,142 @@ mod tests {
         assert_no_html_corruption(good);
         check_balanced_tags(good).expect("well-formed fixture should be balanced");
         println!("  \u{2713} validator accepts well-formed fixture");
+    }
+
+    // -----------------------------------------------------------------------
+    // Build-time self-check: verify that `html_check::validate_text_blob`
+    // is wired up correctly. The build_*_mobi functions warn (not abort)
+    // when the check fails, so these tests exercise the helper directly.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_self_check_clean_dict_blob() {
+        // A clean dictionary fixture must produce zero self-check issues.
+        let dir = TempDir::new("selfcheck_clean_dict");
+        let entries: &[(&str, &[&str])] = &[
+            ("alpha", &["alphas"]),
+            ("beta", &["betas"]),
+            ("gamma", &["gammas"]),
+        ];
+        let opf = create_dict_fixture(dir.path(), entries);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let blob = extract_text_blob_auto(&data);
+
+        let issues = crate::html_check::validate_text_blob(&blob);
+        assert!(
+            issues.is_empty(),
+            "clean dict blob should self-check cleanly, got: {:?}",
+            issues
+        );
+        println!("  \u{2713} clean dict blob passes html_check::validate_text_blob");
+    }
+
+    #[test]
+    fn test_self_check_clean_book_blob() {
+        // A clean book fixture must produce zero self-check issues.
+        let dir = TempDir::new("selfcheck_clean_book");
+        let opf = create_book_fixture(dir.path(), None);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let blob = extract_text_blob_auto(&data);
+
+        let issues = crate::html_check::validate_text_blob(&blob);
+        assert!(
+            issues.is_empty(),
+            "clean book blob should self-check cleanly, got: {:?}",
+            issues
+        );
+        println!("  \u{2713} clean book blob passes html_check::validate_text_blob");
+    }
+
+    #[test]
+    fn test_self_check_build_with_flag_enabled_succeeds() {
+        // Build a dictionary end-to-end with self_check=true and verify
+        // the build succeeds. The warning path only fires on corrupted
+        // output, which clean fixtures don't produce.
+        let dir = TempDir::new("selfcheck_enabled_build");
+        let entries: &[(&str, &[&str])] = &[
+            ("apple", &["apples"]),
+            ("banana", &["bananas"]),
+        ];
+        let opf = create_dict_fixture(dir.path(), entries);
+        let output_path = dir.path().join("output.mobi");
+
+        mobi::build_mobi(
+            &opf,
+            &output_path,
+            true,  // no_compress
+            false, // headwords_only
+            None,  // srcs_data
+            false, // include_cmet
+            false, // no_hd_images
+            false, // creator_tag
+            false, // kf8_only
+            None,  // doc_type
+            false, // kindle_limits
+            true,  // self_check ENABLED
+        )
+        .expect("build with self_check enabled should succeed");
+
+        let data = fs::read(&output_path).unwrap();
+        let blob = extract_text_blob_auto(&data);
+        let issues = crate::html_check::validate_text_blob(&blob);
+        assert!(
+            issues.is_empty(),
+            "self_check-enabled dict build should produce a clean blob, got: {:?}",
+            issues
+        );
+        println!("  \u{2713} build with self_check=true produces clean MOBI ({} bytes)", data.len());
+    }
+
+    #[test]
+    fn test_self_check_detects_unbalanced_blob() {
+        // Hand-crafted bad blob: open <p> never closed inside <body>.
+        let bad = br#"<html><head></head><body><p>hello</body></html>"#;
+        let issues = crate::html_check::validate_text_blob(bad);
+        assert!(
+            issues.iter().any(|e| e.contains("tag balance")),
+            "validator should report tag balance error, got: {:?}",
+            issues
+        );
+        println!("  \u{2713} validator flagged unbalanced <p>: {:?}", issues);
+    }
+
+    #[test]
+    fn test_self_check_detects_corrupt_hr() {
+        let bad = br#"<html><body>text<hr/X>more</body></html>"#;
+        let issues = crate::html_check::validate_text_blob(bad);
+        assert!(
+            issues.iter().any(|e| e.contains("corruption") || e.contains("hr/")),
+            "validator should report <hr/ corruption, got: {:?}",
+            issues
+        );
+        println!("  \u{2713} validator flagged <hr/X>: {:?}", issues);
+    }
+
+    #[test]
+    fn test_self_check_detects_unclosed_attribute_quote() {
+        // class="foo never closed before next tag
+        let bad = br#"<html><body><p class="foo<b>bold</b></p></body></html>"#;
+        let issues = crate::html_check::validate_text_blob(bad);
+        assert!(
+            issues.iter().any(|e| e.contains("corruption") || e.contains("quote")),
+            "validator should report unclosed attribute quote, got: {:?}",
+            issues
+        );
+        println!("  \u{2713} validator flagged unclosed quote: {:?}", issues);
+    }
+
+    #[test]
+    fn test_self_check_accepts_clean_fixture() {
+        // Same fixture as test_html_validator_accepts_well_formed_fixture
+        // but run through the combined validator.
+        let good = br#"<html><head><guide></guide></head><body><mbp:frameset><b>apple</b> a fruit<hr/><b>banana</b> another<hr/><img src="x.jpg"/><mbp:pagebreak/></mbp:frameset></body></html>"#;
+        let issues = crate::html_check::validate_text_blob(good);
+        assert!(
+            issues.is_empty(),
+            "well-formed fixture should produce no issues, got: {:?}",
+            issues
+        );
+        println!("  \u{2713} well-formed fixture passes combined validator");
     }
 }

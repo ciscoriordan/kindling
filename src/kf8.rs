@@ -32,6 +32,11 @@ pub struct Kf8Section {
     /// CSS content that was appended as a separate flow
     #[allow(dead_code)]
     pub css_content: Vec<u8>,
+    /// Uncompressed KF8 HTML bytes (the HTML flow only, without CSS).
+    /// Exposed so the MOBI writer can run `html_check::validate_text_blob`
+    /// on the assembled blob before compression/record splitting. This is
+    /// a snapshot; the record bytes are derived from HTML+CSS combined.
+    pub html_bytes: Vec<u8>,
 }
 
 /// Information about a skeleton chunk (one per source HTML file).
@@ -82,6 +87,12 @@ pub fn build_kf8_section(
     let html_length = kf8_html.len();
     let total_text_length = html_length + css_bytes.len();
 
+    // Snapshot the KF8 HTML before we concatenate CSS onto it, so the
+    // MOBI writer can run `html_check::validate_text_blob` on the bytes
+    // that actually become the HTML flow. The allocation is one HTML
+    // buffer; for typical books this is a few MB at most.
+    let html_bytes_snapshot = kf8_html.clone();
+
     let mut combined_text = kf8_html;
     combined_text.extend_from_slice(css_bytes);
 
@@ -119,6 +130,7 @@ pub fn build_kf8_section(
         datp,
         flow_count,
         css_content: css_bytes.to_vec(),
+        html_bytes: html_bytes_snapshot,
     }
 }
 

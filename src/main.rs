@@ -11,6 +11,7 @@
 mod comic;
 mod epub;
 mod exth;
+mod html_check;
 mod indx;
 mod kdp_rules;
 mod kf8;
@@ -92,6 +93,13 @@ enum Commands {
         /// bypass it (e.g. when a known-benign finding would otherwise abort).
         #[arg(long)]
         no_validate: bool,
+
+        /// Skip the build-time HTML self-check on the MOBI text blob.
+        /// The self-check runs by default and prints a warning (without
+        /// aborting the build) if it detects malformed HTML, unbalanced
+        /// tags, or `<hr/` corruption. Overhead is typically 50-200 ms.
+        #[arg(long)]
+        no_self_check: bool,
     },
 
     /// Convert comic images/CBZ/CBR/EPUB to Kindle-optimized MOBI
@@ -204,6 +212,11 @@ enum Commands {
         /// Disable Kindle publishing limits enforcement (see --kindle-limits)
         #[arg(long, overrides_with = "kindle_limits")]
         no_kindle_limits: bool,
+
+        /// Skip the build-time HTML self-check on the comic's MOBI text
+        /// blob. See `kindling build --help` for details.
+        #[arg(long)]
+        no_self_check: bool,
     },
 
     /// Validate an OPF manuscript against the Amazon Kindle Publishing Guidelines (2026.1).
@@ -240,12 +253,14 @@ fn is_kindlegen_compat_mode() -> bool {
 /// Parse kindlegen-compatible arguments.
 /// Accepts: kindling <input_file> [-o <filename>] [-dont_append_source] [-locale <value>]
 ///          [-c0] [-c1] [-c2] [-verbose] [-no_validate | --no-validate]
-/// Returns (input, output_override, no_validate)
-fn parse_kindlegen_args() -> (PathBuf, Option<String>, bool) {
+///          [-no_self_check | --no-self-check]
+/// Returns (input, output_override, no_validate, no_self_check)
+fn parse_kindlegen_args() -> (PathBuf, Option<String>, bool, bool) {
     let args: Vec<String> = std::env::args().collect();
     let input = PathBuf::from(&args[1]);
     let mut output_name: Option<String> = None;
     let mut no_validate = false;
+    let mut no_self_check = false;
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
@@ -269,13 +284,17 @@ fn parse_kindlegen_args() -> (PathBuf, Option<String>, bool) {
                 no_validate = true;
                 i += 1;
             }
+            "--no-self-check" | "-no_self_check" => {
+                no_self_check = true;
+                i += 1;
+            }
             _ => {
                 // Unknown flag, skip
                 i += 1;
             }
         }
     }
-    (input, output_name, no_validate)
+    (input, output_name, no_validate, no_self_check)
 }
 
 /// Resolve the output path for a build.
@@ -306,6 +325,7 @@ fn do_build(
     kf8_only: bool,
     kindle_limits: bool,
     no_validate: bool,
+    self_check: bool,
 ) {
     let is_epub = input
         .extension()
@@ -355,7 +375,7 @@ fn do_build(
 
         let result = mobi::build_mobi(
             &opf_path, output_path, no_compress, headwords_only,
-            srcs_data.as_deref(), include_cmet, no_hd_images, creator_tag, kf8_only, None, kindle_limits,
+            srcs_data.as_deref(), include_cmet, no_hd_images, creator_tag, kf8_only, None, kindle_limits, self_check,
         );
         epub::cleanup_temp_dir(&temp_dir);
         result
@@ -372,7 +392,7 @@ fn do_build(
 
         mobi::build_mobi(
             input, output_path, no_compress, headwords_only,
-            srcs_data.as_deref(), include_cmet, no_hd_images, creator_tag, kf8_only, None, kindle_limits,
+            srcs_data.as_deref(), include_cmet, no_hd_images, creator_tag, kf8_only, None, kindle_limits, self_check,
         )
     };
 
@@ -397,7 +417,7 @@ fn do_build(
 fn main() {
     if is_kindlegen_compat_mode() {
         // Kindlegen-compatible invocation: kindling <file> [-o name] [flags...]
-        let (input, output_name, no_validate) = parse_kindlegen_args();
+        let (input, output_name, no_validate, no_self_check) = parse_kindlegen_args();
 
         // In kindlegen compat mode, -o specifies just a filename next to the input
         let output_path = if let Some(name) = output_name {
@@ -407,7 +427,7 @@ fn main() {
             input.with_extension("mobi")
         };
 
-        do_build(&input, &output_path, false, false, true, false, false, false, false, true, no_validate);
+        do_build(&input, &output_path, false, false, true, false, false, false, false, true, no_validate, !no_self_check);
     } else {
         let cli = Cli::parse();
 
@@ -425,6 +445,7 @@ fn main() {
                 kindle_limits,
                 no_kindle_limits,
                 no_validate,
+                no_self_check,
             } => {
                 // Default: ON for dictionaries, OFF for books.
                 // Since we don't know the content type yet at parse time, we pass
@@ -443,7 +464,7 @@ fn main() {
                     true
                 };
                 let output_path = resolve_output_path(&input, output, kf8_only);
-                do_build(&input, &output_path, no_compress, headwords_only, !no_embed_source, include_cmet, no_hd_images, creator_tag, kf8_only, effective_kindle_limits, no_validate);
+                do_build(&input, &output_path, no_compress, headwords_only, !no_embed_source, include_cmet, no_hd_images, creator_tag, kf8_only, effective_kindle_limits, no_validate, !no_self_check);
             }
             Commands::Comic {
                 input,
@@ -469,6 +490,7 @@ fn main() {
                 kf8_only,
                 kindle_limits,
                 no_kindle_limits,
+                no_self_check,
             } => {
                 let profile = match comic::get_profile(&device) {
                     Some(p) => p,
@@ -533,6 +555,7 @@ fn main() {
                     cover_fill,
                     kindle_limits: effective_kindle_limits,
                     kf8_only,
+                    self_check: !no_self_check,
                 };
 
                 match comic::build_comic_with_options(&input, &output_path, &profile, &options) {
