@@ -14,6 +14,7 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::kdp_rules::{self, KPG_VERSION};
 use crate::opf::OPFData;
 
 /// Severity of a validation finding.
@@ -41,6 +42,9 @@ impl fmt::Display for Level {
 #[derive(Debug, Clone)]
 pub struct Finding {
     pub level: Level,
+    /// Rule id from the KDP rules catalog, e.g. "R4.2.1". `None` for legacy
+    /// findings not yet mapped to a rule.
+    pub rule_id: Option<&'static str>,
     /// Kindle Publishing Guidelines section identifier, e.g. "4.2" or "6.4".
     pub section: String,
     pub message: String,
@@ -52,7 +56,19 @@ pub struct Finding {
 
 impl fmt::Display for Finding {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[{}] section {}: {}", self.level, self.section, self.message)?;
+        match self.rule_id {
+            Some(id) => {
+                let rule = kdp_rules::get(id);
+                write!(
+                    f,
+                    "[{} {}] section {} (p.{}): {}",
+                    self.level, id, self.section, rule.pdf_page, self.message
+                )?;
+            }
+            None => {
+                write!(f, "[{}] section {}: {}", self.level, self.section, self.message)?;
+            }
+        }
         if let Some(ref file) = self.file {
             write!(f, " ({}", file.display())?;
             if let Some(line) = self.line {
@@ -79,48 +95,50 @@ impl ValidationReport {
         self.findings.push(f);
     }
 
-    pub fn info(&mut self, section: &str, message: impl Into<String>) {
+    /// Emit a finding for `rule_id` from the KDP rules catalog.
+    ///
+    /// The finding inherits `level` and `section` from the rule. The `context`
+    /// string is appended to the rule's description (separated by a space) to
+    /// produce the finding's message; pass an empty string to use the rule
+    /// description alone.
+    pub fn emit(&mut self, rule_id: &'static str, context: impl Into<String>) {
+        let rule = kdp_rules::get(rule_id);
+        let context = context.into();
+        let message = if context.is_empty() {
+            rule.description.to_string()
+        } else {
+            format!("{} {}", rule.description, context)
+        };
         self.push(Finding {
-            level: Level::Info,
-            section: section.to_string(),
-            message: message.into(),
+            level: rule.level,
+            rule_id: Some(rule_id),
+            section: rule.section.to_string(),
+            message,
             file: None,
             line: None,
         });
     }
 
-    pub fn warning(&mut self, section: &str, message: impl Into<String>) {
-        self.push(Finding {
-            level: Level::Warning,
-            section: section.to_string(),
-            message: message.into(),
-            file: None,
-            line: None,
-        });
-    }
-
-    pub fn error(&mut self, section: &str, message: impl Into<String>) {
-        self.push(Finding {
-            level: Level::Error,
-            section: section.to_string(),
-            message: message.into(),
-            file: None,
-            line: None,
-        });
-    }
-
-    pub fn at(
+    /// Emit a finding for `rule_id` with file/line location.
+    pub fn emit_at(
         &mut self,
-        level: Level,
-        section: &str,
-        message: impl Into<String>,
+        rule_id: &'static str,
+        context: impl Into<String>,
         file: Option<PathBuf>,
         line: Option<usize>,
     ) {
+        let rule = kdp_rules::get(rule_id);
+        let context = context.into();
+        let message = if context.is_empty() {
+            rule.description.to_string()
+        } else {
+            format!("{} {}", rule.description, context)
+        };
         self.push(Finding {
-            level,
-            section: section.to_string(),
-            message: message.into(),
+            level: rule.level,
+            rule_id: Some(rule_id),
+            section: rule.section.to_string(),
+            message,
             file,
             line,
         });
@@ -150,12 +168,7 @@ pub fn validate_opf(opf_path: &Path) -> Result<ValidationReport, Box<dyn std::er
 
     // Informational note about marketing cover image (cannot be validated
     // from the EPUB source per section 4.1).
-    report.info(
-        "4.1",
-        "Marketing cover image is uploaded separately to KDP and cannot be \
-         validated from the manuscript. Ensure you upload a 2560x1600 JPEG \
-         per Kindle Publishing Guidelines.",
-    );
+    report.emit("R4.1.1", "");
 
     check_internal_cover(&opf, &mut report);
     check_navigation(opf_path, &opf, &mut report);
@@ -176,12 +189,7 @@ pub fn validate_opf(opf_path: &Path) -> Result<ValidationReport, Box<dyn std::er
 fn check_internal_cover(opf: &OPFData, report: &mut ValidationReport) {
     let cover_href = opf.get_cover_image_href();
     if cover_href.is_none() {
-        report.error(
-            "4.2",
-            "No internal content cover image declared. Add either \
-             <item properties=\"coverimage\" ...> (Method 1, preferred) or \
-             <meta name=\"cover\" content=\"<id>\"/> (Method 2) to the OPF.",
-        );
+        report.emit("R4.2.1", "");
         return;
     }
 
@@ -190,34 +198,24 @@ fn check_internal_cover(opf: &OPFData, report: &mut ValidationReport) {
     // Check cover image exists on disk and validate its size.
     let cover_path = opf.base_dir.join(&cover_href);
     if !cover_path.exists() {
-        report.push(Finding {
-            level: Level::Error,
-            section: "4.2".to_string(),
-            message: format!(
-                "Cover image {} declared in OPF but file does not exist",
-                cover_href
-            ),
-            file: Some(PathBuf::from(&cover_href)),
-            line: None,
-        });
+        report.emit_at(
+            "R4.2.2",
+            format!("File: {}", cover_href),
+            Some(PathBuf::from(&cover_href)),
+            None,
+        );
     } else {
         // Amazon section 4.1: "Covers with less than 500 pixels on the
         // shortest side are not displayed on the website." Warn at <500px.
         if let Ok((w, h)) = image::image_dimensions(&cover_path) {
             let shortest = w.min(h);
             if shortest < 500 {
-                report.push(Finding {
-                    level: Level::Warning,
-                    section: "4.2".to_string(),
-                    message: format!(
-                        "Cover image is {}x{} px; shortest side {} < 500 px. \
-                         Kindle will not display covers under 500 px on the \
-                         shortest side.",
-                        w, h, shortest
-                    ),
-                    file: Some(PathBuf::from(&cover_href)),
-                    line: None,
-                });
+                report.emit_at(
+                    "R4.2.3",
+                    format!("Image is {}x{} px (shortest side {} px).", w, h, shortest),
+                    Some(PathBuf::from(&cover_href)),
+                    None,
+                );
             }
         }
     }
@@ -229,19 +227,12 @@ fn check_internal_cover(opf: &OPFData, report: &mut ValidationReport) {
     // that only contains a single <img> pointing at the cover image.
     for (idref, href) in &opf.spine_items {
         if looks_like_html_cover_page(opf, idref, href, &cover_href) {
-            report.push(Finding {
-                level: Level::Error,
-                section: "4.2".to_string(),
-                message: format!(
-                    "Spine entry '{}' ({}) looks like an HTML cover page but \
-                     a cover image is also declared. Per KPG 4.2, do not add \
-                     an HTML cover page in addition to the cover image; \
-                     remove the HTML page from the spine.",
-                    idref, href
-                ),
-                file: Some(PathBuf::from(href)),
-                line: None,
-            });
+            report.emit_at(
+                "R4.2.4",
+                format!("Spine entry '{}' ({}) matches the cover page pattern.", idref, href),
+                Some(PathBuf::from(href)),
+                None,
+            );
         }
     }
 }
@@ -308,12 +299,7 @@ fn check_navigation(opf_path: &Path, opf: &OPFData, report: &mut ValidationRepor
         .map(|(id, _)| id.clone());
 
     if ncx_id.is_none() {
-        report.warning(
-            "5.2",
-            "No NCX file found in manifest (media-type \
-             application/x-dtbncx+xml). Amazon requires a logical TOC via \
-             an NCX or a toc nav element for all Kindle books.",
-        );
+        report.emit("R5.2.1", "");
     }
 
     // Check spine toc attribute: re-read the OPF to look for <spine toc="...">.
@@ -325,15 +311,7 @@ fn check_navigation(opf_path: &Path, opf: &OPFData, report: &mut ValidationRepor
         });
         if let Some(ref id) = ncx_id {
             if !has_spine_toc {
-                report.warning(
-                    "5.2",
-                    format!(
-                        "NCX '{}' is declared in manifest but <spine> element \
-                         has no toc=\"<id>\" attribute. KPG 5.2 requires \
-                         referencing the NCX from the spine.",
-                        id
-                    ),
-                );
+                report.emit("R5.2.2", format!("NCX id: '{}'.", id));
             }
         }
     }
@@ -349,15 +327,7 @@ fn check_navigation(opf_path: &Path, opf: &OPFData, report: &mut ValidationRepor
     // Rough: 1800 chars per printed page. > 20 pages ~ 36000 chars.
     let approx_pages = total_chars / 1800;
     if approx_pages > 20 && ncx_id.is_none() {
-        report.warning(
-            "5",
-            format!(
-                "Book is approximately {} pages long (> 20) but has no TOC. \
-                 KPG 5 strongly recommends a logical TOC for books over 20 \
-                 pages.",
-                approx_pages
-            ),
-        );
+        report.emit("R5.1", format!("Approximately {} pages.", approx_pages));
     }
 }
 
@@ -422,68 +392,35 @@ fn check_content_html(href: &str, content: &str, report: &mut ValidationReport) 
     // (HTML5) since those legitimately may not be strict XML.
     if !content.contains("<!DOCTYPE html>") && !content.contains("<!doctype html>") {
         if let Err(e) = try_parse_xml(content) {
-            report.at(
-                Level::Warning,
-                "6.1",
-                format!("XHTML is not well-formed: {}", e),
-                file.clone(),
-                None,
-            );
+            report.emit_at("R6.1", format!("Parse error: {}", e), file.clone(), None);
         }
     }
 
     // 6.3 Avoid scripting: any <script> tag is an error.
     for (line_no, line) in content.lines().enumerate() {
         if contains_tag(line, "script") {
-            report.at(
-                Level::Error,
-                "6.3",
-                "<script> tag found. Scripting is not supported; scripts \
-                 are stripped during conversion.",
-                file.clone(),
-                Some(line_no + 1),
-            );
+            report.emit_at("R6.3", "", file.clone(), Some(line_no + 1));
         }
     }
 
     // 6.4 Avoid nested <p> tags.
     if let Some(line_no) = find_nested_p(content) {
-        report.at(
-            Level::Error,
-            "6.4",
-            "Nested <p> tags found. Files with nested <p> tags do not \
-             convert properly.",
-            file.clone(),
-            Some(line_no),
-        );
+        report.emit_at("R6.4", "", file.clone(), Some(line_no));
     }
 
     // 6.2 Avoid negative values in CSS for margin/padding/line-height.
     for (line_no, line) in content.lines().enumerate() {
         if has_negative_css(line) {
-            report.at(
-                Level::Warning,
-                "6.2",
-                "Negative CSS value for margin/padding/line-height. \
-                 Positioning with negative values can cause content to be \
-                 cut off at screen edges.",
-                file.clone(),
-                Some(line_no + 1),
-            );
+            report.emit_at("R6.2", "", file.clone(), Some(line_no + 1));
         }
     }
 
     // 10.3.1 Heading alignment: warn on <h1>-<h6> with explicit text-align.
     for (line_no, line) in content.lines().enumerate() {
         if let Some(tag) = heading_with_text_align(line) {
-            report.at(
-                Level::Warning,
-                "10.3.1",
-                format!(
-                    "<{}> has an explicit text-align. KPG 10.3.1 recommends \
-                     letting headings use the default alignment.",
-                    tag
-                ),
+            report.emit_at(
+                "R10.3.1",
+                format!("Tag: <{}>.", tag),
                 file.clone(),
                 Some(line_no + 1),
             );
@@ -494,15 +431,9 @@ fn check_content_html(href: &str, content: &str, report: &mut ValidationReport) 
     for (line_no, line) in content.lines().enumerate() {
         for &tag in UNSUPPORTED_TAGS {
             if contains_tag(line, tag) {
-                report.at(
-                    Level::Error,
-                    "17",
-                    format!(
-                        "Unsupported HTML tag <{}>. KPG 6.1 lists forms, \
-                         frames, and JavaScript as unsupported; section 18.1 \
-                         lists the allowed tags.",
-                        tag
-                    ),
+                report.emit_at(
+                    "R17.1",
+                    format!("Tag: <{}>.", tag),
                     file.clone(),
                     Some(line_no + 1),
                 );
@@ -514,16 +445,9 @@ fn check_content_html(href: &str, content: &str, report: &mut ValidationReport) 
     let table_rows = count_table_rows(content);
     for (table_idx, row_count) in table_rows.iter().enumerate() {
         if *row_count > 50 {
-            report.at(
-                Level::Warning,
-                "10.5.1",
-                format!(
-                    "Table #{} has {} rows (> 50). KPG 10.5.1 recommends \
-                     keeping tables below 100 rows and 10 columns; large \
-                     tables do not render well on small screens.",
-                    table_idx + 1,
-                    row_count
-                ),
+            report.emit_at(
+                "R10.5.1",
+                format!("Table #{} has {} rows.", table_idx + 1, row_count),
                 file.clone(),
                 None,
             );
@@ -737,27 +661,21 @@ fn check_image_files(opf: &OPFData, report: &mut ValidationReport) {
 
         // 10.4.1 Supported formats.
         if !SUPPORTED_IMAGE_MEDIA.contains(&media_type.as_str()) {
-            report.push(Finding {
-                level: Level::Error,
-                section: "10.4.1".to_string(),
-                message: format!(
-                    "Image {} has unsupported media-type '{}'. KPG 10.4.1 \
-                     supports JPEG, PNG, GIF, and SVG only.",
-                    href, media_type
-                ),
-                file: Some(PathBuf::from(href)),
-                line: None,
-            });
+            report.emit_at(
+                "R10.4.1",
+                format!("{} has media-type '{}'.", href, media_type),
+                Some(PathBuf::from(href)),
+                None,
+            );
         }
 
         if !path.exists() {
-            report.push(Finding {
-                level: Level::Error,
-                section: "10.4.1".to_string(),
-                message: format!("Image {} referenced in manifest but file is missing", href),
-                file: Some(PathBuf::from(href)),
-                line: None,
-            });
+            report.emit_at(
+                "R4.2.2",
+                format!("Image {} referenced in manifest but file is missing.", href),
+                Some(PathBuf::from(href)),
+                None,
+            );
             continue;
         }
 
@@ -765,19 +683,12 @@ fn check_image_files(opf: &OPFData, report: &mut ValidationReport) {
         if let Ok(md) = fs::metadata(&path) {
             // 127 KB = 130048 bytes.
             if md.len() > 127 * 1024 {
-                report.push(Finding {
-                    level: Level::Warning,
-                    section: "10.4.2".to_string(),
-                    message: format!(
-                        "Image {} is {} bytes (> 127 KB). Older Kindle models \
-                         may not render images larger than 127 KB; modern \
-                         Kindles handle larger files.",
-                        href,
-                        md.len()
-                    ),
-                    file: Some(PathBuf::from(href)),
-                    line: None,
-                });
+                report.emit_at(
+                    "R10.4.2a",
+                    format!("{} is {} bytes.", href, md.len()),
+                    Some(PathBuf::from(href)),
+                    None,
+                );
             }
         }
 
@@ -786,20 +697,12 @@ fn check_image_files(opf: &OPFData, report: &mut ValidationReport) {
             if let Ok((w, h)) = image::image_dimensions(&path) {
                 let mp = (w as u64) * (h as u64);
                 if mp > 5_000_000 {
-                    report.push(Finding {
-                        level: Level::Warning,
-                        section: "10.4.2".to_string(),
-                        message: format!(
-                            "Image {} is {}x{} ({} MP). KPG 10.4.2 limits \
-                             combined dimensions to 5 megapixels.",
-                            href,
-                            w,
-                            h,
-                            mp / 1_000_000
-                        ),
-                        file: Some(PathBuf::from(href)),
-                        line: None,
-                    });
+                    report.emit_at(
+                        "R10.4.2b",
+                        format!("{} is {}x{} ({} MP).", href, w, h, mp / 1_000_000),
+                        Some(PathBuf::from(href)),
+                        None,
+                    );
                 }
             }
         }
@@ -844,18 +747,12 @@ fn check_file_case_matches(opf: &OPFData, report: &mut ValidationReport) {
 
         if !exact_match {
             if let Some(actual) = case_insensitive_match {
-                report.push(Finding {
-                    level: Level::Error,
-                    section: "6.5".to_string(),
-                    message: format!(
-                        "Manifest references '{}' but actual file on disk is \
-                         '{}'. KPG 6.5 requires file references to match the \
-                         case and spelling of the source file exactly.",
-                        file_name, actual
-                    ),
-                    file: Some(PathBuf::from(href)),
-                    line: None,
-                });
+                report.emit_at(
+                    "R6.5",
+                    format!("Manifest references '{}' but file on disk is '{}'.", file_name, actual),
+                    Some(PathBuf::from(href)),
+                    None,
+                );
             }
         }
     }

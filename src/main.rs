@@ -12,6 +12,7 @@ mod comic;
 mod epub;
 mod exth;
 mod indx;
+mod kdp_rules;
 mod kf8;
 mod mobi;
 mod moire;
@@ -199,12 +200,13 @@ enum Commands {
         no_kindle_limits: bool,
     },
 
-    /// Validate an OPF manuscript against the Amazon Kindle Publishing Guidelines.
+    /// Validate an OPF manuscript against the Amazon Kindle Publishing Guidelines (2026.1).
     ///
     /// Runs a set of pre-flight checks (cover image, NCX, HTML/CSS hygiene,
     /// image formats/sizes, table size, unsupported tags) and prints one line
-    /// per finding with severity, KPG section, and message. Exits 0 if there
-    /// are no errors, 1 otherwise. With `--strict`, exits 1 on any warning too.
+    /// per finding with severity, KPG rule id, section, PDF page, and message.
+    /// Exits 0 if there are no errors, 1 otherwise. With `--strict`, exits 1
+    /// on any warning too.
     #[command(version)]
     Validate {
         /// Input OPF file
@@ -523,6 +525,12 @@ fn main() {
 /// Exits 0 if there are no errors (and no warnings when `strict` is set),
 /// 1 otherwise.
 fn do_validate(opf_path: &PathBuf, strict: bool) {
+    println!(
+        "Validating {} against Kindle Publishing Guidelines v{}",
+        opf_path.display(),
+        kdp_rules::KPG_VERSION
+    );
+
     let report = match validate::validate_opf(opf_path) {
         Ok(r) => r,
         Err(e) => {
