@@ -310,4 +310,4 @@ The MOBI format knowledge beyond what the [MobileRead wiki](https://wiki.mobiler
 
 ## License
 
-MIT - Copyright (c) 2026 Francisco Riordan
+MIT - © 2026 Francisco Riordan
