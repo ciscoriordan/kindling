@@ -1158,23 +1158,22 @@ fn build_text_content(opf: &OPFData, strip_idx: bool) -> Vec<u8> {
     combined.into_bytes()
 }
 
-/// Build text content for a dictionary grouped by the first letter of each headword.
+/// Build text content for a dictionary, splitting at entry boundaries to stay
+/// under Amazon's per-HTML-file size limit.
 ///
-/// Groups all entries by the first Unicode character of their headword (case-folded),
-/// producing one logical section per letter separated by `<mbp:pagebreak/>` tags.
-/// Each entry's HTML content has idx: markup stripped for the text blob.
+/// Entries are kept in file order (matching what `find_entry_positions` expects)
+/// and split into sections separated by `<mbp:pagebreak/>` tags whenever the
+/// accumulated section size would exceed 30 MB.
 ///
 /// Non-dictionary spine items (cover, usage guide, copyright, etc.) are included
-/// before the dictionary entries so that front matter is preserved.
-///
-/// This structure follows Amazon's recommendation for dictionary organization and
-/// keeps individual logical "file" sizes manageable.
+/// before the dictionary entries so that front matter is preserved. The
+/// `<mbp:frameset>` wrapper from the source dictionary HTML is also preserved,
+/// as it is required for Kindle dictionary rendering.
 fn build_text_content_by_letter(opf: &OPFData, entries: &[DictionaryEntry]) -> Vec<u8> {
-    use std::collections::BTreeMap;
-
     // Collect non-dictionary spine items (front matter) and extract styles
     let mut front_matter_sections: Vec<String> = Vec::new();
     let mut first_style: Option<String> = None;
+    let mut has_frameset = false;
     let body_re = Regex::new(r"(?s)<body[^>]*>(.*?)</body>").unwrap();
     let style_re = Regex::new(r"(?s)<style[^>]*>.*?</style>").unwrap();
     for html_path in opf.get_content_html_paths() {
@@ -1193,7 +1192,10 @@ fn build_text_content_by_letter(opf: &OPFData, entries: &[DictionaryEntry]) -> V
                         }
                     }
                 }
-                continue; // Skip dictionary files, they'll be handled by letter grouping
+                if content.contains("<mbp:frameset") {
+                    has_frameset = true;
+                }
+                continue; // Skip dictionary files, they'll be handled by entry chunking
             }
             // Non-dictionary file: clean it and extract body content
             let cleaned = strip_idx_markup(&content);
@@ -1205,76 +1207,54 @@ fn build_text_content_by_letter(opf: &OPFData, entries: &[DictionaryEntry]) -> V
         }
     }
 
-    // Group entries by first character (lowercased)
-    let mut letter_groups: BTreeMap<String, Vec<&DictionaryEntry>> = BTreeMap::new();
+    // Build dictionary sections, splitting at entry boundaries to stay under 30MB.
+    // Entries stay in file order so find_entry_positions can locate them sequentially.
+    let mut dict_sections: Vec<String> = Vec::new();
+    let mut current_chunk = String::new();
+
     for entry in entries {
-        let key = entry.headword.chars().next()
-            .map(|c| c.to_lowercase().to_string())
-            .unwrap_or_else(|| "_".to_string());
-        letter_groups.entry(key).or_default().push(entry);
+        let stripped = strip_idx_markup(&entry.html_content);
+        if !current_chunk.is_empty() && current_chunk.len() + stripped.len() > KINDLE_HTML_SIZE_LIMIT {
+            dict_sections.push(current_chunk);
+            current_chunk = String::new();
+        }
+        current_chunk.push_str(&stripped);
+    }
+    if !current_chunk.is_empty() {
+        dict_sections.push(current_chunk);
     }
 
-    let num_groups = letter_groups.len();
-    eprintln!("Kindle limits: grouped {} entries into {} letter groups", entries.len(), num_groups);
+    eprintln!("Kindle limits: split {} entries into {} sections", entries.len(), dict_sections.len());
 
-    if num_groups > KINDLE_HTML_FILE_LIMIT {
+    // Check total section count
+    let total_sections = front_matter_sections.len() + dict_sections.len();
+    if total_sections > KINDLE_HTML_FILE_LIMIT {
         eprintln!(
-            "Warning: {} letter groups exceeds the Kindle limit of {} HTML files",
-            num_groups, KINDLE_HTML_FILE_LIMIT
+            "Warning: {} total HTML sections exceeds the Kindle limit of {} files",
+            total_sections, KINDLE_HTML_FILE_LIMIT
         );
     }
 
-    // Build body sections per letter group
-    let mut body_sections: Vec<String> = Vec::new();
+    // Join front matter with pagebreaks
+    let fm_body = front_matter_sections.join("<mbp:pagebreak/>");
 
-    // Prepend front matter sections
-    for fm in &front_matter_sections {
-        body_sections.push(fm.clone());
-    }
+    // Join dictionary sections with pagebreaks, wrapped in <mbp:frameset> if the
+    // source dictionary HTML used one (required for Kindle dictionary rendering)
+    let dict_body = dict_sections.join("<mbp:pagebreak/>");
+    let dict_body = if has_frameset {
+        format!("<mbp:frameset>{}</mbp:frameset>", dict_body)
+    } else {
+        dict_body
+    };
 
-    for (letter, group_entries) in &letter_groups {
-        let mut section_parts: Vec<String> = Vec::new();
-        for entry in group_entries {
-            let stripped = strip_idx_markup(&entry.html_content);
-            section_parts.push(stripped);
-        }
-        let section = section_parts.join("");
-        let section_size = section.len();
-        if section_size > KINDLE_HTML_SIZE_LIMIT {
-            eprintln!(
-                "Warning: letter group '{}' HTML is {} bytes, exceeds 30 MB Kindle limit ({} bytes). Splitting further at entry boundaries.",
-                letter,
-                section_size,
-                KINDLE_HTML_SIZE_LIMIT
-            );
-            // Split this letter's entries into sub-chunks under 30MB
-            let mut chunk = String::new();
-            for entry in group_entries {
-                let stripped = strip_idx_markup(&entry.html_content);
-                if !chunk.is_empty() && chunk.len() + stripped.len() > KINDLE_HTML_SIZE_LIMIT {
-                    body_sections.push(chunk);
-                    chunk = String::new();
-                }
-                chunk.push_str(&stripped);
-            }
-            if !chunk.is_empty() {
-                body_sections.push(chunk);
-            }
-        } else {
-            body_sections.push(section);
-        }
-    }
-
-    // Check total section count after potential sub-splitting
-    if body_sections.len() > KINDLE_HTML_FILE_LIMIT {
-        eprintln!(
-            "Warning: {} total HTML sections after splitting exceeds the Kindle limit of {} files",
-            body_sections.len(), KINDLE_HTML_FILE_LIMIT
-        );
-    }
+    // Combine front matter and dictionary
+    let merged_body = if fm_body.is_empty() {
+        dict_body
+    } else {
+        format!("{}<mbp:pagebreak/>{}", fm_body, dict_body)
+    };
 
     let style_block = first_style.unwrap_or_default();
-    let merged_body = body_sections.join("<mbp:pagebreak/>");
     let combined = format!(
         "<html><head>{}<guide></guide></head><body>{}  <mbp:pagebreak/></body></html>",
         style_block, merged_body
@@ -1663,7 +1643,16 @@ fn find_entry_positions(text_bytes: &[u8], entries: &[DictionaryEntry]) -> Vec<(
     let mut search_start: usize = 0;
 
     for entry in entries {
-        let headword_bytes = entry.headword.as_bytes();
+        // HTML-escape the headword to match the text blob, which retains entities
+        // like &#x27; for apostrophes. The headword was unescaped during parsing,
+        // so we need to re-escape for searching.
+        let escaped_hw = entry.headword
+            .replace('&', "&amp;")
+            .replace('\'', "&#x27;")
+            .replace('"', "&quot;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;");
+        let headword_bytes = escaped_hw.as_bytes();
 
         // Build <b>headword</b> needle
         let mut bold_needle = Vec::with_capacity(3 + headword_bytes.len() + 4);
@@ -1726,6 +1715,20 @@ fn find_entry_positions(text_bytes: &[u8], entries: &[DictionaryEntry]) -> Vec<(
 
         positions.push((block_start, text_len));
         search_start = pos + headword_bytes.len();
+    }
+
+    let unfound: Vec<_> = entries.iter().zip(positions.iter())
+        .filter(|(_, (s, l))| *s == 0 && *l == 0)
+        .map(|(e, _)| e.headword.clone())
+        .collect();
+    if !unfound.is_empty() {
+        eprintln!("Warning: {} / {} entries not found in text blob", unfound.len(), entries.len());
+        for hw in unfound.iter().take(20) {
+            eprintln!("  Not found: {:?}", hw);
+        }
+        if unfound.len() > 20 {
+            eprintln!("  ... and {} more", unfound.len() - 20);
+        }
     }
 
     positions
