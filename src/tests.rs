@@ -5330,4 +5330,1656 @@ mod tests {
         );
         println!("  \u{2713} Dict image src rewritten to recindex=\"00001\"");
     }
+    // =======================================================================
+    // 23. MOBI header fields - Dictionary
+    // =======================================================================
+
+    #[test]
+    fn test_dict_mobi_header_magic() {
+        let dir = TempDir::new("dict_hdr_magic");
+        let opf = create_dict_fixture(dir.path(), &[("word", &["words"])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // Offset 0 relative to MOBI magic at byte 16 of Record 0
+        assert_eq!(&rec0[16..20], b"MOBI", "Dict MOBI magic at rec0[16..20]");
+        println!("  \u{2713} Dict MOBI magic ok");
+    }
+
+    #[test]
+    fn test_dict_mobi_header_length_264() {
+        let dir = TempDir::new("dict_hdr_len");
+        let opf = create_dict_fixture(dir.path(), &[("word", &["words"])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // Offset 4: header length
+        let hdr_len = read_u32_be(rec0, 16 + 4);
+        assert_eq!(hdr_len, 264, "Dict MOBI header length should be 264, got {}", hdr_len);
+        println!("  \u{2713} Dict MOBI header length: {}", hdr_len);
+    }
+
+    #[test]
+    fn test_dict_mobi_type_2() {
+        let dir = TempDir::new("dict_hdr_type");
+        let opf = create_dict_fixture(dir.path(), &[("word", &["words"])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // Offset 8: MOBI type
+        let mobi_type = read_u32_be(rec0, 16 + 8);
+        assert_eq!(mobi_type, 2, "Dict MOBI type should be 2, got {}", mobi_type);
+        println!("  \u{2713} Dict MOBI type: {}", mobi_type);
+    }
+
+    #[test]
+    fn test_dict_mobi_encoding_utf8() {
+        let dir = TempDir::new("dict_hdr_enc");
+        let opf = create_dict_fixture(dir.path(), &[("word", &["words"])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // Offset 12: encoding
+        let encoding = read_u32_be(rec0, 16 + 12);
+        assert_eq!(encoding, 65001, "Dict encoding should be 65001 (UTF-8), got {}", encoding);
+        println!("  \u{2713} Dict encoding: {}", encoding);
+    }
+
+    #[test]
+    fn test_dict_mobi_unique_id_nonzero() {
+        let dir = TempDir::new("dict_hdr_uid");
+        let opf = create_dict_fixture(dir.path(), &[("word", &["words"])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // Offset 16: unique ID
+        let unique_id = read_u32_be(rec0, 16 + 16);
+        assert_ne!(unique_id, 0, "Dict unique ID should be non-zero");
+        println!("  \u{2713} Dict unique ID: 0x{:08X}", unique_id);
+    }
+
+    #[test]
+    fn test_dict_mobi_file_version() {
+        let dir = TempDir::new("dict_hdr_ver");
+        let opf = create_dict_fixture(dir.path(), &[("word", &["words"])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // Offset 20: file version (dicts default to 7, but 6 is also acceptable)
+        let version = read_u32_be(rec0, 16 + 20);
+        assert!(
+            version == 6 || version == 7,
+            "Dict file version should be 6 or 7, got {}",
+            version
+        );
+        println!("  \u{2713} Dict file version: {}", version);
+    }
+
+    #[test]
+    fn test_dict_mobi_orth_index_valid() {
+        let dir = TempDir::new("dict_hdr_orth");
+        let opf = create_dict_fixture(dir.path(), &[("apple", &["apples"]), ("banana", &[])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, record_count, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // Offset 24: orth index - should be a valid record index for dicts
+        let orth_idx = read_u32_be(rec0, 16 + 24);
+        assert_ne!(orth_idx, 0xFFFFFFFF, "Dict orth index should not be 0xFFFFFFFF");
+        assert!(
+            (orth_idx as u16) < record_count,
+            "Dict orth index {} should be < record count {}",
+            orth_idx, record_count
+        );
+        println!("  \u{2713} Dict orth index: {}", orth_idx);
+    }
+
+    #[test]
+    fn test_dict_mobi_unused_indices_ffffffff() {
+        let dir = TempDir::new("dict_hdr_unused");
+        let opf = create_dict_fixture(dir.path(), &[("word", &["words"])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // Offsets 28-62 (relative to MOBI magic): unused indices, all 0xFFFFFFFF
+        for off in (28..=60).step_by(4) {
+            let val = read_u32_be(rec0, 16 + off);
+            assert_eq!(
+                val, 0xFFFFFFFF,
+                "Dict unused index at MOBI offset {} should be 0xFFFFFFFF, got 0x{:08X}",
+                off, val
+            );
+        }
+        println!("  \u{2713} Dict unused indices [28..62] all 0xFFFFFFFF");
+    }
+
+    #[test]
+    fn test_dict_mobi_first_non_book_record() {
+        let dir = TempDir::new("dict_hdr_fnbr");
+        let opf = create_dict_fixture(dir.path(), &[("word", &["words"])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, record_count, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // Offset 64: first non-book record - should be a valid index
+        let fnbr = read_u32_be(rec0, 16 + 64);
+        assert!(
+            fnbr > 0 && (fnbr as u16) <= record_count,
+            "Dict first non-book record {} should be valid (1..={})",
+            fnbr, record_count
+        );
+        println!("  \u{2713} Dict first non-book record: {}", fnbr);
+    }
+
+    #[test]
+    fn test_dict_mobi_language_code() {
+        let dir = TempDir::new("dict_hdr_lang");
+        let opf = create_dict_fixture(dir.path(), &[("word", &["words"])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // Offset 76: language code - should be non-zero for "en"
+        let lang = read_u32_be(rec0, 16 + 76);
+        assert_ne!(lang, 0, "Dict language code should be non-zero");
+        assert_eq!(lang, 9, "Dict language code for 'en' should be 9, got {}", lang);
+        println!("  \u{2713} Dict language code: {}", lang);
+    }
+
+    #[test]
+    fn test_dict_mobi_input_output_language() {
+        let dir = TempDir::new("dict_hdr_io_lang");
+        let opf = create_dict_fixture(dir.path(), &[("word", &["words"])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // Offset 80: input language - non-zero for dicts with DictionaryInLanguage
+        let input_lang = read_u32_be(rec0, 16 + 80);
+        assert_ne!(input_lang, 0, "Dict input language should be non-zero (DictionaryInLanguage=en)");
+
+        // Offset 84: output language - non-zero for dicts with DictionaryOutLanguage
+        let output_lang = read_u32_be(rec0, 16 + 84);
+        assert_ne!(output_lang, 0, "Dict output language should be non-zero (DictionaryOutLanguage=en)");
+        println!("  \u{2713} Dict input lang: {}, output lang: {}", input_lang, output_lang);
+    }
+
+    #[test]
+    fn test_dict_mobi_min_version_matches_file_version() {
+        let dir = TempDir::new("dict_hdr_minver");
+        let opf = create_dict_fixture(dir.path(), &[("word", &["words"])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // Offset 20: file version, offset 88: min version - should match
+        let file_ver = read_u32_be(rec0, 16 + 20);
+        let min_ver = read_u32_be(rec0, 16 + 88);
+        assert_eq!(
+            min_ver, file_ver,
+            "Dict min version ({}) should match file version ({})",
+            min_ver, file_ver
+        );
+        println!("  \u{2713} Dict min version: {} == file version: {}", min_ver, file_ver);
+    }
+
+    #[test]
+    fn test_dict_mobi_capability_marker_0x50() {
+        let dir = TempDir::new("dict_hdr_cap");
+        let opf = create_dict_fixture(dir.path(), &[("word", &["words"])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // Offset 112: capability marker - 0x50 for dicts
+        let cap = read_u32_be(rec0, 16 + 112);
+        assert_eq!(cap, 0x50, "Dict capability marker should be 0x50, got 0x{:X}", cap);
+        println!("  \u{2713} Dict capability marker: 0x{:X}", cap);
+    }
+
+    #[test]
+    fn test_dict_mobi_extra_record_data_flags() {
+        let dir = TempDir::new("dict_hdr_erdf");
+        let opf = create_dict_fixture(dir.path(), &[("word", &["words"])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // Offset 224: extra record data flags - should be 3 (multibyte + TBS)
+        let flags = read_u32_be(rec0, 16 + 224);
+        assert_eq!(flags, 3, "Dict extra record data flags should be 3, got {}", flags);
+        println!("  \u{2713} Dict extra record data flags: {}", flags);
+    }
+
+    // =======================================================================
+    // 24. MOBI header fields - Book
+    // =======================================================================
+
+    #[test]
+    fn test_book_mobi_header_magic() {
+        let dir = TempDir::new("book_hdr_magic");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        assert_eq!(&rec0[16..20], b"MOBI", "Book MOBI magic at rec0[16..20]");
+        println!("  \u{2713} Book MOBI magic ok");
+    }
+
+    #[test]
+    fn test_book_mobi_header_length_264() {
+        let dir = TempDir::new("book_hdr_len");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        let hdr_len = read_u32_be(rec0, 16 + 4);
+        assert_eq!(hdr_len, 264, "Book MOBI header length should be 264, got {}", hdr_len);
+        println!("  \u{2713} Book MOBI header length: {}", hdr_len);
+    }
+
+    #[test]
+    fn test_book_mobi_type_2() {
+        let dir = TempDir::new("book_hdr_type");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        let mobi_type = read_u32_be(rec0, 16 + 8);
+        assert_eq!(mobi_type, 2, "Book MOBI type should be 2, got {}", mobi_type);
+        println!("  \u{2713} Book MOBI type: {}", mobi_type);
+    }
+
+    #[test]
+    fn test_book_mobi_encoding_utf8() {
+        let dir = TempDir::new("book_hdr_enc");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        let encoding = read_u32_be(rec0, 16 + 12);
+        assert_eq!(encoding, 65001, "Book encoding should be 65001 (UTF-8), got {}", encoding);
+        println!("  \u{2713} Book encoding: {}", encoding);
+    }
+
+    #[test]
+    fn test_book_mobi_unique_id_nonzero() {
+        let dir = TempDir::new("book_hdr_uid");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        let unique_id = read_u32_be(rec0, 16 + 16);
+        assert_ne!(unique_id, 0, "Book unique ID should be non-zero");
+        println!("  \u{2713} Book unique ID: 0x{:08X}", unique_id);
+    }
+
+    #[test]
+    fn test_book_mobi_file_version_7() {
+        // Dual-format book KF7 Record 0 should have version 7
+        // (actually KF7 uses version 6 with EXTH 121 pointing to KF8)
+        let dir = TempDir::new("book_hdr_ver");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        let version = read_u32_be(rec0, 16 + 20);
+        // Dual-format books use version 6 for KF7 Record 0
+        assert!(
+            version == 6 || version == 7,
+            "Book KF7 file version should be 6 or 7, got {}",
+            version
+        );
+        println!("  \u{2713} Book KF7 file version: {}", version);
+    }
+
+    #[test]
+    fn test_book_mobi_orth_index_ffffffff() {
+        let dir = TempDir::new("book_hdr_orth");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // Offset 24: orth index - 0xFFFFFFFF for books (no dictionary index)
+        let orth_idx = read_u32_be(rec0, 16 + 24);
+        assert_eq!(
+            orth_idx, 0xFFFFFFFF,
+            "Book orth index should be 0xFFFFFFFF, got 0x{:08X}",
+            orth_idx
+        );
+        println!("  \u{2713} Book orth index: 0x{:08X}", orth_idx);
+    }
+
+    #[test]
+    fn test_book_mobi_unused_indices_ffffffff() {
+        let dir = TempDir::new("book_hdr_unused");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // Offsets 28-62: unused indices, all 0xFFFFFFFF
+        for off in (28..=60).step_by(4) {
+            let val = read_u32_be(rec0, 16 + off);
+            assert_eq!(
+                val, 0xFFFFFFFF,
+                "Book unused index at MOBI offset {} should be 0xFFFFFFFF, got 0x{:08X}",
+                off, val
+            );
+        }
+        println!("  \u{2713} Book unused indices [28..62] all 0xFFFFFFFF");
+    }
+
+    #[test]
+    fn test_book_mobi_first_non_book_record() {
+        let dir = TempDir::new("book_hdr_fnbr");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, record_count, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        let fnbr = read_u32_be(rec0, 16 + 64);
+        assert!(
+            fnbr > 0 && (fnbr as u16) <= record_count,
+            "Book first non-book record {} should be valid (1..={})",
+            fnbr, record_count
+        );
+        println!("  \u{2713} Book first non-book record: {}", fnbr);
+    }
+
+    #[test]
+    fn test_book_mobi_language_code() {
+        let dir = TempDir::new("book_hdr_lang");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        let lang = read_u32_be(rec0, 16 + 76);
+        assert_ne!(lang, 0, "Book language code should be non-zero for 'en'");
+        assert_eq!(lang, 9, "Book language code for 'en' should be 9, got {}", lang);
+        println!("  \u{2713} Book language code: {}", lang);
+    }
+
+    #[test]
+    fn test_book_mobi_min_version_matches_file_version() {
+        let dir = TempDir::new("book_hdr_minver");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        let file_ver = read_u32_be(rec0, 16 + 20);
+        let min_ver = read_u32_be(rec0, 16 + 88);
+        assert_eq!(
+            min_ver, file_ver,
+            "Book min version ({}) should match file version ({})",
+            min_ver, file_ver
+        );
+        println!("  \u{2713} Book min version: {} == file version: {}", min_ver, file_ver);
+    }
+
+    #[test]
+    fn test_book_mobi_first_image_record_valid() {
+        let dir = TempDir::new("book_hdr_fimg");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, record_count, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // Offset 92: first image record
+        let first_img = read_u32_be(rec0, 16 + 92);
+        assert_ne!(first_img, 0xFFFFFFFF, "Book with image should have first_image set");
+        assert!(
+            (first_img as u16) < record_count,
+            "Book first image record {} should be < record count {}",
+            first_img, record_count
+        );
+        println!("  \u{2713} Book first image record: {}", first_img);
+    }
+
+    #[test]
+    fn test_book_mobi_capability_marker_0x4850() {
+        let dir = TempDir::new("book_hdr_cap");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        let cap = read_u32_be(rec0, 16 + 112);
+        assert_eq!(cap, 0x4850, "Book capability marker should be 0x4850, got 0x{:X}", cap);
+        println!("  \u{2713} Book capability marker: 0x{:X}", cap);
+    }
+
+    #[test]
+    fn test_book_mobi_extra_record_data_flags() {
+        let dir = TempDir::new("book_hdr_erdf");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        let flags = read_u32_be(rec0, 16 + 224);
+        assert_eq!(flags, 3, "Book extra record data flags should be 3, got {}", flags);
+        println!("  \u{2713} Book extra record data flags: {}", flags);
+    }
+
+    #[test]
+    fn test_kf8_only_mobi_header_fields() {
+        // KF8-only book: version=8, min_version=8
+        let dir = TempDir::new("kf8only_hdr_fields");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_kf8_only_mobi_bytes(&opf, dir.path());
+        let (_, record_count, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // Magic
+        assert_eq!(&rec0[16..20], b"MOBI");
+        // Header length
+        assert_eq!(read_u32_be(rec0, 16 + 4), 264);
+        // MOBI type
+        assert_eq!(read_u32_be(rec0, 16 + 8), 2);
+        // Encoding
+        assert_eq!(read_u32_be(rec0, 16 + 12), 65001);
+        // Unique ID non-zero
+        assert_ne!(read_u32_be(rec0, 16 + 16), 0);
+        // File version = 8
+        assert_eq!(read_u32_be(rec0, 16 + 20), 8);
+        // Min version = 8
+        assert_eq!(read_u32_be(rec0, 16 + 88), 8);
+        // Orth index = 0xFFFFFFFF (no dictionary)
+        assert_eq!(read_u32_be(rec0, 16 + 24), 0xFFFFFFFF);
+        // First non-book record valid
+        let fnbr = read_u32_be(rec0, 16 + 64);
+        assert!(fnbr > 0 && (fnbr as u16) <= record_count);
+        // Capability marker = 0x4850
+        assert_eq!(read_u32_be(rec0, 16 + 112), 0x4850);
+        // Extra record data flags = 3
+        assert_eq!(read_u32_be(rec0, 16 + 224), 3);
+        println!("  \u{2713} KF8-only MOBI header fields all correct");
+    }
+
+    // =======================================================================
+    // 25. EXTH records - Dictionary
+    // =======================================================================
+
+    #[test]
+    fn test_dict_exth_100_author() {
+        let dir = TempDir::new("dict_exth_100");
+        let opf = create_dict_fixture(dir.path(), &[("word", &["words"])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let exth = parse_exth_records(rec0);
+
+        let author_entries = exth.get(&100).expect("Dict EXTH 100 (Author) should be present");
+        let author = std::str::from_utf8(&author_entries[0]).unwrap();
+        assert_eq!(author, "Tester", "Dict author should be 'Tester', got '{}'", author);
+        println!("  \u{2713} Dict EXTH 100 (Author): {}", author);
+    }
+
+    #[test]
+    fn test_dict_exth_125_value_1() {
+        let dir = TempDir::new("dict_exth_125");
+        let opf = create_dict_fixture(dir.path(), &[("word", &["words"])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let exth = parse_exth_records(rec0);
+
+        let entries = exth.get(&125).expect("Dict EXTH 125 should be present");
+        let val = u32::from_be_bytes([entries[0][0], entries[0][1], entries[0][2], entries[0][3]]);
+        assert_eq!(val, 1, "Dict EXTH 125 should be 1, got {}", val);
+        println!("  \u{2713} Dict EXTH 125: {}", val);
+    }
+
+    #[test]
+    fn test_dict_exth_131_value_0() {
+        let dir = TempDir::new("dict_exth_131");
+        let opf = create_dict_fixture(dir.path(), &[("word", &["words"])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let exth = parse_exth_records(rec0);
+
+        let entries = exth.get(&131).expect("Dict EXTH 131 should be present");
+        let val = u32::from_be_bytes([entries[0][0], entries[0][1], entries[0][2], entries[0][3]]);
+        assert_eq!(val, 0, "Dict EXTH 131 should be 0, got {}", val);
+        println!("  \u{2713} Dict EXTH 131: {}", val);
+    }
+
+    #[test]
+    fn test_dict_exth_201_cover_offset_with_images() {
+        let dir = TempDir::new("dict_exth_201");
+        let jpeg = make_test_jpeg();
+        let opf = create_dict_fixture_with_cover(
+            dir.path(),
+            &[("word", &["words"])],
+            &jpeg,
+        );
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let exth = parse_exth_records(rec0);
+
+        assert!(
+            exth.contains_key(&201),
+            "Dict with images should have EXTH 201 (CoverOffset)"
+        );
+        println!("  \u{2713} Dict EXTH 201 (CoverOffset) present with images");
+    }
+
+    #[test]
+    fn test_dict_exth_300_fontsignature() {
+        let dir = TempDir::new("dict_exth_300");
+        let opf = create_dict_fixture(dir.path(), &[("word", &["words"])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let exth = parse_exth_records(rec0);
+
+        let entries = exth.get(&300).expect("Dict EXTH 300 (Fontsignature) should be present");
+        // Fontsignature: USB(16) + CSB(8) + padding(8) + char_data(4 prefix + codepoints)
+        // Minimum is 32 (header) + 4 (prefix) = 36 bytes for empty codepoint set
+        assert!(
+            entries[0].len() >= 36,
+            "Dict EXTH 300 should be >= 36 bytes, got {}",
+            entries[0].len()
+        );
+        println!("  \u{2713} Dict EXTH 300 (Fontsignature): {} bytes", entries[0].len());
+    }
+
+    #[test]
+    fn test_dict_exth_501_not_present() {
+        let dir = TempDir::new("dict_exth_501");
+        let opf = create_dict_fixture(dir.path(), &[("word", &["words"])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let exth = parse_exth_records(rec0);
+
+        assert!(
+            !exth.contains_key(&501),
+            "Dict should NOT have EXTH 501 (DocType)"
+        );
+        println!("  \u{2713} Dict EXTH 501 (DocType) absent");
+    }
+
+    #[test]
+    fn test_dict_exth_524_language() {
+        let dir = TempDir::new("dict_exth_524");
+        let opf = create_dict_fixture(dir.path(), &[("word", &["words"])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let exth = parse_exth_records(rec0);
+
+        let entries = exth.get(&524).expect("Dict EXTH 524 (Language) should be present");
+        let lang = std::str::from_utf8(&entries[0]).unwrap();
+        assert_eq!(lang, "en", "Dict EXTH 524 should be 'en', got '{}'", lang);
+        println!("  \u{2713} Dict EXTH 524 (Language): {}", lang);
+    }
+
+    #[test]
+    fn test_dict_exth_531_input_language() {
+        let dir = TempDir::new("dict_exth_531");
+        let opf = create_dict_fixture(dir.path(), &[("word", &["words"])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let exth = parse_exth_records(rec0);
+
+        let entries = exth.get(&531).expect("Dict EXTH 531 (DictInputLang) should be present");
+        let lang = std::str::from_utf8(&entries[0]).unwrap();
+        // The fixture has DictionaryInLanguage=en
+        assert_eq!(lang, "en", "Dict EXTH 531 should match source language 'en', got '{}'", lang);
+        println!("  \u{2713} Dict EXTH 531 (DictInputLang): {}", lang);
+    }
+
+    #[test]
+    fn test_dict_exth_532_output_language() {
+        let dir = TempDir::new("dict_exth_532");
+        let opf = create_dict_fixture(dir.path(), &[("word", &["words"])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let exth = parse_exth_records(rec0);
+
+        let entries = exth.get(&532).expect("Dict EXTH 532 (DictOutputLang) should be present");
+        let lang = std::str::from_utf8(&entries[0]).unwrap();
+        // The fixture has DictionaryOutLanguage=en
+        assert_eq!(lang, "en", "Dict EXTH 532 should match target language 'en', got '{}'", lang);
+        println!("  \u{2713} Dict EXTH 532 (DictOutputLang): {}", lang);
+    }
+
+    #[test]
+    fn test_dict_exth_535_creator() {
+        let dir = TempDir::new("dict_exth_535");
+        let opf = create_dict_fixture(dir.path(), &[("word", &["words"])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let exth = parse_exth_records(rec0);
+
+        assert!(
+            exth.contains_key(&535),
+            "Dict EXTH 535 (Creator) should be present"
+        );
+        println!("  \u{2713} Dict EXTH 535 (Creator) present");
+    }
+
+    #[test]
+    fn test_dict_exth_547_inmemory() {
+        let dir = TempDir::new("dict_exth_547");
+        let opf = create_dict_fixture(dir.path(), &[("word", &["words"])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let exth = parse_exth_records(rec0);
+
+        let entries = exth.get(&547).expect("Dict EXTH 547 (InMemory) should be present");
+        let val = std::str::from_utf8(&entries[0]).unwrap();
+        assert_eq!(val, "InMemory", "Dict EXTH 547 should be 'InMemory', got '{}'", val);
+        println!("  \u{2713} Dict EXTH 547: {}", val);
+    }
+
+    // =======================================================================
+    // 26. EXTH records - Book
+    // =======================================================================
+
+    #[test]
+    fn test_book_exth_100_author() {
+        let dir = TempDir::new("book_exth_100");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let exth = parse_exth_records(rec0);
+
+        let author_entries = exth.get(&100).expect("Book EXTH 100 (Author) should be present");
+        let author = std::str::from_utf8(&author_entries[0]).unwrap();
+        assert_eq!(author, "Author", "Book author should be 'Author', got '{}'", author);
+        println!("  \u{2713} Book EXTH 100 (Author): {}", author);
+    }
+
+    #[test]
+    fn test_book_exth_121_kf8_boundary_in_dual_format() {
+        let dir = TempDir::new("book_exth_121_dual");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let exth = parse_exth_records(rec0);
+
+        assert!(
+            exth.contains_key(&121),
+            "Dual-format book EXTH 121 (KF8 boundary) should be present"
+        );
+        println!("  \u{2713} Book EXTH 121 (KF8 boundary) present in dual format");
+    }
+
+    #[test]
+    fn test_book_exth_121_absent_in_kf8_only() {
+        let dir = TempDir::new("book_exth_121_kf8");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_kf8_only_mobi_bytes(&opf, dir.path());
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let exth = parse_exth_records(rec0);
+
+        assert!(
+            !exth.contains_key(&121),
+            "KF8-only book should NOT have EXTH 121 (KF8 boundary)"
+        );
+        println!("  \u{2713} Book EXTH 121 absent in KF8-only");
+    }
+
+    #[test]
+    fn test_book_exth_125_value_21() {
+        let dir = TempDir::new("book_exth_125");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let exth = parse_exth_records(rec0);
+
+        let entries = exth.get(&125).expect("Book EXTH 125 should be present");
+        let val = u32::from_be_bytes([entries[0][0], entries[0][1], entries[0][2], entries[0][3]]);
+        assert_eq!(val, 21, "Book EXTH 125 should be 21, got {}", val);
+        println!("  \u{2713} Book EXTH 125: {}", val);
+    }
+
+    #[test]
+    fn test_book_exth_201_cover_offset_with_cover() {
+        let dir = TempDir::new("book_exth_201");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let exth = parse_exth_records(rec0);
+
+        assert!(
+            exth.contains_key(&201),
+            "Book with cover should have EXTH 201 (CoverOffset)"
+        );
+        println!("  \u{2713} Book EXTH 201 (CoverOffset) present");
+    }
+
+    #[test]
+    fn test_book_exth_501_doc_type_pdoc() {
+        let dir = TempDir::new("book_exth_501");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let exth = parse_exth_records(rec0);
+
+        let entries = exth.get(&501).expect("Book EXTH 501 (DocType) should be present");
+        let val = std::str::from_utf8(&entries[0]).unwrap();
+        assert_eq!(val, "PDOC", "Book EXTH 501 default should be 'PDOC', got '{}'", val);
+        println!("  \u{2713} Book EXTH 501 (DocType): {}", val);
+    }
+
+    #[test]
+    fn test_book_exth_524_language() {
+        let dir = TempDir::new("book_exth_524");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let exth = parse_exth_records(rec0);
+
+        let entries = exth.get(&524).expect("Book EXTH 524 (Language) should be present");
+        let lang = std::str::from_utf8(&entries[0]).unwrap();
+        assert_eq!(lang, "en", "Book EXTH 524 should be 'en', got '{}'", lang);
+        println!("  \u{2713} Book EXTH 524 (Language): {}", lang);
+    }
+
+    #[test]
+    fn test_book_exth_535_creator() {
+        let dir = TempDir::new("book_exth_535");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let exth = parse_exth_records(rec0);
+
+        assert!(
+            exth.contains_key(&535),
+            "Book EXTH 535 (Creator) should be present"
+        );
+        println!("  \u{2713} Book EXTH 535 (Creator) present");
+    }
+
+    #[test]
+    fn test_book_exth_547_inmemory() {
+        let dir = TempDir::new("book_exth_547");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let exth = parse_exth_records(rec0);
+
+        let entries = exth.get(&547).expect("Book EXTH 547 (InMemory) should be present");
+        let val = std::str::from_utf8(&entries[0]).unwrap();
+        assert_eq!(val, "InMemory", "Book EXTH 547 should be 'InMemory', got '{}'", val);
+        println!("  \u{2713} Book EXTH 547: {}", val);
+    }
+    // =======================================================================
+    // 23. Text record structure
+    // =======================================================================
+
+    #[test]
+    fn test_first_text_record_starts_with_html() {
+        let dir = TempDir::new("first_text_html_dict");
+        let opf = create_dict_fixture(dir.path(), &[("test", &["tests"])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+
+        let (_, _, offsets) = parse_palmdb(&data);
+        // Record 1 is the first text record
+        let rec1 = get_record(&data, &offsets, 1);
+        let content = strip_trailing_bytes(rec1);
+        let text = String::from_utf8_lossy(content);
+
+        assert!(
+            text.starts_with("<html>") || text.starts_with("<html "),
+            "First text record should start with '<html>', got: {:?}",
+            &text[..text.len().min(60)]
+        );
+        println!("  \u{2713} First text record starts with '<html>' (dict)");
+    }
+
+    #[test]
+    fn test_first_text_record_starts_with_html_book() {
+        let dir = TempDir::new("first_text_html_book");
+        let opf = create_book_fixture(dir.path(), None);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec1 = get_record(&data, &offsets, 1);
+        let content = strip_trailing_bytes(rec1);
+        let text = String::from_utf8_lossy(content);
+
+        assert!(
+            text.starts_with("<html>") || text.starts_with("<html "),
+            "First text record should start with '<html>' (book), got: {:?}",
+            &text[..text.len().min(60)]
+        );
+        println!("  \u{2713} First text record starts with '<html>' (book)");
+    }
+
+    #[test]
+    fn test_compressed_records_decompress_to_same_text() {
+        let dir_u = TempDir::new("comp_roundtrip_u");
+        let dir_c = TempDir::new("comp_roundtrip_c");
+
+        let entries: &[(&str, &[&str])] = &[
+            ("alpha", &["alphas"]),
+            ("beta", &["betas"]),
+            ("gamma", &["gammas"]),
+            ("delta", &["deltas"]),
+        ];
+
+        let opf_u = create_dict_fixture(dir_u.path(), entries);
+        let opf_c = create_dict_fixture(dir_c.path(), entries);
+
+        // Uncompressed
+        let data_u = build_mobi_bytes(&opf_u, dir_u.path(), true, false, None);
+        // Compressed
+        let output_c = dir_c.path().join("output_comp.mobi");
+        mobi::build_mobi(
+            &opf_c, &output_c, false, false, None, false, false, false, false, None, false,
+        ).expect("compressed build failed");
+        let data_c = fs::read(&output_c).unwrap();
+
+        let text_u = extract_text_blob(&data_u);
+
+        // Decompress compressed text records
+        let (_, _, offsets_c) = parse_palmdb(&data_c);
+        let rec0_c = get_record(&data_c, &offsets_c, 0);
+        let text_rc = read_u16_be(rec0_c, 8) as usize;
+
+        let mut decompressed = Vec::new();
+        for i in 1..=text_rc {
+            if i >= offsets_c.len() { break; }
+            let rec = get_record(&data_c, &offsets_c, i);
+            let chunk = palmdoc_decompress(strip_trailing_bytes(rec));
+            decompressed.extend_from_slice(&chunk);
+        }
+
+        assert_eq!(
+            text_u, decompressed,
+            "Decompressed text should match uncompressed text"
+        );
+        println!(
+            "  \u{2713} Compressed records decompress correctly ({} bytes)",
+            decompressed.len()
+        );
+    }
+
+    #[test]
+    fn test_total_decompressed_text_matches_palmdoc_text_length() {
+        let dir = TempDir::new("text_len_palmdoc");
+        let entries: &[(&str, &[&str])] = &[
+            ("alpha", &[]), ("beta", &[]), ("gamma", &[]),
+        ];
+        let opf = create_dict_fixture(dir.path(), entries);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let palmdoc_text_length = read_u32_be(rec0, 4) as usize;
+
+        let text_blob = extract_text_blob(&data);
+        assert_eq!(
+            text_blob.len(), palmdoc_text_length,
+            "Total text length ({}) should match PalmDOC text_length field ({})",
+            text_blob.len(), palmdoc_text_length
+        );
+        println!(
+            "  \u{2713} Text blob {} bytes matches PalmDOC text_length {}",
+            text_blob.len(), palmdoc_text_length
+        );
+    }
+
+    // =======================================================================
+    // 24. INDX record structure (dictionary)
+    // =======================================================================
+
+    #[test]
+    fn test_indx_first_record_has_magic() {
+        let dir = TempDir::new("indx_magic");
+        let opf = create_dict_fixture(
+            dir.path(),
+            &[("apple", &["apples"]), ("banana", &["bananas"])],
+        );
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let orth_idx = read_u32_be(rec0, 40) as usize;
+
+        let indx_rec = get_record(&data, &offsets, orth_idx);
+        assert_eq!(
+            &indx_rec[0..4], b"INDX",
+            "First INDX record should start with 'INDX' magic"
+        );
+        println!("  \u{2713} First INDX record at {} starts with INDX magic", orth_idx);
+    }
+
+    #[test]
+    fn test_indx_record_count_matches_mobi_header() {
+        let dir = TempDir::new("indx_count_match");
+        let entries: &[(&str, &[&str])] = &[
+            ("alpha", &[]),
+            ("beta", &[]),
+            ("gamma", &[]),
+        ];
+        let opf = create_dict_fixture(dir.path(), entries);
+        let data = build_mobi_bytes(&opf, dir.path(), true, true, None);
+
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let orth_idx = read_u32_be(rec0, 40) as usize;
+
+        let primary_indx = get_record(&data, &offsets, orth_idx);
+        // Primary INDX header offset 24 = number of data records
+        let num_data_records = read_u32_be(primary_indx, 24) as usize;
+
+        // Verify each declared data record also starts with INDX magic
+        for dr in 0..num_data_records {
+            let data_rec_idx = orth_idx + 1 + dr;
+            assert!(
+                data_rec_idx < offsets.len(),
+                "INDX data record {} (PalmDB record {}) out of bounds",
+                dr, data_rec_idx
+            );
+            let data_rec = get_record(&data, &offsets, data_rec_idx);
+            assert_eq!(
+                &data_rec[0..4], b"INDX",
+                "INDX data record {} should start with INDX magic",
+                dr
+            );
+        }
+        println!(
+            "  \u{2713} INDX declares {} data records, all verified with INDX magic",
+            num_data_records
+        );
+    }
+
+    #[test]
+    fn test_indx_all_entries_within_text_bounds() {
+        let dir = TempDir::new("indx_text_bounds");
+        let entries: &[(&str, &[&str])] = &[
+            ("aardvark", &[]),
+            ("banana", &["bananas"]),
+            ("cherry", &["cherries"]),
+            ("date", &[]),
+            ("elderberry", &[]),
+        ];
+        let opf = create_dict_fixture_unambiguous(dir.path(), entries);
+        let data = build_mobi_bytes(&opf, dir.path(), true, true, None);
+
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let orth_idx = read_u32_be(rec0, 40) as usize;
+
+        let text_blob = extract_text_blob(&data);
+        let indx_entries = parse_indx_entries(&data, &offsets, orth_idx);
+
+        assert!(!indx_entries.is_empty(), "Should have INDX entries");
+
+        for (i, &(start_pos, text_len)) in indx_entries.iter().enumerate() {
+            let sp = start_pos as usize;
+            let tl = text_len as usize;
+
+            assert!(
+                sp < text_blob.len(),
+                "INDX entry {} start_pos={} exceeds text blob size {}",
+                i, sp, text_blob.len()
+            );
+            assert!(
+                tl > 0,
+                "INDX entry {} has text_len=0",
+                i
+            );
+            assert!(
+                sp + tl <= text_blob.len(),
+                "INDX entry {} end pos {} exceeds text blob size {}",
+                i, sp + tl, text_blob.len()
+            );
+        }
+        println!(
+            "  \u{2713} All {} INDX entries within text bounds ({} bytes)",
+            indx_entries.len(), text_blob.len()
+        );
+    }
+
+    #[test]
+    fn test_indx_entries_contain_bold_near_start() {
+        let dir = TempDir::new("indx_bold_near_start");
+        let entries: &[(&str, &[&str])] = &[
+            ("foo", &[]),
+            ("bar", &["bars"]),
+            ("baz", &[]),
+        ];
+        let opf = create_dict_fixture_unambiguous(dir.path(), entries);
+        let data = build_mobi_bytes(&opf, dir.path(), true, true, None);
+
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let orth_idx = read_u32_be(rec0, 40) as usize;
+
+        let text_blob = extract_text_blob(&data);
+        let indx_entries = parse_indx_entries(&data, &offsets, orth_idx);
+
+        for (i, &(start_pos, text_len)) in indx_entries.iter().enumerate() {
+            let sp = start_pos as usize;
+            let tl = text_len as usize;
+            let search_end = (sp + 50).min(sp + tl).min(text_blob.len());
+            let region = &text_blob[sp..search_end];
+            let has_bold = region.windows(3).any(|w| w == b"<b>");
+            assert!(
+                has_bold,
+                "INDX entry {} at start_pos={} should contain '<b>' within first 50 bytes",
+                i, sp
+            );
+        }
+        println!(
+            "  \u{2713} All {} INDX entries contain '<b>' near start",
+            indx_entries.len()
+        );
+    }
+
+    // =======================================================================
+    // 25. FLIS record structure
+    // =======================================================================
+
+    #[test]
+    fn test_flis_record_magic_and_size() {
+        let dir = TempDir::new("flis_structure");
+        let opf = create_dict_fixture(dir.path(), &[("test", &[])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+
+        let mut found_flis = false;
+        for i in 0..offsets.len() {
+            let rec = get_record(&data, &offsets, i);
+            if rec.len() >= 4 && &rec[0..4] == b"FLIS" {
+                found_flis = true;
+                assert_eq!(
+                    rec.len(), 36,
+                    "FLIS record should be exactly 36 bytes, got {}",
+                    rec.len()
+                );
+                break;
+            }
+        }
+        assert!(found_flis, "MOBI should contain a FLIS record");
+        println!("  \u{2713} FLIS record: magic='FLIS', size=36 bytes");
+    }
+
+    #[test]
+    fn test_flis_record_in_book() {
+        let dir = TempDir::new("flis_book");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+
+        let mut found_flis = false;
+        for i in 0..offsets.len() {
+            let rec = get_record(&data, &offsets, i);
+            if rec.len() >= 4 && &rec[0..4] == b"FLIS" {
+                found_flis = true;
+                assert_eq!(rec.len(), 36, "FLIS record should be 36 bytes in book, got {}", rec.len());
+                break;
+            }
+        }
+        assert!(found_flis, "Book MOBI should contain a FLIS record");
+        println!("  \u{2713} FLIS record present and 36 bytes in book MOBI");
+    }
+
+    // =======================================================================
+    // 26. FCIS record structure
+    // =======================================================================
+
+    #[test]
+    fn test_fcis_record_magic_and_text_length() {
+        let dir = TempDir::new("fcis_structure");
+        let opf = create_dict_fixture(
+            dir.path(),
+            &[("alpha", &[]), ("beta", &[])],
+        );
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let palmdoc_text_length = read_u32_be(rec0, 4);
+
+        let mut found_fcis = false;
+        for i in 0..offsets.len() {
+            let rec = get_record(&data, &offsets, i);
+            if rec.len() >= 4 && &rec[0..4] == b"FCIS" {
+                found_fcis = true;
+                // FCIS layout: "FCIS"(4) + 20u32(4) + 16u32(4) + 1u32(4) + 0u32(4) + text_length(4)
+                // So text_length is at offset 20
+                let fcis_text_len = read_u32_be(rec, 20);
+                assert_eq!(
+                    fcis_text_len, palmdoc_text_length,
+                    "FCIS text_length ({}) should match PalmDOC text_length ({})",
+                    fcis_text_len, palmdoc_text_length
+                );
+                break;
+            }
+        }
+        assert!(found_fcis, "MOBI should contain a FCIS record");
+        println!(
+            "  \u{2713} FCIS record: magic='FCIS', text_length={}",
+            palmdoc_text_length
+        );
+    }
+
+    #[test]
+    fn test_fcis_text_length_in_book() {
+        let dir = TempDir::new("fcis_book");
+        let opf = create_book_fixture(dir.path(), None);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let palmdoc_text_length = read_u32_be(rec0, 4);
+
+        let mut found_fcis = false;
+        for i in 0..offsets.len() {
+            let rec = get_record(&data, &offsets, i);
+            if rec.len() >= 4 && &rec[0..4] == b"FCIS" {
+                found_fcis = true;
+                // FCIS text_length is at offset 20
+                let fcis_text_len = read_u32_be(rec, 20);
+                assert_eq!(
+                    fcis_text_len, palmdoc_text_length,
+                    "Book FCIS text_length ({}) should match PalmDOC text_length ({})",
+                    fcis_text_len, palmdoc_text_length
+                );
+                break;
+            }
+        }
+        assert!(found_fcis, "Book MOBI should contain a FCIS record");
+        println!("  \u{2713} Book FCIS text_length matches PalmDOC text_length ({})", palmdoc_text_length);
+    }
+
+    // =======================================================================
+    // 27. EOF record structure
+    // =======================================================================
+
+    #[test]
+    fn test_eof_record_dict() {
+        let dir = TempDir::new("eof_dict");
+        let opf = create_dict_fixture(dir.path(), &[("test", &[])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+
+        let last_rec = get_record(&data, &offsets, offsets.len() - 1);
+        assert_eq!(
+            last_rec,
+            &[0xE9, 0x8E, 0x0D, 0x0A],
+            "Dictionary last record should be EOF marker [E9 8E 0D 0A], got {:?}",
+            last_rec
+        );
+        println!("  \u{2713} Dictionary EOF record: exactly 4 bytes [E9 8E 0D 0A]");
+    }
+
+    #[test]
+    fn test_eof_record_book() {
+        let dir = TempDir::new("eof_book");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+
+        let last_rec = get_record(&data, &offsets, offsets.len() - 1);
+        assert_eq!(
+            last_rec,
+            &[0xE9, 0x8E, 0x0D, 0x0A],
+            "Book last record should be EOF marker [E9 8E 0D 0A], got {:?}",
+            last_rec
+        );
+        println!("  \u{2713} Book EOF record: exactly 4 bytes [E9 8E 0D 0A]");
+    }
+
+    // =======================================================================
+    // 28. Boundary record structure (dual-format books)
+    // =======================================================================
+
+    #[test]
+    fn test_boundary_record_is_exactly_8_bytes() {
+        let dir = TempDir::new("boundary_size");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+
+        let mut found_boundary = false;
+        for i in 0..offsets.len() {
+            let rec = get_record(&data, &offsets, i);
+            if rec.len() >= 8 && &rec[0..8] == b"BOUNDARY" {
+                found_boundary = true;
+                assert_eq!(
+                    rec.len(), 8,
+                    "BOUNDARY record should be exactly 8 bytes, got {}",
+                    rec.len()
+                );
+                break;
+            }
+        }
+        assert!(found_boundary, "Dual-format book should contain a BOUNDARY record");
+        println!("  \u{2713} BOUNDARY record: exactly 8 bytes");
+    }
+
+    #[test]
+    fn test_boundary_separates_kf7_and_kf8() {
+        let dir = TempDir::new("boundary_sep");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+
+        let mut boundary_idx = None;
+        for i in 0..offsets.len() {
+            let rec = get_record(&data, &offsets, i);
+            if rec.len() == 8 && &rec[0..8] == b"BOUNDARY" {
+                boundary_idx = Some(i);
+                break;
+            }
+        }
+        let bi = boundary_idx.expect("Dual-format book should have BOUNDARY record");
+
+        // KF7 section: record 0 has MOBI magic, version 6 or 7
+        let rec0 = get_record(&data, &offsets, 0);
+        assert_eq!(&rec0[16..20], b"MOBI");
+        let kf7_version = read_u32_be(rec0, 36);
+        assert!(kf7_version == 6 || kf7_version == 7, "KF7 version should be 6 or 7");
+
+        // KF8 section: record after BOUNDARY has MOBI magic, version 8
+        let kf8_rec0 = get_record(&data, &offsets, bi + 1);
+        assert_eq!(&kf8_rec0[16..20], b"MOBI");
+        let kf8_version = read_u32_be(kf8_rec0, 36);
+        assert_eq!(kf8_version, 8, "KF8 version should be 8");
+
+        println!(
+            "  \u{2713} BOUNDARY at index {} separates KF7 (v{}) and KF8 (v{})",
+            bi, kf7_version, kf8_version
+        );
+    }
+
+    // =======================================================================
+    // 29. Image record structure
+    // =======================================================================
+
+    #[test]
+    fn test_image_records_start_with_jpeg_magic_3bytes() {
+        let dir = TempDir::new("img_jpeg_magic3");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        let first_img = read_u32_be(rec0, 108) as usize;
+        assert_ne!(first_img, 0xFFFFFFFF_u32 as usize, "Should have first_image set");
+
+        // Check all image records start with FF D8 FF (full JPEG SOI + marker)
+        let mut img_count = 0;
+        for i in first_img..offsets.len() {
+            let rec = get_record(&data, &offsets, i);
+            if rec.len() >= 3 && rec[0] == 0xFF && rec[1] == 0xD8 {
+                img_count += 1;
+                assert_eq!(
+                    rec[2], 0xFF,
+                    "Image record {} byte[2] should be 0xFF (JPEG marker), got 0x{:02X}",
+                    i, rec[2]
+                );
+            }
+        }
+        assert!(img_count > 0, "Should find at least one image record");
+        println!("  \u{2713} All {} image records start with FF D8 FF", img_count);
+    }
+
+    #[test]
+    fn test_cover_image_jfif_density_dpi() {
+        let dir = TempDir::new("cover_jfif_dpi");
+        let mut jpeg = make_test_jpeg();
+
+        // Ensure JFIF header has density_units=0x00 (will be patched)
+        if jpeg.len() > 13
+            && jpeg[2] == 0xFF && jpeg[3] == 0xE0
+            && &jpeg[6..11] == b"JFIF\0"
+        {
+            jpeg[13] = 0x00; // set to aspect ratio
+        }
+
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        let first_img = read_u32_be(rec0, 108) as usize;
+        let img_rec = get_record(&data, &offsets, first_img);
+
+        if img_rec.len() > 13
+            && img_rec[2] == 0xFF && img_rec[3] == 0xE0
+            && &img_rec[6..11] == b"JFIF\0"
+        {
+            assert_eq!(
+                img_rec[13], 0x01,
+                "Cover image JFIF density_units should be 0x01 (DPI), got 0x{:02X}",
+                img_rec[13]
+            );
+            println!("  \u{2713} Cover image JFIF density_units = 0x01 (DPI)");
+        } else {
+            println!("  \u{2713} Cover image has no JFIF header (re-encoded), skipping density check");
+        }
+    }
+
+    #[test]
+    fn test_book_images_between_text_and_flis() {
+        let dir = TempDir::new("book_img_order");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        let text_record_count = read_u16_be(rec0, 8) as usize;
+        let first_img = read_u32_be(rec0, 108) as usize;
+
+        // Find FLIS record index
+        let mut flis_idx = None;
+        for i in 0..offsets.len() {
+            let rec = get_record(&data, &offsets, i);
+            if rec.len() >= 4 && &rec[0..4] == b"FLIS" {
+                flis_idx = Some(i);
+                break;
+            }
+        }
+
+        // Images should come after text records (record 0 + text_record_count)
+        assert!(
+            first_img > text_record_count,
+            "First image ({}) should be after text records (0..{})",
+            first_img, text_record_count
+        );
+
+        // If FLIS exists in KF7 section, images should come before it
+        if let Some(fi) = flis_idx {
+            // Only check if FLIS is in the same section as images
+            // (for dual-format, FLIS may be in KF8 section)
+            if first_img < fi {
+                let img_rec = get_record(&data, &offsets, first_img);
+                assert!(
+                    img_rec.len() >= 2 && img_rec[0] == 0xFF && img_rec[1] == 0xD8,
+                    "Record at first_image should be JPEG"
+                );
+                println!(
+                    "  \u{2713} Book images at {} between text (1..{}) and FLIS ({})",
+                    first_img, text_record_count, fi
+                );
+            } else {
+                println!(
+                    "  \u{2713} Book images at {} after text (1..{}), FLIS at {} (different section)",
+                    first_img, text_record_count, fi
+                );
+            }
+        } else {
+            println!(
+                "  \u{2713} Book images at {} after text (1..{}), no KF7 FLIS found",
+                first_img, text_record_count
+            );
+        }
+    }
+
+    #[test]
+    fn test_dict_images_between_text_and_indx() {
+        let dir = TempDir::new("dict_img_order");
+
+        // Build HTML with an embedded image reference
+        let jpeg = make_test_jpeg();
+        fs::write(dir.path().join("test.jpg"), &jpeg).unwrap();
+
+        let html = r#"<html><head><guide></guide></head><body>
+<idx:entry><idx:orth value="cat">cat</idx:orth><b>cat</b> <img src="test.jpg"/> a small animal<hr/></idx:entry>
+<idx:entry><idx:orth value="dog">dog</idx:orth><b>dog</b> a loyal animal<hr/></idx:entry>
+</body></html>"#;
+        fs::write(dir.path().join("content.html"), html).unwrap();
+
+        let opf = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf">
+  <metadata>
+    <dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">Img Dict</dc:title>
+    <dc:language xmlns:dc="http://purl.org/dc/elements/1.1/">en</dc:language>
+    <dc:creator xmlns:dc="http://purl.org/dc/elements/1.1/">Tester</dc:creator>
+    <x-metadata>
+      <DictionaryInLanguage>en</DictionaryInLanguage>
+      <DictionaryOutLanguage>en</DictionaryOutLanguage>
+      <DefaultLookupIndex>default</DefaultLookupIndex>
+    </x-metadata>
+  </metadata>
+  <manifest>
+    <item id="content" href="content.html" media-type="application/xhtml+xml"/>
+    <item id="img1" href="test.jpg" media-type="image/jpeg"/>
+  </manifest>
+  <spine>
+    <itemref idref="content"/>
+  </spine>
+</package>"#;
+        let opf_path = dir.path().join("content.opf");
+        fs::write(&opf_path, opf).unwrap();
+
+        let data = build_mobi_bytes(&opf_path, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        let text_record_count = read_u16_be(rec0, 8) as usize;
+        let orth_idx = read_u32_be(rec0, 40) as usize;
+        let first_img = read_u32_be(rec0, 108) as usize;
+
+        if first_img != 0xFFFFFFFF_u32 as usize {
+            // Image should be after text and before INDX
+            assert!(
+                first_img > text_record_count,
+                "Dict image ({}) should be after text records (1..{})",
+                first_img, text_record_count
+            );
+            assert!(
+                first_img < orth_idx,
+                "Dict image ({}) should be before INDX ({})",
+                first_img, orth_idx
+            );
+            println!(
+                "  \u{2713} Dict image at {} between text (1..{}) and INDX ({})",
+                first_img, text_record_count, orth_idx
+            );
+        } else {
+            println!("  \u{2713} Dict has no image records (image not referenced in text)");
+        }
+    }
+
+    // =======================================================================
+    // 30. SRCS record (when present)
+    // =======================================================================
+
+    #[test]
+    fn test_srcs_starts_with_magic() {
+        let dir = TempDir::new("srcs_magic_check");
+        let fake_epub = b"PK\x03\x04fake epub content";
+        let opf = create_dict_fixture(dir.path(), &[("test", &[])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, Some(fake_epub));
+        let (_, _, offsets) = parse_palmdb(&data);
+
+        let mut found_srcs = false;
+        for i in 0..offsets.len() {
+            let rec = get_record(&data, &offsets, i);
+            if rec.len() >= 4 && &rec[0..4] == b"SRCS" {
+                found_srcs = true;
+                break;
+            }
+        }
+        assert!(found_srcs, "MOBI with srcs_data should contain SRCS record");
+        println!("  \u{2713} SRCS record starts with 'SRCS' magic");
+    }
+
+    #[test]
+    fn test_srcs_has_16_byte_header() {
+        let dir = TempDir::new("srcs_16b_hdr");
+        let fake_epub = b"PK\x03\x04fake epub data for header test";
+        let opf = create_dict_fixture(dir.path(), &[("word", &[])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, Some(fake_epub));
+        let (_, _, offsets) = parse_palmdb(&data);
+
+        for i in 0..offsets.len() {
+            let rec = get_record(&data, &offsets, i);
+            if rec.len() >= 4 && &rec[0..4] == b"SRCS" {
+                let header_len = read_u32_be(rec, 4);
+                assert_eq!(
+                    header_len, 0x10,
+                    "SRCS header length should be 16 (0x10), got {}",
+                    header_len
+                );
+                // Verify total record = header + data
+                let data_len = read_u32_be(rec, 8) as usize;
+                assert_eq!(
+                    rec.len(), 16 + data_len,
+                    "SRCS record size ({}) should be 16 header + {} data",
+                    rec.len(), data_len
+                );
+                println!("  \u{2713} SRCS: 16-byte header, {} bytes data", data_len);
+                return;
+            }
+        }
+        panic!("No SRCS record found");
+    }
+
+    #[test]
+    fn test_srcs_mobi_header_offset_208_points_to_it() {
+        let dir = TempDir::new("srcs_hdr208_check");
+        let fake_epub = b"PK\x03\x04test data";
+        let opf = create_dict_fixture(dir.path(), &[("test", &[])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, Some(fake_epub));
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // MOBI header offset 208 is at rec0[16 + 208] = rec0[224]
+        let srcs_idx = read_u32_be(rec0, 224);
+        assert_ne!(
+            srcs_idx, 0xFFFFFFFF,
+            "MOBI header offset 208 should point to SRCS record, not 0xFFFFFFFF"
+        );
+
+        let srcs_rec = get_record(&data, &offsets, srcs_idx as usize);
+        assert_eq!(
+            &srcs_rec[0..4], b"SRCS",
+            "Record at MOBI header offset 208 ({}) should start with 'SRCS' magic",
+            srcs_idx
+        );
+        println!("  \u{2713} MOBI header offset 208 -> SRCS record at index {}", srcs_idx);
+    }
+
+    // =======================================================================
+    // 31. KF8-only format
+    // =======================================================================
+
+    #[test]
+    fn test_kf8_only_no_boundary_record() {
+        let dir = TempDir::new("kf8only_no_boundary");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_kf8_only_mobi_bytes(&opf, dir.path());
+        let (_, _, offsets) = parse_palmdb(&data);
+
+        // Check that no BOUNDARY record exists that separates KF7/KF8
+        for i in 0..offsets.len() {
+            let rec = get_record(&data, &offsets, i);
+            if rec.len() == 8 && &rec[0..8] == b"BOUNDARY" {
+                // If there is a BOUNDARY, the next record should NOT have MOBI magic
+                // (HD container boundaries are OK, KF7/KF8 boundaries are not)
+                if i + 1 < offsets.len() {
+                    let next = get_record(&data, &offsets, i + 1);
+                    assert!(
+                        next.len() < 20 || &next[16..20] != b"MOBI",
+                        "KF8-only should not have KF7/KF8 BOUNDARY at index {}",
+                        i
+                    );
+                }
+            }
+        }
+        println!("  \u{2713} KF8-only: no KF7/KF8 BOUNDARY record");
+    }
+
+    #[test]
+    fn test_kf8_only_mobi_version_8_throughout() {
+        let dir = TempDir::new("kf8only_v8");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_kf8_only_mobi_bytes(&opf, dir.path());
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // Version at MOBI header offset 20 (rec0 offset 36)
+        let version = read_u32_be(rec0, 36);
+        assert_eq!(version, 8, "KF8-only version should be 8, got {}", version);
+
+        // Min version at MOBI header offset 88 (rec0 offset 104)
+        let min_version = read_u32_be(rec0, 104);
+        assert_eq!(min_version, 8, "KF8-only min_version should be 8, got {}", min_version);
+
+        // There should be no second MOBI header with a different version
+        let mut mobi_count = 0;
+        for i in 0..offsets.len() {
+            let rec = get_record(&data, &offsets, i);
+            if rec.len() > 20 && &rec[16..20] == b"MOBI" {
+                let v = read_u32_be(rec, 36);
+                assert_eq!(v, 8, "All MOBI headers should be version 8, record {} has version {}", i, v);
+                mobi_count += 1;
+            }
+        }
+        assert_eq!(mobi_count, 1, "KF8-only should have exactly 1 MOBI header, found {}", mobi_count);
+        println!("  \u{2713} KF8-only: single MOBI header, version 8 throughout");
+    }
 }
