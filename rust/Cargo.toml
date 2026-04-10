@@ -1,8 +1,8 @@
 [package]
 name = "kindling"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
-description = "Kindle MOBI builder for dictionaries and books"
+description = "Kindle MOBI/AZW3 builder for dictionaries, books, and comics"
 
 [[bin]]
 name = "kindling-cli"
