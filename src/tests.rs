@@ -2053,12 +2053,79 @@ mod tests {
             "Truncated name should be <= 31 bytes, got {}",
             name_len
         );
-        // Should follow the first_12 + "-" + last_14 format = 27 chars
-        assert_eq!(name_len, 27, "Truncated name should be 27 bytes (12 + 1 + 14), got {}", name_len);
+        // New format: first 28 bytes (at a char boundary) + "..." = 31 bytes.
+        assert_eq!(
+            name_len, 31,
+            "Truncated name should be 31 bytes (28 prefix + '...'), got {}",
+            name_len
+        );
 
         let name = std::str::from_utf8(&name_bytes[..name_len]).unwrap();
-        assert!(name.contains('-'), "Truncated name should contain '-' separator: '{}'", name);
+        assert!(
+            name.ends_with("..."),
+            "Truncated name should end with '...': '{}'",
+            name
+        );
+        assert!(
+            name.starts_with("A_Very_Long_Dictionary_Title"),
+            "Truncated name should preserve the prefix: '{}'",
+            name
+        );
         println!("  \u{2713} Long title truncated to {} bytes: '{}'", name_len, name);
+    }
+
+    #[test]
+    fn test_palmdb_name_utf8_truncation_char_boundary() {
+        let dir = TempDir::new("palmdb_utf8");
+
+        let html = r#"<html><head><guide></guide></head><body>
+<idx:entry><idx:orth value="x">x</idx:orth><b>x</b> test<hr/></idx:entry>
+</body></html>"#;
+        fs::write(dir.path().join("content.html"), html).unwrap();
+
+        // Title with multi-byte UTF-8 characters (Greek). Each Greek letter is
+        // 2 bytes in UTF-8, so a title like "Λεξικό Αρχαίας Ελληνικής Γλώσσας"
+        // is ~55 bytes even though it is ~31 chars. Verify we truncate without
+        // splitting a multi-byte codepoint.
+        let long_title = "Λεξικό Αρχαίας Ελληνικής Γλώσσας Μεγάλο";
+        let opf = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf">
+  <metadata>
+    <dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">{}</dc:title>
+    <dc:language xmlns:dc="http://purl.org/dc/elements/1.1/">el</dc:language>
+    <x-metadata>
+      <DictionaryInLanguage>el</DictionaryInLanguage>
+      <DictionaryOutLanguage>el</DictionaryOutLanguage>
+    </x-metadata>
+  </metadata>
+  <manifest>
+    <item id="content" href="content.html" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="content"/>
+  </spine>
+</package>"#,
+            long_title
+        );
+        let opf_path = dir.path().join("content.opf");
+        fs::write(&opf_path, &opf).unwrap();
+
+        let data = build_mobi_bytes(&opf_path, dir.path(), true, false, None);
+        let (name_bytes, _, _) = parse_palmdb(&data);
+
+        let name_len = name_bytes.iter().position(|&b| b == 0).unwrap_or(32);
+        assert!(name_len <= 31, "Name should be <= 31 bytes, got {}", name_len);
+
+        // Must decode as valid UTF-8 (no splitting multi-byte codepoints).
+        let name = std::str::from_utf8(&name_bytes[..name_len])
+            .expect("Truncated PalmDB name must be valid UTF-8 (char boundary respected)");
+        assert!(
+            name.ends_with("..."),
+            "Truncated name should end with '...': '{}'",
+            name
+        );
+        println!("  \u{2713} UTF-8 title truncated to {} bytes: '{}'", name_len, name);
     }
 
     #[test]

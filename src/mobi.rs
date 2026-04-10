@@ -2387,26 +2387,27 @@ fn build_palmdb(title: &str, records: &[Vec<u8>]) -> Vec<u8> {
         current_offset += rec.len();
     }
 
-    // Derive PalmDB name from title. The PalmDB name field is 32 bytes;
-    // we leave one byte for a null terminator. If the name fits in 31 bytes,
-    // use it as-is; otherwise truncate to first12 + "-" + last14 (27 chars)
-    // to preserve both ends of the title.
+    // Derive PalmDB name from title. The PalmDB name field is 32 bytes, and
+    // we reserve 1 byte for a null terminator, leaving 31 bytes for the name.
+    //
+    // If the name fits in 31 bytes we use it verbatim. Otherwise we truncate
+    // the prefix to 28 bytes (at a UTF-8 character boundary) and append "..."
+    // for a total of 31 bytes. This preserves the recognisable start of the
+    // title for both ASCII and non-ASCII content, and never splits a
+    // multi-byte codepoint.
     let mut palmdb_name = title.to_string();
     for ch in &['(', ')', '[', ']'] {
         palmdb_name = palmdb_name.replace(*ch, "");
     }
     palmdb_name = palmdb_name.replace(' ', "_");
     if palmdb_name.len() > 31 {
-        let first12: String = palmdb_name.chars().take(12).collect();
-        let last14: String = palmdb_name
-            .chars()
-            .rev()
-            .take(14)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect();
-        palmdb_name = format!("{}-{}", first12, last14);
+        // Truncate to the largest char boundary <= 28 bytes, then append "...".
+        let mut cutoff = 28.min(palmdb_name.len());
+        while cutoff > 0 && !palmdb_name.is_char_boundary(cutoff) {
+            cutoff -= 1;
+        }
+        palmdb_name.truncate(cutoff);
+        palmdb_name.push_str("...");
     }
 
     let mut name_bytes = [0u8; 32];
