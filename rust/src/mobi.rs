@@ -101,6 +101,60 @@ fn build_dictionary_mobi(
 
     eprintln!("Parsed {} dictionary entries", all_entries.len());
 
+    // Collect images from the OPF manifest
+    let image_items = opf.get_image_items(); // Vec<(href, media_type)>
+    let cover_href = opf.get_cover_image_href();
+
+    let mut image_records: Vec<Vec<u8>> = Vec::new();
+    let mut href_to_recindex: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut cover_offset: Option<u32> = None;
+    let mut total_image_bytes: usize = 0;
+
+    for (idx, (href, _media_type)) in image_items.iter().enumerate() {
+        let recindex = idx + 1; // 1-based
+        let image_path = opf.base_dir.join(href);
+
+        let data = std::fs::read(&image_path).or_else(|_| {
+            let decoded = percent_decode(href);
+            std::fs::read(opf.base_dir.join(&decoded))
+        });
+
+        if let Ok(mut data) = data {
+            // Patch JFIF density units: Kindle firmware needs DPI units (0x01)
+            if data.len() > 13
+                && data[0] == 0xFF && data[1] == 0xD8
+                && data[2] == 0xFF && data[3] == 0xE0
+                && data[6..11] == *b"JFIF\0"
+                && data[13] == 0x00
+            {
+                data[13] = 0x01;
+            }
+            total_image_bytes += data.len();
+            href_to_recindex.insert(href.clone(), recindex);
+            image_records.push(data);
+
+            if let Some(ref cover) = cover_href {
+                if href == cover {
+                    cover_offset = Some(idx as u32);
+                }
+            }
+        } else {
+            eprintln!("Warning: could not read image file: {}", image_path.display());
+            href_to_recindex.insert(href.clone(), recindex);
+            image_records.push(Vec::new());
+        }
+    }
+
+    if !image_records.is_empty() {
+        eprintln!(
+            "Collected {} images ({} bytes total)",
+            image_records.len(),
+            total_image_bytes
+        );
+    }
+
+    let num_image_records = image_records.len();
+
     // Build the text content (stripped HTML for all spine items)
     eprintln!("Building text content...");
     let text_content = if kindle_limits {
@@ -111,6 +165,13 @@ fn build_dictionary_mobi(
 
     // Insert the guide reference tag
     let text_content = insert_guide_reference(&text_content);
+
+    // Rewrite image src attributes to recindex references
+    let text_content = if !href_to_recindex.is_empty() {
+        rewrite_image_src(&text_content, &href_to_recindex, &opf.spine_items)
+    } else {
+        text_content
+    };
 
     // Build text records
     let (text_records, text_length) = if no_compress {
@@ -183,17 +244,22 @@ fn build_dictionary_mobi(
     let num_optional = srcs_record.as_ref().map_or(0, |_| 1) + cmet_record.as_ref().map_or(0, |_| 1);
 
     // Calculate record indices
-    // Layout: record0 | text | INDX | FLIS | FCIS | [SRCS] | [CMET] | EOF
+    // Layout: record0 | text | image records | INDX | FLIS | FCIS | [SRCS] | [CMET] | EOF
     let first_non_book = text_records.len() + 1;
-    let orth_index_record = text_records.len() + 1;
-    let flis_record = text_records.len() + 1 + indx_records.len();
+    let first_image_record = if num_image_records > 0 {
+        text_records.len() + 1
+    } else {
+        0xFFFFFFFF
+    };
+    let orth_index_record = text_records.len() + 1 + num_image_records;
+    let flis_record = orth_index_record + indx_records.len();
     let fcis_record = flis_record + 1;
     let srcs_record_idx = if srcs_record.is_some() {
         Some(fcis_record + 1)
     } else {
         None
     };
-    let total_records = 1 + text_records.len() + indx_records.len() + 3 + num_optional;
+    let total_records = 1 + text_records.len() + num_image_records + indx_records.len() + 3 + num_optional;
 
     // Collect unique headword characters for fontsignature
     let mut headword_chars: HashSet<u32> = HashSet::new();
@@ -216,8 +282,8 @@ fn build_dictionary_mobi(
         no_compress,
         &headword_chars,
         true, // is_dictionary
-        0xFFFFFFFF, // no images for dictionaries
-        None, // no cover offset
+        first_image_record,
+        cover_offset,
         None, // no fixed-layout for dictionaries
         None, // no version override (use default 7)
         None, // no KF8 boundary (dictionaries stay KF7-only)
@@ -230,6 +296,7 @@ fn build_dictionary_mobi(
     // Assemble all records
     let mut all_records = vec![record0];
     all_records.extend(text_records);
+    all_records.extend(image_records);
     all_records.extend(indx_records);
     all_records.push(flis);
     all_records.push(fcis);
@@ -2008,6 +2075,7 @@ fn build_record0(
             &opf.dict_out_language,
             headword_chars,
             creator_tag,
+            cover_offset,
         )
     } else {
         exth::build_book_exth(

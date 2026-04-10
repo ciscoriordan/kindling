@@ -419,6 +419,7 @@ pub fn build_exth(
     dict_out_language: &str,
     headword_chars: &HashSet<u32>,
     creator_tag: bool,
+    cover_offset: Option<u32>,
 ) -> Vec<u8> {
     let mut records: Vec<Vec<u8>> = Vec::new();
 
@@ -479,6 +480,12 @@ pub fn build_exth(
 
     // Creator build (207)
     records.push(exth_record(207, &0u32.to_be_bytes())); // build = 0
+
+    // Cover image offset (201) and thumb offset (202)
+    if let Some(offset) = cover_offset {
+        records.push(exth_record(201, &offset.to_be_bytes()));
+        records.push(exth_record(202, &offset.to_be_bytes()));
+    }
 
     // Dictionary in-memory flag
     records.push(exth_record(547, b"InMemory"));
@@ -667,7 +674,7 @@ mod tests {
         chars.insert(0x0041); // A
         chars.insert(0x03B1); // alpha
         let exth = build_exth(
-            "Test Dict", "Author", "2026-01-01", "en", "el", "en", &chars, false,
+            "Test Dict", "Author", "2026-01-01", "en", "el", "en", &chars, false, None,
         );
         assert_eq!(&exth[0..4], b"EXTH");
         let records = parse_exth_records(&exth);

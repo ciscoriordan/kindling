@@ -5116,4 +5116,218 @@ mod tests {
         assert_eq!(value, "true", "EXTH 122 should be 'true' for fixed-layout");
         println!("  \u{2713} Comic KF8-only: EXTH 122=true (fixed-layout)");
     }
+
+    // =======================================================================
+    // Dictionary image and cover support
+    // =======================================================================
+
+    /// Create a dictionary fixture that includes a cover image in the manifest.
+    fn create_dict_fixture_with_cover(
+        dir: &Path,
+        entries: &[(&str, &[&str])],
+        image_data: &[u8],
+    ) -> PathBuf {
+        // Build HTML content with idx:entry markup and an img tag for the cover
+        let mut html_body = String::from(r#"<img src="cover.jpg"/>"#);
+        for (hw, iforms) in entries {
+            html_body.push_str(&format!(
+                "<idx:entry><idx:orth value=\"{hw}\">{hw}</idx:orth>",
+                hw = hw
+            ));
+            for iform in *iforms {
+                html_body.push_str(&format!(
+                    "<idx:infl><idx:iform value=\"{iform}\"/></idx:infl>",
+                    iform = iform
+                ));
+            }
+            html_body.push_str(&format!(
+                "<b>{hw}</b> definition of {hw}<hr/></idx:entry>\n",
+                hw = hw
+            ));
+        }
+
+        let html = format!(
+            r#"<html><head><guide></guide></head><body>{}</body></html>"#,
+            html_body
+        );
+        fs::write(dir.join("content.html"), &html).unwrap();
+        fs::write(dir.join("cover.jpg"), image_data).unwrap();
+
+        let opf = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf">
+  <metadata>
+    <dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">Test Dict</dc:title>
+    <dc:language xmlns:dc="http://purl.org/dc/elements/1.1/">en</dc:language>
+    <dc:creator xmlns:dc="http://purl.org/dc/elements/1.1/">Tester</dc:creator>
+    <meta name="cover" content="cover-image"/>
+    <x-metadata>
+      <DictionaryInLanguage>en</DictionaryInLanguage>
+      <DictionaryOutLanguage>en</DictionaryOutLanguage>
+      <DefaultLookupIndex>default</DefaultLookupIndex>
+    </x-metadata>
+  </metadata>
+  <manifest>
+    <item id="content" href="content.html" media-type="application/xhtml+xml"/>
+    <item id="cover-image" href="cover.jpg" media-type="image/jpeg"/>
+  </manifest>
+  <spine>
+    <itemref idref="content"/>
+  </spine>
+</package>"#;
+        let opf_path = dir.join("content.opf");
+        fs::write(&opf_path, opf).unwrap();
+        opf_path
+    }
+
+    #[test]
+    fn test_dict_image_records_jpeg_magic() {
+        let dir = TempDir::new("dict_img_jpeg");
+        let jpeg = make_test_jpeg();
+        let opf = create_dict_fixture_with_cover(
+            dir.path(),
+            &[("apple", &["apples"]), ("banana", &["bananas"])],
+            &jpeg,
+        );
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // first_image_record at MOBI header offset 92 (rec0 offset 16+92 = 108)
+        let first_img = read_u32_be(rec0, 108) as usize;
+        assert_ne!(
+            first_img,
+            0xFFFFFFFF_u32 as usize,
+            "Dictionary with image should have first_image set"
+        );
+
+        // Verify the image record starts with JPEG magic
+        let img_rec = get_record(&data, &offsets, first_img);
+        assert!(
+            img_rec.len() >= 2 && img_rec[0] == 0xFF && img_rec[1] == 0xD8,
+            "Image record should start with JPEG magic (FF D8)"
+        );
+        println!(
+            "  \u{2713} Dict image record at index {}, starts with JPEG magic FF D8",
+            first_img
+        );
+    }
+
+    #[test]
+    fn test_dict_cover_offset_exth_201() {
+        let dir = TempDir::new("dict_cover_exth");
+        let jpeg = make_test_jpeg();
+        let opf = create_dict_fixture_with_cover(
+            dir.path(),
+            &[("word", &["words"])],
+            &jpeg,
+        );
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let exth = parse_exth_records(rec0);
+
+        // EXTH 201 = cover offset (0-based index within image records)
+        assert!(
+            exth.contains_key(&201),
+            "Dictionary with cover should have EXTH 201 (cover offset)"
+        );
+        let cover_val = read_u32_be(&exth[&201][0], 0);
+        assert_eq!(
+            cover_val, 0,
+            "Cover offset should be 0 (first and only image), got {}",
+            cover_val
+        );
+        println!("  \u{2713} Dict EXTH 201 cover offset: {}", cover_val);
+    }
+
+    #[test]
+    fn test_dict_with_image_indx_still_valid() {
+        let dir = TempDir::new("dict_img_indx");
+        let jpeg = make_test_jpeg();
+        let opf = create_dict_fixture_with_cover(
+            dir.path(),
+            &[
+                ("alpha", &["alphas"]),
+                ("beta", &["betas"]),
+                ("gamma", &["gammas"]),
+            ],
+            &jpeg,
+        );
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // Orth index record at MOBI header offset 24 (record0 offset 40)
+        let orth_idx = read_u32_be(rec0, 40) as usize;
+        assert_ne!(orth_idx, 0xFFFFFFFF_u32 as usize, "Should have valid orth index");
+
+        // The INDX record should come after the image records
+        let first_img = read_u32_be(rec0, 108) as usize;
+        assert!(
+            orth_idx > first_img,
+            "INDX record ({}) should come after image record ({})",
+            orth_idx,
+            first_img
+        );
+
+        // Verify INDX magic
+        let indx_rec = get_record(&data, &offsets, orth_idx);
+        assert_eq!(
+            &indx_rec[0..4],
+            b"INDX",
+            "INDX record should start with INDX magic"
+        );
+        println!(
+            "  \u{2713} Dict with images: INDX at {}, after image at {}",
+            orth_idx, first_img
+        );
+    }
+
+    #[test]
+    fn test_dict_without_image_still_works() {
+        // Verify that dictionaries without images still produce 0xFFFFFFFF
+        let dir = TempDir::new("dict_no_img");
+        let opf = create_dict_fixture(dir.path(), &[("test", &["tests"])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        let first_img = read_u32_be(rec0, 108);
+        assert_eq!(
+            first_img, 0xFFFFFFFF,
+            "Dictionary without images should have first_image = 0xFFFFFFFF"
+        );
+
+        let exth = parse_exth_records(rec0);
+        assert!(
+            !exth.contains_key(&201),
+            "Dictionary without images should not have EXTH 201"
+        );
+        println!("  \u{2713} Dict without images: first_image=0xFFFFFFFF, no EXTH 201");
+    }
+
+    #[test]
+    fn test_dict_image_src_rewritten_to_recindex() {
+        let dir = TempDir::new("dict_img_recindex");
+        let jpeg = make_test_jpeg();
+        let opf = create_dict_fixture_with_cover(
+            dir.path(),
+            &[("test", &["tests"])],
+            &jpeg,
+        );
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+
+        // Extract text from uncompressed records and check for recindex
+        let text = extract_text_from_uncompressed_mobi(&data);
+        assert!(
+            text.contains("recindex=\"00001\""),
+            "Image src should be rewritten to recindex in dictionary text, got: {}",
+            &text[..text.len().min(500)]
+        );
+        assert!(
+            !text.contains("src=\"cover.jpg\""),
+            "Original src=\"cover.jpg\" should not remain in dictionary text"
+        );
+        println!("  \u{2713} Dict image src rewritten to recindex=\"00001\"");
+    }
 }
