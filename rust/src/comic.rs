@@ -117,6 +117,8 @@ pub struct ComicOptions {
     pub cover_fill: bool,
     /// Enforce Kindle publishing limits (warn about large HTML files and file counts).
     pub kindle_limits: bool,
+    /// Output KF8-only format (.azw3) instead of dual MOBI7+KF8 (.mobi).
+    pub kf8_only: bool,
 }
 
 impl Default for ComicOptions {
@@ -140,6 +142,7 @@ impl Default for ComicOptions {
             panel_reading_order: None,
             cover_fill: false,
             kindle_limits: false,
+            kf8_only: false,
         }
     }
 }
@@ -359,7 +362,7 @@ pub fn build_comic_with_options(
         false,  // no CMET
         false,  // allow HD images
         false,  // default creator identity
-        false,  // dual format (not KF8-only)
+        options.kf8_only,
         options.doc_type.as_deref(),
         options.kindle_limits,
     );

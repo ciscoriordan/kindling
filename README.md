@@ -21,7 +21,7 @@ Pre-built binaries for Mac (Apple Silicon, Intel), Linux (x86_64), and Windows (
 
 - **Dictionaries**: Full orth index with headword + inflection lookup, ORDT/SPL sort tables, fontsignature
 - **Books**: EPUB or OPF input, embedded images, KF8 dual-format (KF7+KF8) or KF8-only (.azw3), HD image container, fixed-layout support
-- **Comics**: Image folder, CBZ, or EPUB input, device-specific resizing, spread splitting, margin cropping, auto-contrast, moire correction for color e-ink, manga RTL, webtoon with overlap fallback, Panel View, metadata overrides
+- **Comics**: Image folder, CBZ, or EPUB input, device-specific resizing, spread splitting, margin cropping, auto-contrast, moire correction for color e-ink, manga RTL, webtoon with overlap fallback, Panel View, KF8-only (.azw3), metadata overrides
 - Drop-in *kindlegen* replacement (same CLI flags, same status codes)
 - Kindle Previewer compatible (EPUB source embedded by default)
 - Comprehensive test suite with CI on every push (see [Testing](#testing))
@@ -69,7 +69,7 @@ kindling-cli build input.epub --kindle-limits          # warn about HTML files e
 
 Auto-detects dictionary vs book by checking for `<idx:entry>` tags. Book MOBIs include embedded images, HD image container (for high-DPI Kindle screens), and KF8 dual-format output. The original EPUB is embedded by default for Kindle Previewer compatibility (`--no-embed-source` to skip).
 
-The `--kf8-only` flag outputs KF8-only format with `.azw3` extension instead of the default dual MOBI7+KF8 `.mobi`. KF8-only files are smaller (no redundant MOBI7 section) and handled better by Calibre. Dual format remains the default for maximum compatibility with older Kindle devices.
+The `--kf8-only` flag outputs KF8-only format with `.azw3` extension instead of the default dual MOBI7+KF8 `.mobi`. KF8-only files are smaller (no redundant MOBI7 section) and handled better by Calibre. Dual format remains the default for maximum compatibility with older Kindle devices. Available for both books and comics.
 
 ### Comics
 
@@ -82,6 +82,7 @@ kindling-cli comic input/ -o output.mobi --no-split --no-crop   # disable smart 
 kindling-cli comic input.cbz --title "My Comic" --language ja   # metadata overrides
 kindling-cli comic input.cbz --doc-type ebok                    # appear under Books on Kindle
 kindling-cli comic input.cbz --cover 3                          # use page 3 as cover
+kindling-cli comic input.cbz --kf8-only                         # KF8-only output (.azw3), smaller files
 ```
 
 Converts image folders, CBZ files, and EPUB files to Kindle-optimized MOBI with:
@@ -97,6 +98,7 @@ Converts image folders, CBZ files, and EPUB files to Kindle-optimized MOBI with:
 - **ComicInfo.xml**: Auto-reads metadata and manga direction from CBZ files
 - **Metadata overrides**: `--title`, `--author`, `--language`, `--cover` (page number or file path)
 - **Document type**: `--doc-type ebok` to appear under Books instead of Documents on Kindle (default: `pdoc`)
+- **KF8-only**: `--kf8-only` outputs `.azw3` with only the KF8 section (no MOBI7), producing smaller files handled better by Calibre
 
 ### Kindlegen compatibility
 
@@ -264,7 +266,7 @@ The test suite covers:
 - **Dictionary output**: Orth index presence and structure, INDX records, headword count, EXTH 531/532/547 language records, compressed vs uncompressed roundtrips
 - **Book output**: KF7+KF8 dual format (BOUNDARY record, KF8 section version), KF8-only output (.azw3), image record JPEG magic, EXTH metadata, SRCS embedding
 - **Comic pipeline**: Device profiles (including kpw5, scribe2025, kindle2024), spread detection and splitting, crop-before-split symmetry, margin cropping, auto-contrast, moire wiring for color devices, webtoon merge/split with overlap fallback, dark gutter detection, Panel View markup, manga RTL ordering and cover selection, JPEG quality, ComicInfo.xml parsing, EPUB image extraction
-- **Comic CLI flags**: doc-type EBOK/PDOC, title/author/language overrides
+- **Comic CLI flags**: doc-type EBOK/PDOC, title/author/language overrides, KF8-only output
 - **Compression**: PalmDOC LZ77 compress/decompress roundtrips for various sizes and encodings
 - **Regression tests**: Dictionary capability marker (0x50 vs 0x4850), JFIF density patching, RTL spread cover selection
 

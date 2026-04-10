@@ -182,6 +182,12 @@ enum Commands {
         #[arg(long)]
         cover_fill: bool,
 
+        /// Output KF8-only format (.azw3) instead of dual MOBI7+KF8 (.mobi).
+        /// KF8-only files are smaller and handled better by Calibre.
+        /// Dual format remains available for maximum compatibility with older Kindles.
+        #[arg(long)]
+        kf8_only: bool,
+
         /// Enforce Kindle publishing limits: warn if >300 HTML files.
         /// OFF by default for comics. Use --kindle-limits to enable.
         #[arg(long, overrides_with = "no_kindle_limits")]
@@ -408,6 +414,7 @@ fn main() {
                 cover,
                 cover_fill,
                 panel_reading_order,
+                kf8_only,
                 kindle_limits,
                 no_kindle_limits,
             } => {
@@ -422,12 +429,8 @@ fn main() {
                 let output_path = match output {
                     Some(p) => p,
                     None => {
-                        // Default: input path with .mobi extension
-                        if input.is_dir() {
-                            input.with_extension("mobi")
-                        } else {
-                            input.with_extension("mobi")
-                        }
+                        let ext = if kf8_only { "azw3" } else { "mobi" };
+                        input.with_extension(ext)
                     }
                 };
 
@@ -477,11 +480,13 @@ fn main() {
                     panel_reading_order,
                     cover_fill,
                     kindle_limits: effective_kindle_limits,
+                    kf8_only,
                 };
 
                 match comic::build_comic_with_options(&input, &output_path, &profile, &options) {
                     Ok(()) => {
-                        eprintln!("Comic MOBI built successfully: {}", output_path.display());
+                        let format_name = if kf8_only { "AZW3" } else { "MOBI" };
+                        eprintln!("Comic {} built successfully: {}", format_name, output_path.display());
                     }
                     Err(e) => {
                         eprintln!("Error: {}", e);
