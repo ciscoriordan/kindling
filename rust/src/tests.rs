@@ -4930,4 +4930,190 @@ mod tests {
             text_uncomp.len()
         );
     }
+
+    // =======================================================================
+    // 22. Comic KF8-only output
+    // =======================================================================
+
+    /// Build a comic in KF8-only mode and return the raw bytes.
+    fn build_comic_kf8_only_bytes(dir: &Path) -> Vec<u8> {
+        use crate::comic;
+
+        let images_dir = dir.join("images");
+        fs::create_dir_all(&images_dir).unwrap();
+
+        // Create 3 small test images
+        for i in 0..3u8 {
+            let brightness = 50 + i * 80;
+            let img = image::DynamicImage::ImageLuma8(
+                image::GrayImage::from_fn(100, 150, |_, _| image::Luma([brightness])),
+            );
+            img.save(images_dir.join(format!("page_{:03}.jpg", i))).unwrap();
+        }
+
+        let output_path = dir.join("comic.azw3");
+        let profile = comic::get_profile("paperwhite").unwrap();
+        let options = comic::ComicOptions {
+            rtl: false, split: false, crop: false, enhance: false,
+            webtoon: false, panel_view: false,
+            jpeg_quality: 85, max_height: 65536, embed_source: false,
+            kf8_only: true,
+            ..Default::default()
+        };
+        comic::build_comic_with_options(&images_dir, &output_path, &profile, &options)
+            .expect("build_comic kf8_only failed");
+        fs::read(&output_path).expect("could not read comic AZW3")
+    }
+
+    #[test]
+    fn test_comic_kf8_only_record0_version_8() {
+        let dir = TempDir::new("comic_kf8only_ver");
+        let data = build_comic_kf8_only_bytes(dir.path());
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // MOBI magic at offset 16
+        assert_eq!(&rec0[16..20], b"MOBI", "Record 0 should contain MOBI magic");
+
+        // File version at MOBI header offset 20 (rec0 offset 36)
+        let version = read_u32_be(rec0, 36);
+        assert_eq!(version, 8, "Comic KF8-only version should be 8, got {}", version);
+
+        // Min version at MOBI header offset 88 (rec0 offset 104)
+        let min_version = read_u32_be(rec0, 104);
+        assert_eq!(min_version, 8, "Comic KF8-only min_version should be 8, got {}", min_version);
+        println!("  \u{2713} Comic KF8-only rec0: version={}, min_version={}", version, min_version);
+    }
+
+    #[test]
+    fn test_comic_kf8_only_no_kf7_kf8_boundary() {
+        let dir = TempDir::new("comic_kf8only_nobound");
+        let data = build_comic_kf8_only_bytes(dir.path());
+        let (_, _, offsets) = parse_palmdb(&data);
+
+        // There should be no BOUNDARY record followed by a KF8 Record 0 (MOBI magic).
+        for i in 0..offsets.len().saturating_sub(1) {
+            let rec = get_record(&data, &offsets, i);
+            if rec.len() == 8 && &rec[0..8] == b"BOUNDARY" {
+                let next_rec = get_record(&data, &offsets, i + 1);
+                assert!(
+                    next_rec.len() < 20 || &next_rec[16..20] != b"MOBI",
+                    "Comic KF8-only should not have a BOUNDARY separating KF7/KF8 sections (found at index {})", i
+                );
+            }
+        }
+
+        // Record 0 should be the only MOBI record header
+        let rec0 = get_record(&data, &offsets, 0);
+        assert_eq!(&rec0[16..20], b"MOBI");
+        let version = read_u32_be(rec0, 36);
+        assert_eq!(version, 8, "The sole Record 0 should be version 8 (KF8)");
+        println!("  \u{2713} Comic KF8-only: no KF7/KF8 BOUNDARY, sole rec0 version={}", version);
+    }
+
+    #[test]
+    fn test_comic_kf8_only_images_present() {
+        let dir = TempDir::new("comic_kf8only_imgs");
+        let data = build_comic_kf8_only_bytes(dir.path());
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // first_image_record at MOBI header offset 92 (rec0 offset 108)
+        let first_img = read_u32_be(rec0, 108) as usize;
+        assert_ne!(
+            first_img,
+            0xFFFFFFFF_u32 as usize,
+            "Comic KF8-only with images should have first_image set"
+        );
+
+        // The image record should contain JPEG magic
+        let img_rec = get_record(&data, &offsets, first_img);
+        assert!(
+            img_rec.len() >= 2 && img_rec[0] == 0xFF && img_rec[1] == 0xD8,
+            "Image record should start with JPEG magic (FF D8)"
+        );
+
+        // Verify all 3 images are present
+        let mut jpeg_count = 0;
+        for i in 0..offsets.len() {
+            let rec = get_record(&data, &offsets, i);
+            if rec.len() >= 2 && rec[0] == 0xFF && rec[1] == 0xD8 {
+                jpeg_count += 1;
+            }
+        }
+        assert_eq!(jpeg_count, 3, "Should have 3 JPEG images, found {}", jpeg_count);
+        println!("  \u{2713} Comic KF8-only: {} images at index {}", jpeg_count, first_img);
+    }
+
+    #[test]
+    fn test_comic_kf8_only_has_eof() {
+        let dir = TempDir::new("comic_kf8only_eof");
+        let data = build_comic_kf8_only_bytes(dir.path());
+        let (_, _, offsets) = parse_palmdb(&data);
+
+        // Last record should be EOF marker
+        let last_rec = get_record(&data, &offsets, offsets.len() - 1);
+        assert_eq!(
+            last_rec,
+            &[0xE9, 0x8E, 0x0D, 0x0A],
+            "Last record should be EOF marker"
+        );
+        println!("  \u{2713} Comic KF8-only: last record is EOF marker");
+    }
+
+    #[test]
+    fn test_comic_kf8_only_smaller_than_dual() {
+        use crate::comic;
+
+        let dir_dual = TempDir::new("comic_kf8only_cmp_dual");
+        let dir_kf8 = TempDir::new("comic_kf8only_cmp_kf8");
+
+        // Build dual format comic
+        let images_dir_dual = dir_dual.path().join("images");
+        fs::create_dir_all(&images_dir_dual).unwrap();
+        for i in 0..3u8 {
+            let img = image::DynamicImage::ImageLuma8(
+                image::GrayImage::from_fn(100, 150, |_, _| image::Luma([50 + i * 80])),
+            );
+            img.save(images_dir_dual.join(format!("page_{:03}.jpg", i))).unwrap();
+        }
+        let output_dual = dir_dual.path().join("comic.mobi");
+        let profile = comic::get_profile("paperwhite").unwrap();
+        let options_dual = comic::ComicOptions {
+            rtl: false, split: false, crop: false, enhance: false,
+            webtoon: false, panel_view: false,
+            jpeg_quality: 85, max_height: 65536, embed_source: false,
+            kf8_only: false,
+            ..Default::default()
+        };
+        comic::build_comic_with_options(&images_dir_dual, &output_dual, &profile, &options_dual)
+            .expect("dual comic build failed");
+        let dual_data = fs::read(&output_dual).unwrap();
+
+        // Build KF8-only comic
+        let kf8_data = build_comic_kf8_only_bytes(dir_kf8.path());
+
+        assert!(
+            kf8_data.len() < dual_data.len(),
+            "Comic KF8-only ({} bytes) should be smaller than dual format ({} bytes)",
+            kf8_data.len(),
+            dual_data.len()
+        );
+        println!("  \u{2713} Comic KF8-only {} bytes < dual {} bytes", kf8_data.len(), dual_data.len());
+    }
+
+    #[test]
+    fn test_comic_kf8_only_fixed_layout() {
+        let dir = TempDir::new("comic_kf8only_fl");
+        let data = build_comic_kf8_only_bytes(dir.path());
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let exth = parse_exth_records(rec0);
+
+        // Comics should have EXTH 122 = "true" (fixed-layout) even in KF8-only mode
+        let exth122 = exth.get(&122).expect("Comic KF8-only should have EXTH 122 (fixed-layout)");
+        let value = std::str::from_utf8(&exth122[0]).unwrap();
+        assert_eq!(value, "true", "EXTH 122 should be 'true' for fixed-layout");
+        println!("  \u{2713} Comic KF8-only: EXTH 122=true (fixed-layout)");
+    }
 }
