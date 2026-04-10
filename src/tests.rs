@@ -1803,6 +1803,196 @@ mod tests {
     }
 
     // =======================================================================
+    // 8c. CBR (Comic Book RAR) extraction and end-to-end pipeline
+    // =======================================================================
+
+    /// Returns the absolute path of a fixture file under tests/fixtures/.
+    fn cbr_fixture(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join(name)
+    }
+
+    /// bsdtar is required at runtime for CBR support. Tests that rely on it
+    /// are skipped (not failed) on the rare system that lacks it so that
+    /// hermetic CI sandboxes without libarchive don't report a regression.
+    fn bsdtar_available() -> bool {
+        if Path::new("/usr/bin/bsdtar").exists() {
+            return true;
+        }
+        std::process::Command::new("bsdtar")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    #[test]
+    fn test_cbr_extractor_returns_sorted_images() {
+        use crate::cbr;
+
+        if !bsdtar_available() {
+            eprintln!("skipping: bsdtar not available on this system");
+            return;
+        }
+
+        let fixture = cbr_fixture("test_comic.cbr");
+        assert!(
+            fixture.exists(),
+            "CBR fixture missing: {}",
+            fixture.display()
+        );
+
+        // Copy the fixture to a temp location so the sibling extraction dir
+        // doesn't pollute the source tree.
+        let tmp = TempDir::new("cbr_extract");
+        let staged = tmp.path().join("test_comic.cbr");
+        fs::copy(&fixture, &staged).unwrap();
+
+        let (images, extract_dir) =
+            cbr::extract_cbr(&staged).expect("extract_cbr failed for fixture");
+
+        assert_eq!(images.len(), 3, "expected 3 images in test_comic.cbr, got {}", images.len());
+        for (i, img) in images.iter().enumerate() {
+            let name = img.file_name().unwrap().to_string_lossy().into_owned();
+            let expected = format!("page_{:03}.png", i + 1);
+            assert_eq!(
+                name, expected,
+                "images should be naturally sorted: image {} is {}, expected {}",
+                i, name, expected
+            );
+            assert!(img.exists(), "extracted image missing: {}", img.display());
+            let bytes = fs::read(img).unwrap();
+            assert!(bytes.len() >= 8, "extracted image looks empty");
+            assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n", "not a valid PNG header");
+        }
+
+        // ComicInfo.xml should also have been staged next to the images.
+        let info = extract_dir.join("ComicInfo.xml");
+        assert!(
+            info.exists(),
+            "ComicInfo.xml should be extracted from CBR fixture"
+        );
+        let info_text = fs::read_to_string(&info).unwrap();
+        assert!(
+            info_text.contains("<Title>Test Comic</Title>"),
+            "ComicInfo.xml content unexpected: {}",
+            info_text
+        );
+
+        // Clean up extraction dir (normally handled by build_comic_with_options).
+        let _ = fs::remove_dir_all(&extract_dir);
+        println!("  \u{2713} CBR extractor: 3 images + ComicInfo.xml");
+    }
+
+    #[test]
+    fn test_cbr_encrypted_archive_rejected() {
+        use crate::cbr;
+
+        if !bsdtar_available() {
+            eprintln!("skipping: bsdtar not available on this system");
+            return;
+        }
+
+        let fixture = cbr_fixture("test_encrypted.cbr");
+        assert!(
+            fixture.exists(),
+            "Encrypted CBR fixture missing: {}",
+            fixture.display()
+        );
+
+        let tmp = TempDir::new("cbr_encrypted");
+        let staged = tmp.path().join("test_encrypted.cbr");
+        fs::copy(&fixture, &staged).unwrap();
+
+        let err = cbr::extract_cbr(&staged)
+            .err()
+            .expect("encrypted CBR should fail to extract");
+        let msg = err.to_string();
+        assert!(
+            msg.to_lowercase().contains("encrypt"),
+            "error should mention encryption, got: {}",
+            msg
+        );
+
+        // Verify the extraction dir was cleaned up on error.
+        let stem = staged.file_stem().unwrap().to_string_lossy();
+        let leftover = staged
+            .parent()
+            .unwrap()
+            .join(format!(".kindling_cbr_{}", stem));
+        assert!(
+            !leftover.exists(),
+            "extraction dir should be removed on encryption error"
+        );
+        println!("  \u{2713} Encrypted CBR rejected with clear error");
+    }
+
+    #[test]
+    fn test_cbr_end_to_end_build_mobi() {
+        use crate::comic;
+
+        if !bsdtar_available() {
+            eprintln!("skipping: bsdtar not available on this system");
+            return;
+        }
+
+        let fixture = cbr_fixture("test_comic.cbr");
+        assert!(fixture.exists(), "CBR fixture missing");
+
+        // Stage the CBR in a throwaway temp dir because comic building
+        // writes the sibling `.kindling_cbr_*` dir next to the archive.
+        let tmp = TempDir::new("cbr_e2e");
+        let staged = tmp.path().join("test_comic.cbr");
+        fs::copy(&fixture, &staged).unwrap();
+
+        let output_path = tmp.path().join("test_comic.mobi");
+        let profile = comic::get_profile("paperwhite").unwrap();
+        let options = comic::ComicOptions {
+            split: false,
+            crop: false,
+            enhance: false,
+            webtoon: false,
+            panel_view: false,
+            jpeg_quality: 85,
+            max_height: 65536,
+            embed_source: false,
+            ..Default::default()
+        };
+        comic::build_comic_with_options(&staged, &output_path, &profile, &options)
+            .expect("build_comic_with_options failed for CBR input");
+
+        let data = fs::read(&output_path).expect("could not read CBR-built MOBI");
+        assert!(data.len() > 100, "CBR-built MOBI unexpectedly small");
+        assert_eq!(&data[60..64], b"BOOK");
+        assert_eq!(&data[64..68], b"MOBI");
+
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let exth = parse_exth_records(rec0);
+
+        // Fixed-layout flag should be set for comics (same as test_comic_pipeline).
+        let exth122 = exth.get(&122).expect("CBR comic should have EXTH 122");
+        let value = std::str::from_utf8(&exth122[0]).unwrap();
+        assert_eq!(value, "true", "EXTH 122 should be 'true' for fixed-layout CBR build");
+
+        // The sibling extraction dir should have been cleaned up by the
+        // build_comic_with_options finalizer.
+        let stem = staged.file_stem().unwrap().to_string_lossy();
+        let leftover = staged
+            .parent()
+            .unwrap()
+            .join(format!(".kindling_cbr_{}", stem));
+        assert!(
+            !leftover.exists(),
+            "CBR extraction dir should be cleaned up after build"
+        );
+
+        println!("  \u{2713} CBR end-to-end build: {} bytes", data.len());
+    }
+
+    // =======================================================================
     // 9. PalmDB name truncation
     // =======================================================================
 

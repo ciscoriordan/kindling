@@ -1,10 +1,11 @@
 /// Comic book to MOBI converter.
 ///
-/// Converts image folders, CBZ files, or CBR files into Kindle-optimized
-/// MOBI files using a fixed-layout EPUB intermediate representation.
+/// Converts image folders, CBZ files, CBR files, or EPUB files into
+/// Kindle-optimized MOBI files using a fixed-layout EPUB intermediate
+/// representation.
 ///
 /// Pipeline:
-///   1. Extract/scan images from input (folder, CBZ)
+///   1. Extract/scan images from input (folder, CBZ, CBR, or EPUB)
 ///   2. Parse ComicInfo.xml if present (metadata, manga detection)
 ///   3. Process images in parallel:
 ///      a. Detect and split double-page spreads (landscape images)
@@ -19,6 +20,7 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+use crate::cbr;
 use crate::epub;
 
 use image::imageops::FilterType;
@@ -215,7 +217,9 @@ pub fn build_comic_with_options(
     profile: &DeviceProfile,
     options: &ComicOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Step 1: Collect source images (and optionally a temp dir from CBZ extraction)
+    // Step 1: Collect source images (and optionally a temp dir from
+    // CBZ/CBR/EPUB extraction). The variable retains the historical
+    // `cbz_temp_dir` name for continuity with earlier versions.
     let (source_images, cbz_temp_dir) = collect_images(input)?;
     if source_images.is_empty() {
         return Err("No images found in input".into());
@@ -382,7 +386,7 @@ pub fn build_comic_with_options(
     if let Some(cbz_dir) = cbz_temp_dir {
         if cbz_dir.exists() {
             if let Err(e) = fs::remove_dir_all(&cbz_dir) {
-                eprintln!("Warning: failed to clean up CBZ extraction dir {}: {}", cbz_dir.display(), e);
+                eprintln!("Warning: failed to clean up archive extraction dir {}: {}", cbz_dir.display(), e);
             }
         }
     }
@@ -390,7 +394,7 @@ pub fn build_comic_with_options(
     result
 }
 
-/// Collect image file paths from input (folder, CBZ, or EPUB).
+/// Collect image file paths from input (folder, CBZ, CBR, or EPUB).
 ///
 /// Returns (image_paths, optional_temp_dir). The temp dir, if present,
 /// should be cleaned up by the caller after processing.
@@ -408,7 +412,10 @@ fn collect_images(input: &Path) -> Result<(Vec<PathBuf>, Option<PathBuf>), Box<d
                 let (images, temp_dir) = extract_epub_images(input)?;
                 Ok((images, Some(temp_dir)))
             }
-            "cbr" | "rar" => Err("CBR (RAR) files are not supported directly. Please convert to CBZ first using:\n  unrar x input.cbr temp_dir/ && cd temp_dir && zip -r output.cbz .".into()),
+            "cbr" | "rar" => {
+                let (images, temp_dir) = cbr::extract_cbr(input)?;
+                Ok((images, Some(temp_dir)))
+            }
             "pdf" => Err("PDF support coming soon".into()),
             _ => Err(format!("Unsupported input format: .{}", ext_lower).into()),
         }

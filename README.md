@@ -21,7 +21,7 @@ Pre-built binaries for Mac (Apple Silicon, Intel), Linux (x86_64), and Windows (
 
 - **Dictionaries**: Full orth index with headword + inflection lookup, ORDT/SPL sort tables, fontsignature
 - **Books**: EPUB or OPF input, embedded images, KF8 dual-format (KF7+KF8) or KF8-only (.azw3), HD image container, fixed-layout support
-- **Comics**: Image folder, CBZ, or EPUB input, device-specific resizing, spread splitting, margin cropping, auto-contrast, moire correction for color e-ink, manga RTL, webtoon with overlap fallback, Panel View, KF8-only (.azw3), metadata overrides
+- **Comics**: Image folder, CBZ, CBR, or EPUB input, device-specific resizing, spread splitting, margin cropping, auto-contrast, moire correction for color e-ink, manga RTL, webtoon with overlap fallback, Panel View, KF8-only (.azw3), metadata overrides
 - Drop-in *kindlegen* replacement (same CLI flags, same status codes)
 - Kindle Previewer compatible (EPUB source embedded by default)
 - Comprehensive test suite with CI on every push (see [Testing](#testing))
@@ -85,6 +85,7 @@ The `--kf8-only` flag outputs KF8-only format with `.azw3` extension instead of 
 
 ```bash
 kindling-cli comic input.cbz -o output.mobi --device paperwhite
+kindling-cli comic input.cbr -o output.mobi                     # CBR (RAR) input
 kindling-cli comic manga.epub -o output.mobi --rtl              # EPUB comic/manga
 kindling-cli comic manga.cbz -o output.mobi --rtl              # manga (right-to-left)
 kindling-cli comic webtoon/ -o output.mobi --webtoon            # webtoon (vertical strip)
@@ -95,7 +96,7 @@ kindling-cli comic input.cbz --cover 3                          # use page 3 as 
 kindling-cli comic input.cbz --kf8-only                         # KF8-only output (.azw3), smaller files
 ```
 
-Converts image folders, CBZ files, and EPUB files to Kindle-optimized MOBI with:
+Converts image folders, CBZ files, CBR files, and EPUB files to Kindle-optimized MOBI with:
 - **Device profiles**: *paperwhite*, *kpw5*, *oasis*, *scribe*, *scribe2025*, *kindle2024*, *basic*, *colorsoft*, *fire-hd-10*
 - **Spread splitting**: Landscape images auto-split into two pages (disable: `--no-split`)
 - **Margin cropping**: Uniform-color borders auto-removed (disable: `--no-crop`)
@@ -105,7 +106,8 @@ Converts image folders, CBZ files, and EPUB files to Kindle-optimized MOBI with:
 - **Webtoon mode**: `--webtoon` merges vertical strips and splits at panel gutters with overlap fallback to prevent content loss
 - **Panel View**: Tap-to-zoom panel detection for Kindle (disable: `--no-panel-view`). Reading order configurable via `--panel-reading-order` (`horizontal-lr`, `horizontal-rl`, `vertical-lr`, `vertical-rl`); defaults to `horizontal-rl` with `--rtl`
 - **EPUB support**: Fixed-layout EPUB comics extracted in spine order (correct page sequence)
-- **ComicInfo.xml**: Auto-reads metadata and manga direction from CBZ files
+- **CBR support**: RAR-based comic archives extracted via `bsdtar` (libarchive). `/usr/bin/bsdtar` ships with macOS; on Linux install `libarchive-tools` (`apt`) or `bsdtar` (`dnf`). Both RAR4 and RAR5 are supported. Header-encrypted CBRs are rejected with a clear error.
+- **ComicInfo.xml**: Auto-reads metadata and manga direction from CBZ and CBR files
 - **Metadata overrides**: `--title`, `--author`, `--language`, `--cover` (page number or file path)
 - **Document type**: `--doc-type ebok` to appear under Books instead of Documents on Kindle (default: `pdoc`)
 - **KF8-only**: `--kf8-only` outputs `.azw3` with only the KF8 section (no MOBI7), producing smaller files handled better by Calibre

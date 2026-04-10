@@ -8,6 +8,7 @@
 ///     kindling input.epub
 ///     kindling input.opf -o output.mobi -dont_append_source -verbose
 
+mod cbr;
 mod comic;
 mod epub;
 mod exth;
