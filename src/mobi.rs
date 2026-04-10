@@ -2387,13 +2387,16 @@ fn build_palmdb(title: &str, records: &[Vec<u8>]) -> Vec<u8> {
         current_offset += rec.len();
     }
 
-    // Derive PalmDB name from title
+    // Derive PalmDB name from title. The PalmDB name field is 32 bytes;
+    // we leave one byte for a null terminator. If the name fits in 31 bytes,
+    // use it as-is; otherwise truncate to first12 + "-" + last14 (27 chars)
+    // to preserve both ends of the title.
     let mut palmdb_name = title.to_string();
     for ch in &['(', ')', '[', ']'] {
         palmdb_name = palmdb_name.replace(*ch, "");
     }
     palmdb_name = palmdb_name.replace(' ', "_");
-    if palmdb_name.len() > 27 {
+    if palmdb_name.len() > 31 {
         let first12: String = palmdb_name.chars().take(12).collect();
         let last14: String = palmdb_name
             .chars()
