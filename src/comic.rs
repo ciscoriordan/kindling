@@ -357,6 +357,11 @@ pub fn build_comic_with_options(
         &temp_dir, &processed, profile, rtl, metadata.as_ref(), options.panel_view, options,
     )?;
 
+    // Capture the OPF title/author for the post-build readback check.
+    let opf_snapshot: Option<(String, String)> = crate::opf::OPFData::parse(&opf_path)
+        .ok()
+        .map(|o| (o.title.clone(), o.author.clone()));
+
     // Step 5: Build MOBI
     eprintln!("Building MOBI...");
     // If embed_source, zip the temp dir into an EPUB for SRCS embedding
@@ -394,7 +399,25 @@ pub fn build_comic_with_options(
         }
     }
 
-    result
+    // Step 7: Post-build MOBI readback check. If EXTH 100 or 503 are
+    // missing, fail the build rather than ship a file the Kindle indexer
+    // will silently drop.
+    result?;
+
+    let (title, author) = match opf_snapshot.as_ref() {
+        Some((t, a)) => (t.as_str(), a.as_str()),
+        None => ("", ""),
+    };
+    let expected = crate::mobi_check::ExpectedMetadata {
+        title: if title.is_empty() { None } else { Some(title) },
+        author: if author.is_empty() { None } else { Some(author) },
+        is_comic: true,
+        is_dictionary: false,
+    };
+    let report = crate::mobi_check::check_mobi_file(output, &expected)?;
+    crate::mobi_check::report_result(output, &report)?;
+
+    Ok(())
 }
 
 /// Collect image file paths from input (folder, CBZ, CBR, or EPUB).
