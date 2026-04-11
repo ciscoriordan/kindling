@@ -186,6 +186,18 @@ fn build_dictionary_mobi(
         if !issues.is_empty() {
             html_check::print_self_check_warnings(&issues);
         }
+
+        // Per-record balance check: Kindle decodes each record in
+        // isolation, so a record that opens <b> without a matching
+        // </b> leaks bold state for the rest of the record, and a
+        // record ending inside a tag leaves garbage at its start.
+        // This check catches regressions in the record splitter.
+        let chunk_size = compute_chunk_size(text_content.len());
+        let ranges = split_on_utf8_boundaries(&text_content, chunk_size);
+        let record_issues = html_check::validate_records(&text_content, &ranges, 20);
+        if !record_issues.is_empty() {
+            html_check::print_self_check_warnings(&record_issues);
+        }
     }
 
     // Build text records
@@ -1498,15 +1510,19 @@ fn strip_idx_markup(html: &str) -> String {
     let infl_full = Regex::new(r"(?s)\s*<idx:infl>.*?</idx:infl>\s*").unwrap();
     result = infl_full.replace_all(&result, "").to_string();
 
-    // Remove idx:orth tags but keep inner content
+    // Wrap the headword in <h5>. idx:orth in the source marks the
+    // headword, which is always a <b>...</b> run. Replacing the open
+    // and close tags with <h5> and </h5> gives every entry a
+    // block-level ancestor around its headword, which Kindle's popup
+    // clipper needs in order to locate entry boundaries correctly.
     let orth_self = Regex::new(r"<idx:orth[^>]*/>").unwrap();
     result = orth_self.replace_all(&result, "").to_string();
 
     let orth_open = Regex::new(r"<idx:orth[^>]*>").unwrap();
-    result = orth_open.replace_all(&result, "").to_string();
+    result = orth_open.replace_all(&result, "<h5>").to_string();
 
     let orth_close = Regex::new(r"</idx:orth>").unwrap();
-    result = orth_close.replace_all(&result, "").to_string();
+    result = orth_close.replace_all(&result, "</h5>").to_string();
 
     // Remove idx:short tags but keep inner content
     let short_open = Regex::new(r"<idx:short>\s*").unwrap();
@@ -1537,6 +1553,124 @@ fn strip_idx_markup(html: &str) -> String {
     result = result.replace("/><b>", "/> <b>");
 
     result.trim().to_string()
+}
+
+#[cfg(test)]
+mod strip_idx_markup_headword_wrap_tests {
+    use super::*;
+
+    const ENTRY_1: &str = r#"<idx:entry name="default" scriptable="yes" spell="yes" id="hw_alpha">
+  <idx:short>
+    <idx:orth value="͵ε"><b>͵ε</b>
+      <idx:infl>
+        <idx:iform value="͵ε" exact="yes" />
+      </idx:infl>
+    </idx:orth>
+  </idx:short>
+  <p><i>num</i></p>
+  <p class='def'>The Greek numeral representing the number five thousand.</p>
+</idx:entry>"#;
+
+    const ENTRY_2: &str = r#"<idx:entry name="default" scriptable="yes" spell="yes" id="hw_beta">
+  <idx:short>
+    <idx:orth value="͵Ζ"><b>͵Ζ</b>
+      <idx:infl>
+        <idx:iform value="͵ζ" exact="yes" />
+      </idx:infl>
+    </idx:orth>
+  </idx:short>
+  <p><i>num</i></p>
+  <p class='def'>The Greek numeral representing the number seven thousand.</p>
+</idx:entry>"#;
+
+    const ENTRY_3: &str = r#"<idx:entry name="default" scriptable="yes" spell="yes" id="hw_gamma">
+  <idx:short>
+    <idx:orth value="͵η"><b>͵η</b>
+      <idx:infl>
+        <idx:iform value="͵η" exact="yes" />
+      </idx:infl>
+    </idx:orth>
+  </idx:short>
+  <p><i>num</i></p>
+  <p class='def'>The Greek numeral representing the number eight thousand.</p>
+</idx:entry>"#;
+
+    /// Each stripped entry must contain an h5 wrapper around its b
+    /// headword. This is the block-level ancestor Kindle's popup
+    /// clipper needs in order to locate entry boundaries.
+    #[test]
+    fn strip_idx_markup_wraps_headword_in_h5() {
+        for (label, input, hw) in [
+            ("entry1", ENTRY_1, "͵ε"),
+            ("entry2", ENTRY_2, "͵Ζ"),
+            ("entry3", ENTRY_3, "͵η"),
+        ] {
+            let stripped = strip_idx_markup(input);
+            let needle = format!("<h5><b>{}</b>", hw);
+            assert!(
+                stripped.contains(&needle),
+                "{} missing {:?}, got: {}",
+                label, needle, stripped
+            );
+            // The close tag of the h5 must also appear somewhere after.
+            assert!(
+                stripped.contains("</h5>"),
+                "{} missing </h5>, got: {}",
+                label, stripped
+            );
+            // The headword must not appear OUTSIDE any h5 wrapper (i.e.
+            // not as a bare b tag without h5 on both sides).
+            assert!(
+                !stripped.contains(&format!("<hr/><b>{}</b>", hw)),
+                "{} has bare <hr/><b>{}</b> (no h5 wrap): {}",
+                label, hw, stripped
+            );
+        }
+    }
+
+    /// When three entries are concatenated into a single blob (as
+    /// build_text_content_by_letter does), the boundary between
+    /// adjacent entries must always be <hr/><h5><b>...
+    #[test]
+    fn concatenated_entries_have_h5_boundary_between_them() {
+        let mut blob = String::new();
+        blob.push_str(&strip_idx_markup(ENTRY_1));
+        blob.push_str(&strip_idx_markup(ENTRY_2));
+        blob.push_str(&strip_idx_markup(ENTRY_3));
+
+        // Each headword after the first must be preceded by <hr/><h5>.
+        for hw in ["͵Ζ", "͵η"] {
+            let needle = format!("<hr/><h5><b>{}</b>", hw);
+            assert!(
+                blob.contains(&needle),
+                "concatenated blob missing boundary {:?}, got: {}",
+                needle, blob
+            );
+        }
+
+        // There must be no bare <hr/><b>... sequence (which is the
+        // pre-fix shape, without the h5 wrapper).
+        assert!(
+            !blob.contains("<hr/><b>"),
+            "concatenated blob still has bare <hr/><b> (no h5 wrap): {}",
+            blob
+        );
+
+        // is_entry_boundary must accept every <b> headword in the blob.
+        let bytes = blob.as_bytes();
+        for hw in ["͵ε", "͵Ζ", "͵η"] {
+            let needle = format!("<b>{}</b>", hw);
+            let pos = blob.find(&needle).expect("headword not found");
+            assert!(
+                is_entry_boundary(bytes, pos),
+                "is_entry_boundary rejected hw={:?} at pos={}, preceding={:?}",
+                hw, pos,
+                String::from_utf8_lossy(
+                    &bytes[pos.saturating_sub(16)..pos]
+                )
+            );
+        }
+    }
 }
 
 /// Clean book HTML for non-dictionary content.
@@ -1766,15 +1900,32 @@ fn incomplete_utf8_tail_bytes(chunk: &[u8]) -> usize {
 }
 
 /// Split `text_bytes` into chunk ranges of at most `chunk_size` bytes,
-/// shifting chunk ends backwards so that no chunk ends inside a multi-byte
-/// UTF-8 character. Returns the start..end byte offsets for each chunk.
+/// choosing end positions that keep each chunk well-formed enough to be
+/// decoded independently by Kindle. Returns the start..end byte offsets
+/// for each chunk.
 ///
 /// Kindle readers concatenate decoded records back into a single byte
-/// stream, but each record is also decoded independently for HTML parsing
-/// and pagination. When a chunk ends in the middle of a multi-byte
-/// character the head record contains an orphan lead byte which renders
-/// as tofu and can destabilize HTML state in subsequent records. Ending
-/// each chunk on a UTF-8 character boundary removes that class of bug.
+/// stream, but each record is also decoded independently for HTML
+/// parsing and pagination. A chunk boundary landing inside:
+///
+///   - a multi-byte UTF-8 character - leaves an orphan lead byte that
+///     renders as tofu;
+///   - an HTML tag like `<b>` - leaves a truncated tag that corrupts
+///     HTML state for the rest of the record;
+///   - an HTML tag pair like `<b>...</b>` - leaves the opener in one
+///     record with no closer, causing bold/italic/paragraph state to
+///     leak for the rest of the record.
+///
+/// Split point preferences, in order:
+///   1. Just after `<hr/>` - a lemma dictionary places one between
+///      every entry, so aligning to it guarantees no tag pair straddles
+///      a record boundary. Only used when it gives at least half the
+///      chunk of forward progress, to avoid tiny chunks when the only
+///      `<hr/>` in range is near the start.
+///   2. Just before an unclosed `<` - so no chunk ends inside an HTML
+///      tag. Tag pairs may still straddle (giving bold/italic leak),
+///      but this is strictly better than leaving a truncated tag.
+///   3. A UTF-8 character boundary - so no chunk ends mid-character.
 fn split_on_utf8_boundaries(text_bytes: &[u8], chunk_size: usize) -> Vec<(usize, usize)> {
     let mut ranges: Vec<(usize, usize)> = Vec::new();
     let total = text_bytes.len();
@@ -1784,20 +1935,70 @@ fn split_on_utf8_boundaries(text_bytes: &[u8], chunk_size: usize) -> Vec<(usize,
         let end = if natural_end == total {
             natural_end
         } else {
-            let trailing = incomplete_utf8_tail_bytes(&text_bytes[start..natural_end]);
-            // Never shrink a chunk below 1 byte. A lone character wider than
-            // the whole chunk is not something we can handle here, but this
-            // only matters for pathological tiny chunk_size values.
-            if trailing >= natural_end - start {
-                natural_end
-            } else {
-                natural_end - trailing
-            }
+            choose_safe_split(text_bytes, start, natural_end)
         };
+        // Guarantee forward progress.
+        let end = if end <= start { natural_end } else { end };
         ranges.push((start, end));
         start = end;
     }
     ranges
+}
+
+/// Pick an end-of-chunk position in `(start, natural_end]` that avoids
+/// splitting mid-character, mid-tag, or (when possible) mid-entry.
+fn choose_safe_split(text_bytes: &[u8], start: usize, natural_end: usize) -> usize {
+    debug_assert!(start < natural_end);
+    debug_assert!(natural_end <= text_bytes.len());
+
+    let chunk = &text_bytes[start..natural_end];
+    let chunk_len = chunk.len();
+
+    // Preference 1: the last `<hr/>` in the chunk. Lemma dictionaries
+    // place one between every entry, and ending here guarantees no
+    // tag pair straddles a record boundary. Require the resulting
+    // chunk to be at least half the natural size so a stray `<hr/>`
+    // near the start doesn't produce tiny chunks.
+    if let Some(hr_rel) = rfind_bytes(chunk, b"<hr/>") {
+        let end_rel = hr_rel + b"<hr/>".len();
+        if end_rel >= chunk_len / 2 && end_rel <= chunk_len {
+            return start + end_rel;
+        }
+    }
+
+    // Preference 2: back off past any unclosed `<` so the chunk never
+    // ends inside an HTML tag.
+    let mut end = natural_end;
+    if let Some(unclosed_rel) = last_unclosed_lt(chunk) {
+        let candidate = start + unclosed_rel;
+        if candidate > start {
+            end = candidate;
+        }
+    }
+
+    // Preference 3: UTF-8 tail backoff on top of whatever end we chose.
+    let trailing = incomplete_utf8_tail_bytes(&text_bytes[start..end]);
+    if trailing > 0 && end - start > trailing {
+        end -= trailing;
+    }
+
+    end
+}
+
+/// Return the position within `chunk` of the earliest `<` that has no
+/// matching `>` before the end of `chunk`, or `None` if every `<` is
+/// closed. A chunk ending inside a tag (with the matching `>` missing)
+/// is the bug we want to detect and back off from.
+fn last_unclosed_lt(chunk: &[u8]) -> Option<usize> {
+    let mut open_lt: Option<usize> = None;
+    for (i, &b) in chunk.iter().enumerate() {
+        if b == b'<' && open_lt.is_none() {
+            open_lt = Some(i);
+        } else if b == b'>' {
+            open_lt = None;
+        }
+    }
+    open_lt
 }
 
 /// Compress text into PalmDOC records with trailing bytes.
@@ -2147,6 +2348,161 @@ mod record_split_tests {
         }
         assert_eq!(reassembled, text_bytes);
     }
+
+    /// Count matching `<tag>` and `</tag>` pairs in a byte slice. Used
+    /// by HTML-safety tests to assert each record is balanced.
+    fn count_tag_balance(bytes: &[u8], tag: &str) -> i32 {
+        let haystack = std::str::from_utf8(bytes).unwrap_or("");
+        let open = format!("<{}>", tag);
+        let close = format!("</{}>", tag);
+        let opens = haystack.matches(&open).count() as i32;
+        let closes = haystack.matches(&close).count() as i32;
+        opens - closes
+    }
+
+    /// last_unclosed_lt returns None when every `<` is matched by a `>`,
+    /// and the position of the earliest unclosed `<` otherwise.
+    #[test]
+    fn last_unclosed_lt_behaviour() {
+        assert_eq!(last_unclosed_lt(b"plain text"), None);
+        assert_eq!(last_unclosed_lt(b"<b>hello</b>"), None);
+        assert_eq!(last_unclosed_lt(b"<b>hello</b><i"), Some(12));
+        assert_eq!(last_unclosed_lt(b"<b>hello"), None); // <b> is complete
+        assert_eq!(last_unclosed_lt(b"<b>hello<"), Some(8));
+        assert_eq!(last_unclosed_lt(b"foo<bar"), Some(3));
+        // After a `>` closes a tag, we look for the next `<`.
+        assert_eq!(last_unclosed_lt(b"<p>text</p><x"), Some(11));
+    }
+
+    /// A chunk whose natural end lands inside an HTML tag must back
+    /// off so the chunk ends BEFORE the `<`, not inside the tag.
+    #[test]
+    fn split_backs_off_past_unclosed_lt() {
+        // 4090 bytes of filler, then `<bold-tag>`, then more filler.
+        // natural end at 4096 lands on the 6th byte of `<bold-tag>`,
+        // which is mid-tag. The splitter must back off to position 4090.
+        let mut text = vec![b'x'; 4090];
+        text.extend_from_slice(b"<bold-tag>yyyyyy");
+        let ranges = split_on_utf8_boundaries(&text, 4096);
+        assert!(ranges.len() >= 1);
+        let (s, e) = ranges[0];
+        assert_eq!(s, 0);
+        // The first chunk must not contain the `<bold-tag>` opener at
+        // all - back off is to just before it.
+        assert_eq!(e, 4090);
+        assert!(!text[s..e].contains(&b'<'),
+            "first chunk should not contain any `<`: {:?}",
+            String::from_utf8_lossy(&text[s..e.min(s + 64)]));
+    }
+
+    /// When an `<hr/>` is present in the later part of the chunk, the
+    /// splitter prefers to end there so no HTML tag pair straddles a
+    /// record boundary.
+    #[test]
+    fn split_prefers_hr_boundary() {
+        // One entry with a <b>...</b> block that would naturally
+        // straddle the 4096 boundary, plus an `<hr/>` at position 3500.
+        // The splitter should end at 3505 (just after <hr/>) so the
+        // subsequent <b>...</b> pair lands wholly in the next chunk.
+        let mut text = vec![b'x'; 3500];
+        text.extend_from_slice(b"<hr/>");
+        // Fill with `<b>` opener far into the chunk and `</b>` after
+        // the boundary.
+        text.extend_from_slice(&vec![b'a'; 590]); // 3505..4095
+        text.extend_from_slice(b"<b>headword</b> rest");
+        let ranges = split_on_utf8_boundaries(&text, 4096);
+        // First chunk should end at 3505 (just past <hr/>).
+        assert_eq!(ranges[0], (0, 3505));
+        // The <b> pair must be entirely in the second chunk.
+        let second = &text[ranges[1].0..ranges[1].1];
+        let opens = count_tag_balance(second, "b");
+        assert_eq!(opens, 0, "second chunk must have balanced <b> tags");
+    }
+
+    /// The full split pipeline must produce records that are each
+    /// individually balanced in `<b>`, `<i>`, and `<p>` tags, simulating
+    /// the lemma dictionary shape: many entries separated by `<hr/>`
+    /// where each entry has a bold headword + paragraph tags.
+    #[test]
+    fn split_keeps_tag_pairs_balanced_per_record() {
+        // Build a lemma-like blob: 2000 entries, each ~200 bytes, with
+        // <hr/><h5><b>hw</b></h5><p>definition...</p> shape. Total size
+        // is large enough to span many records.
+        let mut text = String::new();
+        for i in 0..2000 {
+            text.push_str("<hr/><h5><b>");
+            text.push_str(&format!("hw{:04}", i));
+            text.push_str("</b></h5><p><i>noun</i></p><p>");
+            // Pad definition so each entry is roughly 200 bytes.
+            for _ in 0..150 {
+                text.push('d');
+            }
+            text.push_str("</p>");
+        }
+        let text_bytes = text.as_bytes();
+        let ranges = split_on_utf8_boundaries(text_bytes, 4096);
+        assert!(ranges.len() > 10, "expected many records");
+
+        // Each record must be individually balanced for <b>, <i>, <p>,
+        // and <h5>. This is the blog-researcher regression test for
+        // the 332 unbalanced-record bug.
+        for (i, &(s, e)) in ranges.iter().enumerate() {
+            let rec = &text_bytes[s..e];
+            for tag in ["b", "i", "p", "h5"] {
+                let balance = count_tag_balance(rec, tag);
+                assert_eq!(
+                    balance, 0,
+                    "record {} ({}..{}) has unbalanced <{}> tags: balance={}, head={:?}, tail={:?}",
+                    i, s, e, tag, balance,
+                    String::from_utf8_lossy(&rec[..rec.len().min(80)]),
+                    String::from_utf8_lossy(&rec[rec.len().saturating_sub(80)..])
+                );
+            }
+            // No record ends inside an HTML tag.
+            assert_eq!(
+                last_unclosed_lt(rec), None,
+                "record {} ends inside an HTML tag: tail={:?}",
+                i,
+                String::from_utf8_lossy(&rec[rec.len().saturating_sub(40)..])
+            );
+        }
+
+        // Concatenation of all records must equal the original text.
+        let mut reassembled = Vec::with_capacity(text_bytes.len());
+        for &(s, e) in &ranges {
+            reassembled.extend_from_slice(&text_bytes[s..e]);
+        }
+        assert_eq!(reassembled, text_bytes);
+    }
+
+    /// Giant single entry (bigger than chunk_size) must still split
+    /// without leaving any record ending inside an HTML tag. Tag pairs
+    /// may straddle (unavoidable for entries bigger than the chunk)
+    /// but truncated tags are not acceptable.
+    #[test]
+    fn split_handles_entry_larger_than_chunk_size() {
+        let mut text = String::from("<hr/><b>giant</b><p>");
+        for _ in 0..2000 {
+            text.push_str("some body text with <i>emphasis</i> and more words. ");
+        }
+        text.push_str("</p><hr/><b>next</b><p>short</p>");
+        let text_bytes = text.as_bytes();
+        let ranges = split_on_utf8_boundaries(text_bytes, 4096);
+        for (i, &(s, e)) in ranges.iter().enumerate() {
+            let rec = &text_bytes[s..e];
+            assert_eq!(
+                last_unclosed_lt(rec), None,
+                "record {} ends inside an HTML tag", i
+            );
+            std::str::from_utf8(rec).expect("record must be valid UTF-8");
+        }
+        // Reassemble.
+        let mut reassembled = Vec::with_capacity(text_bytes.len());
+        for &(s, e) in &ranges {
+            reassembled.extend_from_slice(&text_bytes[s..e]);
+        }
+        assert_eq!(reassembled, text_bytes);
+    }
 }
 
 /// Find the byte position of each dictionary entry in the stripped text.
@@ -2256,10 +2612,10 @@ fn find_entry_positions(text_bytes: &[u8], entries: &[DictionaryEntry]) -> Vec<(
 
 /// Check if a `<b>` tag position is at an entry boundary (a headword heading).
 ///
-/// Entry headings in the stripped text are preceded by `<hr/> ` or `"/> `, or
-/// appear near the start of the text (first entry in the body). Bold text
-/// inside example sentences or etymologies is preceded by `>` from a `<p>` or
-/// `<i>` tag, not by `<hr/>`.
+/// Entry headings in the stripped text are preceded by `<hr/> `, `"/> `,
+/// `<h5>` (the block-level headword wrapper), or appear near the start of
+/// the text (first entry in the body). Bold text inside example sentences
+/// or etymologies is preceded by `>` from a `<p>` or `<i>` tag.
 fn is_entry_boundary(text_bytes: &[u8], bold_pos: usize) -> bool {
     // First entry: near the start of the body
     if bold_pos < 200 {
@@ -2267,10 +2623,17 @@ fn is_entry_boundary(text_bytes: &[u8], bold_pos: usize) -> bool {
     }
 
     // Look backward from the <b> position for the preceding context.
-    // Entry headings are preceded by: <hr/> <b>  (with space between)
-    // or by: /> <b> (after <br/> or self-closing tags at end of prev entry)
+    // Entry headings can be preceded by any of:
+    //   <h5><b>  (the block-level headword wrapper inserted by strip_idx_markup)
+    //   <hr/> <b>  (with space between, legacy path when no h5 wrap)
+    //   /> <b>  (after <br/> or other self-closing tags at end of prev entry)
     let check_start = if bold_pos >= 8 { bold_pos - 8 } else { 0 };
     let preceding = &text_bytes[check_start..bold_pos];
+
+    // Check for "<h5>" immediately before (block-level headword wrapper)
+    if preceding.ends_with(b"<h5>") {
+        return true;
+    }
 
     // Check for "<hr/> " immediately before
     if preceding.ends_with(b"<hr/> ") || preceding.ends_with(b"<hr/>") {
@@ -3056,3 +3419,4 @@ fn rfind_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .windows(needle.len())
         .rposition(|w| w == needle)
 }
+

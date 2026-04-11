@@ -181,7 +181,7 @@ Unknown EXTH records in the input are preserved unchanged, so tool-specific meta
 
 Every `build` and `comic` run now performs an HTML self-check on the assembled MOBI text blob before writing the output file. The check catches regressions like dangling `<body>` / `<mbp:frameset>` tags, `<hr/` corruption, and unclosed attribute quotes that would otherwise reach a user's Kindle as a white screen.
 
-The check runs once on the full assembled blob (not per record) and typically adds 50-200 ms to a large dictionary build. It **never aborts the build**: when something is wrong, kindling prints a warning block pointing at the issue and writes the MOBI anyway, so you can still inspect the output.
+The self-check runs in two passes: once on the full assembled blob (for structural corruption and tag balance at the document level), and once on each individual record after splitting (for per-record HTML balance, catching tag pairs like `<b>...</b>` that would straddle a record boundary and cause bold or italic state to leak). Kindle decodes each text record independently for pagination, so a single unbalanced record can corrupt rendering even when the assembled blob is well-formed. Together the two passes add ~50-200 ms to a large dictionary build. The check **never aborts the build**: when something is wrong, kindling prints a warning block pointing at the issue and writes the MOBI anyway, so you can still inspect the output.
 
 ```bash
 kindling-cli build input.opf --no-self-check       # skip the self-check (not recommended)

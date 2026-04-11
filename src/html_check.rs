@@ -265,6 +265,96 @@ pub fn validate_text_blob(blob: &[u8]) -> Vec<String> {
     errors
 }
 
+/// Validate that each record, when decoded independently, has balanced
+/// HTML tag state. A Kindle reader decodes each text record in isolation
+/// for HTML parsing and pagination, so a record that opens `<b>` without
+/// a matching `</b>` causes bold state to leak for the rest of the
+/// record, and a record ending inside a tag leaves garbage at its start.
+///
+/// `records` is an iterator of `(start, end)` byte offsets into `blob`,
+/// which is the pre-compression text. Returns human-readable issue
+/// strings for every record that fails balance. Reports up to
+/// `max_issues` entries to keep the error list bounded.
+pub fn validate_records(
+    blob: &[u8],
+    records: &[(usize, usize)],
+    max_issues: usize,
+) -> Vec<String> {
+    let mut issues = Vec::new();
+    let mut unbalanced_b = 0usize;
+    let mut unbalanced_i = 0usize;
+    let mut unbalanced_p = 0usize;
+    let mut unbalanced_h5 = 0usize;
+    let mut mid_tag = 0usize;
+
+    for (idx, &(s, e)) in records.iter().enumerate() {
+        if e > blob.len() || s > e {
+            continue;
+        }
+        let rec = &blob[s..e];
+
+        // Per-tag balance scan (cheap substring count).
+        let rec_str = match std::str::from_utf8(rec) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        for (tag, counter) in [
+            ("b", &mut unbalanced_b),
+            ("i", &mut unbalanced_i),
+            ("p", &mut unbalanced_p),
+            ("h5", &mut unbalanced_h5),
+        ] {
+            let opens = rec_str.matches(&format!("<{}>", tag)).count() as i32;
+            let closes = rec_str.matches(&format!("</{}>", tag)).count() as i32;
+            if opens != closes {
+                *counter += 1;
+                if issues.len() < max_issues {
+                    issues.push(format!(
+                        "record {} ({}..{}): <{}> unbalanced (opens={}, closes={})",
+                        idx, s, e, tag, opens, closes
+                    ));
+                }
+            }
+        }
+
+        // Mid-tag scan: does the record end with an unclosed `<`?
+        if record_ends_in_tag(rec) {
+            mid_tag += 1;
+            if issues.len() < max_issues {
+                let tail_start = rec.len().saturating_sub(40);
+                let tail = String::from_utf8_lossy(&rec[tail_start..]);
+                issues.push(format!(
+                    "record {} ({}..{}): ends inside an HTML tag, tail={:?}",
+                    idx, s, e, tail
+                ));
+            }
+        }
+    }
+
+    if unbalanced_b + unbalanced_i + unbalanced_p + unbalanced_h5 + mid_tag > 0 {
+        issues.push(format!(
+            "summary: {}/{} records unbalanced-<b>, {} unbalanced-<i>, {} unbalanced-<p>, {} unbalanced-<h5>, {} mid-tag",
+            unbalanced_b, records.len(), unbalanced_i, unbalanced_p, unbalanced_h5, mid_tag
+        ));
+    }
+
+    issues
+}
+
+/// Return true if the record byte slice ends inside an HTML tag
+/// (an unclosed `<` with no matching `>` before end).
+fn record_ends_in_tag(rec: &[u8]) -> bool {
+    let mut in_tag = false;
+    for &b in rec {
+        if b == b'<' {
+            in_tag = true;
+        } else if b == b'>' {
+            in_tag = false;
+        }
+    }
+    in_tag
+}
+
 /// Print a user-facing warning block for self-check issues and advise how
 /// to suppress. Used by `mobi::build_*` when `self_check` is enabled and
 /// `validate_text_blob` returns a non-empty list.
