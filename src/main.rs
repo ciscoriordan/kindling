@@ -355,7 +355,7 @@ fn do_build(
 
     // Capture the OPF so we can round-trip its title/author through the
     // post-build MOBI readback check.
-    let mut opf_snapshot: Option<(String, String)> = None;
+    let mut opf_snapshot: Option<(String, String, bool)> = None;
 
     let result = if is_epub {
         // Extract EPUB to temp dir, find OPF, build, clean up
@@ -380,7 +380,7 @@ fn do_build(
         }
 
         if let Ok(parsed) = opf::OPFData::parse(&opf_path) {
-            opf_snapshot = Some((parsed.title.clone(), parsed.author.clone()));
+            opf_snapshot = Some((parsed.title.clone(), parsed.author.clone(), parsed.is_dictionary()));
         }
 
         let result = mobi::build_mobi(
@@ -401,7 +401,7 @@ fn do_build(
         }
 
         if let Ok(parsed) = opf::OPFData::parse(input) {
-            opf_snapshot = Some((parsed.title.clone(), parsed.author.clone()));
+            opf_snapshot = Some((parsed.title.clone(), parsed.author.clone(), parsed.is_dictionary()));
         }
 
         mobi::build_mobi(
@@ -415,15 +415,15 @@ fn do_build(
             // Post-build MOBI readback check. This is the only thing between
             // a broken library entry and a happy user, so don't skip it by
             // default.
-            let (title, author) = opf_snapshot
+            let (title, author, is_dictionary) = opf_snapshot
                 .as_ref()
-                .map(|(t, a)| (t.as_str(), a.as_str()))
-                .unwrap_or(("", ""));
+                .map(|(t, a, d)| (t.as_str(), a.as_str(), *d))
+                .unwrap_or(("", "", false));
             let expected = mobi_check::ExpectedMetadata {
                 title: if title.is_empty() { None } else { Some(title) },
                 author: if author.is_empty() { None } else { Some(author) },
                 is_comic: false,
-                is_dictionary: false,
+                is_dictionary,
             };
             match mobi_check::check_mobi_file(output_path, &expected) {
                 Ok(report) => {
