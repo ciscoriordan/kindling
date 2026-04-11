@@ -8,7 +8,7 @@
 ///     kindling input.epub
 ///     kindling input.opf -o output.mobi -dont_append_source -verbose
 
-use kindling::{comic, epub, kdp_rules, mobi, mobi_check, opf, validate};
+use kindling::{comic, epub, kdp_rules, mobi, mobi_check, opf, repair, validate};
 
 use std::path::PathBuf;
 use std::process;
@@ -248,6 +248,31 @@ enum Commands {
         /// Treat warnings as errors (exit non-zero on any warning).
         #[arg(long)]
         strict: bool,
+    },
+
+    /// Repair an EPUB file for cleaner Kindle ingest.
+    ///
+    /// Applies the fix list from innocenat/kindle-epub-fix (public domain):
+    /// prepend missing XML declarations, rewrite body-id hyperlinks that
+    /// Kindle drops, inject a fallback dc:language, and delete stray <img>
+    /// tags with no src. Byte-stable on clean input, idempotent on broken
+    /// input, rejects DRM-protected files.
+    #[command(version)]
+    Repair {
+        /// Input EPUB file
+        input: PathBuf,
+
+        /// Output EPUB file. Defaults to `<stem>-fixed.epub` next to the input.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Emit the full RepairReport as JSON on stdout.
+        #[arg(long)]
+        report_json: bool,
+
+        /// Detect fixes without writing an output file.
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -731,6 +756,14 @@ fn main() {
             Commands::Validate { input, strict } => {
                 do_validate(&input, strict);
             }
+            Commands::Repair {
+                input,
+                output,
+                report_json,
+                dry_run,
+            } => {
+                do_repair(&input, output.as_ref(), report_json, dry_run);
+            }
         }
     }
 }
@@ -766,5 +799,78 @@ fn do_validate(opf_path: &PathBuf, strict: bool) {
     let fail = errors > 0 || (strict && warnings > 0);
     if fail {
         process::exit(1);
+    }
+}
+
+/// Run the EPUB repair pass and print the result.
+///
+/// `input` is an EPUB file to repair. When `output` is `None`, the repaired
+/// copy is written to `<stem>-fixed.epub` in the same directory.
+///
+/// With `report_json`, the full [`repair::RepairReport`] is emitted as JSON
+/// on stdout. Otherwise a human-readable summary is written to stderr with
+/// one line per fix and a final count.
+///
+/// With `dry_run`, the input is only scanned: no output file is written,
+/// and the summary is prefixed with "(dry-run)".
+///
+/// Exit codes:
+///   * 0 on success, even if fixes were applied. Callers wanting to know
+///     whether the file was already clean should check the report or JSON.
+///   * 1 on any `RepairError` (including DRM rejection and non-EPUB input).
+fn do_repair(input: &PathBuf, output: Option<&PathBuf>, report_json: bool, dry_run: bool) {
+    let default_output;
+    let output_path: PathBuf = if dry_run {
+        input.clone()
+    } else if let Some(p) = output {
+        p.clone()
+    } else {
+        let stem = input
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "repaired".to_string());
+        let parent = input.parent().unwrap_or(std::path::Path::new("."));
+        default_output = parent.join(format!("{}-fixed.epub", stem));
+        default_output
+    };
+
+    let result = if dry_run {
+        repair::scan_epub(input)
+    } else {
+        repair::repair_epub(input, &output_path)
+    };
+
+    let report = match result {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            process::exit(1);
+        }
+    };
+
+    if report_json {
+        println!("{}", report.to_json());
+    } else {
+        let prefix = if dry_run { "(dry-run) " } else { "" };
+        for fix in &report.fixes_applied {
+            eprintln!("{}{}", prefix, fix.describe());
+        }
+        for warn in &report.warnings {
+            eprintln!("{}warning: {}: {}", prefix, warn.file, warn.message);
+        }
+        if report.any_fixes() {
+            eprintln!(
+                "{}Repaired {} issue{} in {}",
+                prefix,
+                report.fix_count(),
+                if report.fix_count() == 1 { "" } else { "s" },
+                input.display()
+            );
+        } else {
+            eprintln!("{}No repairs needed for {}", prefix, input.display());
+        }
+        if !dry_run {
+            eprintln!("Output written to {}", output_path.display());
+        }
     }
 }
