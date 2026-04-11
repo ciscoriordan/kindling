@@ -19,7 +19,7 @@ Pre-built binaries for Mac (Apple Silicon, Intel), Linux (x86_64), and Windows (
 
 ## Features
 
-- **Dictionaries**: Full orth index with headword + inflection lookup, ORDT/SPL sort tables, fontsignature
+- **Dictionaries**: Full orth index with headword + inflection lookup, UTF-8 labels (non-ASCII headwords like Greek render correctly in the lookup popup), SPL sort tables, fontsignature
 - **Books**: EPUB or OPF input, embedded images, KF8 dual-format (KF7+KF8) or KF8-only (.azw3), HD image container, fixed-layout support
 - **Comics**: Image folder, CBZ, CBR, or EPUB input, device-specific resizing, spread splitting, margin cropping, auto-contrast, moire correction for color e-ink, manga RTL, webtoon with overlap fallback, Panel View, KF8-only (.azw3), metadata overrides
 - Drop-in *kindlegen* replacement (same CLI flags, same status codes)
