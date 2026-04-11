@@ -438,14 +438,41 @@ fn check_cover_image(
     palmdb: &PalmDb,
     data: &[u8],
     first_image_record: Option<u32>,
+    is_comic: bool,
     report: &mut CheckReport,
 ) {
     // first_image_record is the global record index of the first image; EXTH
     // 201 / 202 are relative offsets into that image list.
     let first_image = match first_image_record {
         Some(v) if v != 0xFFFFFFFF => v as usize,
-        _ => return,
+        _ => {
+            if is_comic {
+                report.fail(
+                    "comic MOBI has no first-image record pointer; the library \
+                     cannot find a cover and the book will not open".to_string(),
+                );
+            }
+            return;
+        }
     };
+
+    // For comics specifically, EXTH 201 (cover offset) is a P0 requirement.
+    // Without it, Kindle devices either show a missing thumbnail in the
+    // library or fail to render the first page. The library-thumbnail
+    // generator reads EXTH 201 directly, and we saw a Vader Down build where
+    // the value was present but pointed at an oversized cover image that the
+    // firmware could not downscale, which we can't detect here. What we CAN
+    // detect is the "EXTH 201 is missing entirely" case.
+    if is_comic {
+        if find_exth_string(&section.exth, 201).is_none() {
+            report.fail(
+                "comic MOBI is missing EXTH 201 (cover_offset); the Kindle \
+                 library thumbnail pipeline depends on this".to_string(),
+            );
+        } else {
+            report.pass();
+        }
+    }
 
     for rtype in [201u32, 202] {
         let payload = match find_exth_string(&section.exth, rtype) {
@@ -515,7 +542,57 @@ pub fn check_mobi_file(
     check_exth_metadata("KF7 section", &kf7, expected, &mut report);
 
     let first_image = first_image_record(&kf7, rec0);
-    check_cover_image(&kf7, &palmdb, &data, first_image, &mut report);
+    check_cover_image(&kf7, &palmdb, &data, first_image, expected.is_comic, &mut report);
+
+    // Oversized PalmDB record check (P0).
+    //
+    // A single PalmDB record over 16 MB is a red flag: it almost always means
+    // the SRCS (embedded EPUB source) record has ballooned, because the
+    // caller left `--embed-source` on for a comic with hundreds of
+    // full-resolution pages. Vader Down produced a 120 MB SRCS record in one
+    // slot, which the Kindle reader could not mmap, manifesting as "Unable
+    // to Open Item" even though indexing succeeded. The Kindle does not
+    // document a hard limit, but every working comic we have inspected keeps
+    // individual records well under 10 MB. 16 MB is a generous ceiling that
+    // still catches the failure mode.
+    const MAX_REASONABLE_RECORD_BYTES: usize = 16 * 1024 * 1024;
+    let mut too_big: Vec<(usize, usize)> = Vec::new();
+    for i in 0..palmdb.num_records {
+        if let Some(r) = palmdb.record(&data, i) {
+            if r.len() > MAX_REASONABLE_RECORD_BYTES {
+                too_big.push((i, r.len()));
+            }
+        }
+    }
+    if too_big.is_empty() {
+        report.pass();
+    } else {
+        for (i, len) in &too_big {
+            let head = palmdb
+                .record(&data, *i)
+                .map(|r| {
+                    if r.len() >= 4 {
+                        String::from_utf8_lossy(&r[..4.min(r.len())])
+                            .chars()
+                            .filter(|c| c.is_ascii_graphic())
+                            .collect::<String>()
+                    } else {
+                        String::new()
+                    }
+                })
+                .unwrap_or_default();
+            report.fail(format!(
+                "PalmDB record {} is {} bytes ({} MB), over the {} MB sanity \
+                 limit; this trips the Kindle reader's \"Unable to Open \
+                 Item\" path. Magic: {:?}",
+                i,
+                len,
+                len / (1024 * 1024),
+                MAX_REASONABLE_RECORD_BYTES / (1024 * 1024),
+                head,
+            ));
+        }
+    }
 
     // PalmDB name length (P1).
     let name_end = data[..32].iter().position(|&b| b == 0).unwrap_or(32);

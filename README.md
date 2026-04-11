@@ -94,7 +94,10 @@ kindling-cli comic input.cbz --title "My Comic" --language ja   # metadata overr
 kindling-cli comic input.cbz --doc-type ebok                    # appear under Books on Kindle
 kindling-cli comic input.cbz --cover 3                          # use page 3 as cover
 kindling-cli comic input.cbz --kf8-only                         # KF8-only output (.azw3), smaller files
+kindling-cli comic input.cbz --embed-source                     # embed EPUB source (off by default, see note below)
 ```
+
+Comic builds do **not** embed the intermediate EPUB as a SRCS record by default (this changed in v0.7.7). Embedding duplicates every page image as a zipped EPUB inside the MOBI, which for a large comic produces a single PalmDB record over 100 MB. Kindle devices index the resulting file but then fail to open it with "Unable to Open Item". Pass `--embed-source` only when you need to round-trip through Kindle Previewer.
 
 Converts image folders, CBZ files, CBR files, and EPUB files to Kindle-optimized MOBI with:
 - **Device profiles**: *paperwhite*, *kpw5*, *oasis*, *scribe*, *scribe2025*, *kindle2024*, *basic*, *colorsoft*, *fire-hd-10*

@@ -138,7 +138,16 @@ impl Default for ComicOptions {
             panel_view: true,
             jpeg_quality: 85,
             max_height: 65536,
-            embed_source: true,
+            // Comics default to NOT embedding the source EPUB. Embedding
+            // duplicates every image byte as a zipped EPUB attached to the
+            // MOBI, which for a large comic (~400 pages) produces a 100+ MB
+            // SRCS PalmDB record. A single record that large trips up the
+            // Kindle reader's "Unable to Open Item" path, even though the
+            // Kindle indexer is happy to add the file to the library. The
+            // source is only useful for round-tripping through Kindle
+            // Previewer, which is not the workflow for sideloaded comics.
+            // Pass `--embed-source` to opt back in.
+            embed_source: false,
             doc_type: None,
             title_override: None,
             author_override: None,

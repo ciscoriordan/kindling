@@ -168,8 +168,20 @@ enum Commands {
         #[arg(long, default_value = "65536")]
         max_height: u32,
 
-        /// Skip embedding the EPUB source in the MOBI (saves space, breaks Kindle Previewer)
+        /// Embed the intermediate EPUB source as a SRCS record inside the
+        /// MOBI. Off by default for comics: the SRCS record contains a zipped
+        /// copy of every image in the comic, which for a large book produces
+        /// a single PalmDB record well over 100 MB. That oversize record is
+        /// what triggered the "Unable to Open Item" failure on Vader Down,
+        /// even though the Kindle indexer accepted the file. Only enable
+        /// this when you need Kindle Previewer to round-trip to EPUB.
         #[arg(long)]
+        embed_source: bool,
+
+        /// Deprecated no-op. Comics no longer embed the EPUB source by
+        /// default; pass `--embed-source` to opt back in. Kept so existing
+        /// scripts that pass `--no-embed-source` keep working.
+        #[arg(long, hide = true)]
         no_embed_source: bool,
 
         /// Document type: "ebok" (Books shelf) or "pdoc" (Documents shelf, default).
@@ -518,6 +530,7 @@ fn main() {
                 no_panel_view,
                 jpeg_quality,
                 max_height,
+                embed_source,
                 no_embed_source,
                 doc_type,
                 title,
@@ -574,6 +587,14 @@ fn main() {
                 // Comic defaults to OFF for kindle_limits
                 let effective_kindle_limits = kindle_limits && !no_kindle_limits;
 
+                // `--no-embed-source` is accepted for backward compatibility
+                // but has been a no-op since comics stopped defaulting to
+                // embed-source in v0.7.7. Only `--embed-source` turns it on.
+                if no_embed_source {
+                    eprintln!("Note: --no-embed-source is now the default for comics and has no effect");
+                }
+                let effective_embed_source = embed_source;
+
                 let options = comic::ComicOptions {
                     rtl,
                     split: !no_split,
@@ -583,7 +604,7 @@ fn main() {
                     panel_view: !no_panel_view,
                     jpeg_quality,
                     max_height,
-                    embed_source: !no_embed_source,
+                    embed_source: effective_embed_source,
                     doc_type: doc_type_value,
                     title_override: title,
                     author_override: author,
