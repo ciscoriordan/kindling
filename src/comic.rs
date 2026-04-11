@@ -165,6 +165,9 @@ pub struct ComicMetadata {
     pub inkers: Vec<String>,
     pub summary: Option<String>,
     pub manga_rtl: bool,
+    pub language: Option<String>,
+    pub year: Option<String>,
+    pub month: Option<String>,
 }
 
 impl ComicMetadata {
@@ -1875,11 +1878,14 @@ pub fn parse_comic_info_xml(xml: &str) -> Result<ComicMetadata, Box<dyn std::err
                 if text.is_empty() {
                     continue;
                 }
-                match current_tag.as_str() {
-                    "Title" => metadata.title = Some(text),
-                    "Series" => metadata.series = Some(text),
-                    "Number" => metadata.number = Some(text),
-                    "Writer" => {
+                // ComicInfo.xml is nominally PascalCase but real-world files
+                // from ComicTagger, Kavita, Kileko-Empire, etc. are inconsistent,
+                // so match case-insensitively.
+                match current_tag.to_ascii_lowercase().as_str() {
+                    "title" => metadata.title = Some(text),
+                    "series" => metadata.series = Some(text),
+                    "number" => metadata.number = Some(text),
+                    "writer" => {
                         // May contain comma-separated names
                         for name in text.split(',') {
                             let name = name.trim().to_string();
@@ -1888,7 +1894,7 @@ pub fn parse_comic_info_xml(xml: &str) -> Result<ComicMetadata, Box<dyn std::err
                             }
                         }
                     }
-                    "Penciller" => {
+                    "penciller" => {
                         for name in text.split(',') {
                             let name = name.trim().to_string();
                             if !name.is_empty() {
@@ -1896,7 +1902,7 @@ pub fn parse_comic_info_xml(xml: &str) -> Result<ComicMetadata, Box<dyn std::err
                             }
                         }
                     }
-                    "Inker" => {
+                    "inker" => {
                         for name in text.split(',') {
                             let name = name.trim().to_string();
                             if !name.is_empty() {
@@ -1904,12 +1910,17 @@ pub fn parse_comic_info_xml(xml: &str) -> Result<ComicMetadata, Box<dyn std::err
                             }
                         }
                     }
-                    "Summary" => metadata.summary = Some(text),
-                    "Manga" => {
-                        if text == "YesAndRightToLeft" || text == "Yes" {
+                    "summary" => metadata.summary = Some(text),
+                    "manga" => {
+                        if text.eq_ignore_ascii_case("YesAndRightToLeft")
+                            || text.eq_ignore_ascii_case("Yes")
+                        {
                             metadata.manga_rtl = true;
                         }
                     }
+                    "languageiso" => metadata.language = Some(text),
+                    "year" => metadata.year = Some(text),
+                    "month" => metadata.month = Some(text),
                     _ => {}
                 }
             }
@@ -2090,24 +2101,37 @@ fn build_comic_opf_v2(
             .unwrap_or_else(|| "Comic".to_string())
     };
 
-    // Determine creators: CLI override > ComicInfo.xml
+    // Determine creators: CLI override > ComicInfo.xml > "Unknown".
+    // All creators are joined into a single <dc:creator> entry because the
+    // OPF parser used downstream keeps only one creator, so multiple tags
+    // would silently drop all but the last name (which is how EXTH 100 lost
+    // the Vader Down writers in v0.7.4). A fallback author of "Unknown" is
+    // critical: Kindle silently refuses to index books with no author, so
+    // an empty EXTH 100 is a library-invisibility bug.
     let mut creator_entries = String::new();
-    if let Some(ref author) = options.author_override {
-        creator_entries.push_str(&format!(
-            "    <dc:creator>{}</dc:creator>\n",
-            escape_xml(author)
-        ));
+    let creator_value: String = if let Some(ref author) = options.author_override {
+        author.clone()
     } else if let Some(meta) = metadata {
-        for creator in meta.creators() {
-            creator_entries.push_str(&format!(
-                "    <dc:creator>{}</dc:creator>\n",
-                escape_xml(&creator)
-            ));
+        let creators = meta.creators();
+        if creators.is_empty() {
+            "Unknown".to_string()
+        } else {
+            creators.join(", ")
         }
-    }
+    } else {
+        "Unknown".to_string()
+    };
+    creator_entries.push_str(&format!(
+        "    <dc:creator>{}</dc:creator>\n",
+        escape_xml(&creator_value)
+    ));
 
-    // Determine language: CLI override > default "en"
-    let language = options.language.as_deref().unwrap_or("en");
+    // Determine language: CLI override > ComicInfo.xml > default "en"
+    let language = options
+        .language
+        .as_deref()
+        .or_else(|| metadata.and_then(|m| m.language.as_deref()))
+        .unwrap_or("en");
 
     // Determine description
     let mut description_entry = String::new();
@@ -2300,4 +2324,55 @@ fn build_comic_ncx(num_pages: usize) -> String {
         num_pages = num_pages,
         nav_points = nav_points,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_comic_info_lowercase_tags() {
+        // Regression: ComicInfo.xml from Kileko-Empire (Vader Down CBZ) uses
+        // lowercase `<writer>` which was being dropped by the case-sensitive
+        // parser, so the author never made it into EXTH 100 and the book
+        // failed to index on Kindle.
+        let xml = r#"<?xml version='1.0' encoding='utf-8'?>
+<ComicInfo xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+    <Series>Star Wars: Darth Vader Modern Era Epic Collection: Vader Down</Series>
+    <LanguageISO>en</LanguageISO>
+    <PageCount>407</PageCount>
+    <writer>Kieron Gillen, Jason Aaron</writer>
+    <Month>11</Month>
+    <Year>2025</Year>
+</ComicInfo>"#;
+        let meta = parse_comic_info_xml(xml).expect("parse should succeed");
+        assert_eq!(
+            meta.series.as_deref(),
+            Some("Star Wars: Darth Vader Modern Era Epic Collection: Vader Down"),
+            "Series should be parsed from mixed-case tag"
+        );
+        assert!(
+            meta.writers.iter().any(|w| w == "Kieron Gillen"),
+            "Writers should include Kieron Gillen, got {:?}",
+            meta.writers,
+        );
+        assert!(
+            meta.writers.iter().any(|w| w == "Jason Aaron"),
+            "Writers should include Jason Aaron, got {:?}",
+            meta.writers,
+        );
+        assert_eq!(meta.language.as_deref(), Some("en"));
+        assert_eq!(meta.year.as_deref(), Some("2025"));
+        assert_eq!(meta.month.as_deref(), Some("11"));
+    }
+
+    #[test]
+    fn test_parse_comic_info_manga_case_insensitive() {
+        let xml = r#"<?xml version='1.0' encoding='utf-8'?>
+<ComicInfo>
+    <manga>yesandrighttoleft</manga>
+</ComicInfo>"#;
+        let meta = parse_comic_info_xml(xml).expect("parse should succeed");
+        assert!(meta.manga_rtl, "manga RTL should be detected case-insensitively");
+    }
 }
