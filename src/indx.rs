@@ -38,13 +38,31 @@ struct TagDef {
 
 /// Encode a label string for use in an INDX entry.
 ///
-/// Labels are stored as UTF-8 bytes. This matches the MOBI text encoding
-/// (65001 UTF-8) and lets Kindle's dictionary firmware render non-ASCII
-/// headwords (Greek, etc.) correctly in the lookup popup heading. The
-/// previous UTF-16BE encoding rendered as garbage on-device because the
-/// INDX reader interprets label bytes in the primary text encoding.
+/// ASCII-only labels are stored as plain bytes. Labels with any non-ASCII
+/// characters are encoded as UTF-16BE.
 pub fn encode_indx_label(text: &str) -> Vec<u8> {
-    text.as_bytes().to_vec()
+    if text.chars().all(|c| (c as u32) < 128) {
+        text.as_bytes().to_vec()
+    } else {
+        let mut result = Vec::new();
+        for c in text.chars() {
+            let cp = c as u32;
+            if cp <= 0xFFFF {
+                result.push((cp >> 8) as u8);
+                result.push((cp & 0xFF) as u8);
+            } else {
+                // Surrogate pair for supplementary characters
+                let adjusted = cp - 0x10000;
+                let high = 0xD800 + (adjusted >> 10);
+                let low = 0xDC00 + (adjusted & 0x3FF);
+                result.push((high >> 8) as u8);
+                result.push((high & 0xFF) as u8);
+                result.push((low >> 8) as u8);
+                result.push((low & 0xFF) as u8);
+            }
+        }
+        result
+    }
 }
 
 /// Build all INDX records for the orthographic (dictionary) index.
@@ -346,12 +364,7 @@ fn build_indx_primary(
     put32(&mut header, 16, 2);
     // offset 20: IDXT offset (set below)
     put32(&mut header, 24, num_data_records as u32); // routing entry count
-    // Index encoding = 65001 (UTF-8). Previously 0xFDEA (ORDT mode), but
-    // the embedded ordt_greek.bin blob only provides 7 ORDT2 entries
-    // which cannot map real Greek codepoints, so Kindle rendered labels
-    // as tofu in the lookup popup. UTF-8 matches the main text encoding
-    // and lets Kindle decode label bytes directly.
-    put32(&mut header, 28, 65001);
+    put32(&mut header, 28, 0xFDEA); // index encoding
     put32(&mut header, 32, 8); // index language
     put32(&mut header, 36, total_entries as u32); // total entry count
 
@@ -449,16 +462,9 @@ fn build_indx_primary(
             }
         }
 
-        // ORDT/ORDT2 pointers.
-        // ocnt = 0 and oentries = 0 disable ORDT2 label decoding so the
-        // INDX reader uses the primary text encoding (UTF-8) to decode
-        // label bytes. The embedded ORDT blob only provides a 7-entry
-        // ORDT2 which cannot cover Greek codepoints, and leaving the
-        // pointers wired up made Kindle render labels as tofu in the
-        // lookup popup. The SPL sort tables below are still referenced
-        // for collation, which is a separate concern.
-        put32(&mut record, 164, 0); // ocnt = 0 (no ORDT label decoding)
-        put32(&mut record, 168, 0); // oentries = 0 (no ORDT2 lookup)
+        // ORDT/ORDT2 pointers
+        put32(&mut record, 164, 0); // ocnt = 0 (UTF-16BE mode)
+        put32(&mut record, 168, 7); // oentries
         put32(&mut record, 172, ordt1_abs as u32); // ordt1 offset
         put32(&mut record, 176, ordt2_abs as u32); // ordt2 offset
         put32(&mut record, 184, 7); // name_len ("default")
@@ -498,40 +504,4 @@ fn build_indx_primary(
 fn put32(buf: &mut [u8], offset: usize, value: u32) {
     let bytes = value.to_be_bytes();
     buf[offset..offset + 4].copy_from_slice(&bytes);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn encode_indx_label_ascii_is_utf8() {
-        assert_eq!(encode_indx_label("hello"), b"hello".to_vec());
-    }
-
-    #[test]
-    fn encode_indx_label_greek_is_utf8_bytes() {
-        // "αλλαγή" in UTF-8 is the 12-byte sequence below. The pre-v0.7.9
-        // encoder would have produced 12 UTF-16BE bytes (2 per codepoint),
-        // which Kindle decoded through an ORDT2 ordering table and
-        // rendered as tofu in the lookup popup. UTF-8 matches the primary
-        // text encoding declared in the INDX header (65001) and renders
-        // correctly.
-        let encoded = encode_indx_label("αλλαγή");
-        assert_eq!(
-            encoded,
-            vec![0xCE, 0xB1, 0xCE, 0xBB, 0xCE, 0xBB, 0xCE, 0xB1, 0xCE, 0xB3, 0xCE, 0xAE]
-        );
-        assert_eq!(String::from_utf8(encoded).unwrap(), "αλλαγή");
-    }
-
-    #[test]
-    fn encode_indx_label_supplementary_plane() {
-        // Emoji (supplementary plane) must encode as 4 UTF-8 bytes, not
-        // UTF-16 surrogate pairs. Dictionary headwords will not usually
-        // contain emoji, but the encoder should not silently corrupt
-        // supplementary-plane codepoints if they ever appear.
-        let encoded = encode_indx_label("\u{1F600}");
-        assert_eq!(encoded, vec![0xF0, 0x9F, 0x98, 0x80]);
-    }
 }
