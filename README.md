@@ -23,6 +23,7 @@ Pre-built binaries for Mac (Apple Silicon, Intel), Linux (x86_64), and Windows (
 - **Books**: EPUB or OPF input, embedded images, KF8-only (.azw3) by default with legacy dual-format (MOBI7+KF8) available via `--legacy-mobi`, HD image container, fixed-layout support
 - **Comics**: Image folder, CBZ, CBR, or EPUB input, device-specific resizing, spread splitting, margin cropping, auto-contrast, moire correction for color e-ink, manga RTL, webtoon with overlap fallback, Panel View, KF8-only (.azw3) by default, metadata overrides
 - **EPUB repair**: `kindling repair` applies a small, byte-stable, idempotent set of structural fixes to an EPUB for cleaner Send-to-Kindle ingest (see [Repair](#repair))
+- **Metadata rewrite**: `kindling rewrite-metadata` updates title, authors, publisher, description, language, ISBN, ASIN, publication date, tags, series, and cover image on an existing MOBI/AZW3 in place without rebuilding from source. Byte-stable on no-op, idempotent, refuses DRM files (see [Rewrite metadata](#rewrite-metadata))
 - Drop-in *kindlegen* replacement (same CLI flags, same status codes)
 - Kindle Previewer compatible (EPUB source embedded by default)
 - Comprehensive test suite with CI on every push (see [Testing](#testing))
@@ -159,6 +160,22 @@ kindling-cli repair input.epub --report-json      # full report as JSON on stdou
 The pass is **byte-stable on clean input**: if no fixes are needed, the output is a `fs::copy` of the input with identical bytes, so content-hash-based book identity stays the same. It is **idempotent**: running it twice produces the same result as running it once. It **rejects DRM-protected EPUBs** (`META-INF/encryption.xml` or `META-INF/rights.xml`) with exit code 1 and does not touch them; no DRM removal code is linked or referenced.
 
 `kindling build` and `kindling validate` do not automatically invoke repair; it is a separate explicit pass. This lets downstream consumers that need reliable EPUB preprocessing run `repair` in their ingest pipeline without affecting the build or validation paths.
+
+### Rewrite metadata
+
+```bash
+kindling-cli rewrite-metadata input.azw3 -o output.azw3 --title "New Title" --author Alice --author Bob
+kindling-cli rewrite-metadata input.mobi --publisher "ACME" --language en --isbn 9780000000000
+kindling-cli rewrite-metadata input.azw3 --cover new_cover.jpg
+kindling-cli rewrite-metadata input.azw3 --title "New Title" --dry-run
+kindling-cli rewrite-metadata input.azw3 --title "New Title" --report-json
+```
+
+`kindling rewrite-metadata` updates the EXTH metadata records (and optionally the cover image record) of an existing MOBI/AZW3 file without re-running the EPUB/OPF build pipeline. Supported fields: title (EXTH 503 plus full_name), multi-value author (100), publisher (101), description (103), language (524), ISBN (104), ASIN (504), publication date (106), multi-value subject/tag (105), series name (112), series index (113), and the cover image bytes. Book content records (text, non-cover images, indices, INDX/FLIS/FCIS) are never touched. Multi-value flags like `--author` and `--subject` accept repeats to accumulate values.
+
+The pass is **byte-stable on no-op**: if the requested updates match what is already in the file, or if no field flags are passed at all, the output is a `fs::copy` of the input with identical bytes. Downstream library managers that use content-hash identity for books can therefore call `rewrite-metadata` unconditionally when a user opens the metadata editor and closes it without changes. It is **idempotent**: running with the same updates a second time reports zero changes and produces a byte-identical output. It **rejects DRM-protected files** (PalmDOC encryption byte set, or EXTH 401/402/403 present) with exit code 1 and does not touch them; no DRM removal code is linked or referenced.
+
+Unknown EXTH records in the input are preserved unchanged, so tool-specific metadata written by Calibre or kindlegen survives the rewrite pass.
 
 ### Build-time self-check
 

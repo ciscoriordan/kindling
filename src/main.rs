@@ -8,7 +8,9 @@
 ///     kindling input.epub
 ///     kindling input.opf -o output.mobi -dont_append_source -verbose
 
-use kindling::{comic, epub, kdp_rules, mobi, mobi_check, opf, repair, validate};
+use kindling::{
+    comic, epub, kdp_rules, mobi, mobi_check, mobi_rewrite, opf, repair, validate,
+};
 
 use std::path::PathBuf;
 use std::process;
@@ -273,6 +275,83 @@ enum Commands {
         /// Detect fixes without writing an output file.
         #[arg(long)]
         dry_run: bool,
+    },
+
+    /// Rewrite MOBI/AZW3 metadata in place without rebuilding from source.
+    ///
+    /// Takes an existing MOBI or AZW3 file and replaces the EXTH metadata
+    /// records (title, authors, publisher, description, language, ISBN,
+    /// ASIN, publication date, tags, series, cover image) according to
+    /// the provided flags. Book content records (text, non-cover images,
+    /// indices) are never touched. Byte-stable on no-op, idempotent, and
+    /// refuses DRM-encrypted files.
+    #[command(version)]
+    RewriteMetadata {
+        /// Input MOBI or AZW3 file.
+        input: PathBuf,
+
+        /// Output MOBI/AZW3 file. Defaults to `<stem>-meta.<ext>` next to
+        /// the input.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Emit the full RewriteReport as JSON on stdout.
+        #[arg(long)]
+        report_json: bool,
+
+        /// Scan and plan changes without writing an output file.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// New title (EXTH 503 plus full_name).
+        #[arg(long)]
+        title: Option<String>,
+
+        /// New author. Pass multiple times for multiple creators.
+        #[arg(long = "author", action = clap::ArgAction::Append)]
+        authors: Vec<String>,
+
+        /// New publisher (EXTH 101).
+        #[arg(long)]
+        publisher: Option<String>,
+
+        /// New description (EXTH 103).
+        #[arg(long)]
+        description: Option<String>,
+
+        /// New primary writing language, BCP47 code (EXTH 524).
+        #[arg(long)]
+        language: Option<String>,
+
+        /// New ISBN (EXTH 104).
+        #[arg(long)]
+        isbn: Option<String>,
+
+        /// New ASIN (EXTH 504).
+        #[arg(long)]
+        asin: Option<String>,
+
+        /// New publication date (EXTH 106).
+        #[arg(long = "publication-date")]
+        publication_date: Option<String>,
+
+        /// New subject/tag. Pass multiple times for multiple tags.
+        #[arg(long = "subject", action = clap::ArgAction::Append)]
+        subjects: Vec<String>,
+
+        /// New series name (EXTH 112).
+        #[arg(long)]
+        series: Option<String>,
+
+        /// New series index (EXTH 113).
+        #[arg(long = "series-index")]
+        series_index: Option<String>,
+
+        /// Path to a new cover image (JPEG, PNG, or GIF). Replaces the
+        /// existing cover image record in place. The input file must
+        /// already have a cover.
+        #[arg(long)]
+        cover: Option<PathBuf>,
     },
 }
 
@@ -764,6 +843,43 @@ fn main() {
             } => {
                 do_repair(&input, output.as_ref(), report_json, dry_run);
             }
+            Commands::RewriteMetadata {
+                input,
+                output,
+                report_json,
+                dry_run,
+                title,
+                authors,
+                publisher,
+                description,
+                language,
+                isbn,
+                asin,
+                publication_date,
+                subjects,
+                series,
+                series_index,
+                cover,
+            } => {
+                do_rewrite_metadata(
+                    &input,
+                    output.as_ref(),
+                    report_json,
+                    dry_run,
+                    title,
+                    authors,
+                    publisher,
+                    description,
+                    language,
+                    isbn,
+                    asin,
+                    publication_date,
+                    subjects,
+                    series,
+                    series_index,
+                    cover.as_ref(),
+                );
+            }
         }
     }
 }
@@ -873,4 +989,270 @@ fn do_repair(input: &PathBuf, output: Option<&PathBuf>, report_json: bool, dry_r
             eprintln!("Output written to {}", output_path.display());
         }
     }
+}
+
+/// Run the in-place MOBI/AZW3 metadata rewrite and print the result.
+///
+/// `input` is a MOBI or AZW3 file whose EXTH metadata records (and
+/// optionally the cover image record) are updated according to the
+/// provided flags. When `output` is `None`, the rewritten copy is written
+/// to `<stem>-meta.<ext>` in the same directory.
+///
+/// With `report_json`, the full [`mobi_rewrite::RewriteReport`] is emitted
+/// as JSON on stdout. Otherwise a human-readable summary is written to
+/// stderr listing each EXTH change and a final count.
+///
+/// With `dry_run`, the input is only scanned: no output file is written
+/// and the summary is prefixed with "(dry-run)". Changes still reported.
+///
+/// Exit codes:
+///   * 0 on success, even if no fields were actually changed. Callers
+///     wanting to know whether the file was already current should check
+///     `no_op` in the report or JSON.
+///   * 1 on any `RewriteError` (including DRM rejection, non-MOBI input,
+///     or a cover update on a file with no existing cover record).
+#[allow(clippy::too_many_arguments)]
+fn do_rewrite_metadata(
+    input: &PathBuf,
+    output: Option<&PathBuf>,
+    report_json: bool,
+    dry_run: bool,
+    title: Option<String>,
+    authors: Vec<String>,
+    publisher: Option<String>,
+    description: Option<String>,
+    language: Option<String>,
+    isbn: Option<String>,
+    asin: Option<String>,
+    publication_date: Option<String>,
+    subjects: Vec<String>,
+    series: Option<String>,
+    series_index: Option<String>,
+    cover: Option<&PathBuf>,
+) {
+    let default_output;
+    let output_path: PathBuf = if dry_run {
+        input.clone()
+    } else if let Some(p) = output {
+        p.clone()
+    } else {
+        let stem = input
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "rewritten".to_string());
+        let ext = input
+            .extension()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "mobi".to_string());
+        let parent = input.parent().unwrap_or(std::path::Path::new("."));
+        default_output = parent.join(format!("{}-meta.{}", stem, ext));
+        default_output
+    };
+
+    // Load cover image bytes up front so any I/O error is reported before
+    // we touch the MOBI file.
+    let cover_bytes = match cover {
+        Some(p) => match std::fs::read(p) {
+            Ok(b) => Some(b),
+            Err(e) => {
+                eprintln!("Error: could not read cover image {}: {}", p.display(), e);
+                process::exit(1);
+            }
+        },
+        None => None,
+    };
+
+    let updates = mobi_rewrite::MetadataUpdates {
+        title,
+        authors: if authors.is_empty() { None } else { Some(authors) },
+        publisher,
+        description,
+        language,
+        isbn,
+        asin,
+        publication_date,
+        subjects: if subjects.is_empty() {
+            None
+        } else {
+            Some(subjects)
+        },
+        series,
+        series_index,
+        cover_image: cover_bytes,
+    };
+
+    // Dry run: plan changes against a scratch output then discard. We do
+    // this by writing into a temp file and removing it; the rewrite
+    // function's byte-stable no-op path handles the case where nothing
+    // actually changed.
+    let report_result = if dry_run {
+        let scratch = std::env::temp_dir().join(format!(
+            "kindling_rewrite_metadata_dryrun_{}.bin",
+            std::process::id()
+        ));
+        let r = mobi_rewrite::rewrite_mobi_metadata(input, &scratch, &updates);
+        let _ = std::fs::remove_file(&scratch);
+        r
+    } else {
+        mobi_rewrite::rewrite_mobi_metadata(input, &output_path, &updates)
+    };
+
+    let report = match report_result {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            process::exit(1);
+        }
+    };
+
+    if report_json {
+        println!("{}", rewrite_report_to_json(&report));
+    } else {
+        let prefix = if dry_run { "(dry-run) " } else { "" };
+        if report.no_op {
+            eprintln!("{}No metadata changes needed for {}", prefix, input.display());
+        } else {
+            for change in &report.changes {
+                eprintln!("{}{}", prefix, describe_exth_change(change));
+            }
+            if report.cover_updated {
+                eprintln!("{}Replaced cover image record", prefix);
+            }
+            let n = report.changes.len() + if report.cover_updated { 1 } else { 0 };
+            eprintln!(
+                "{}Rewrote {} metadata field{} in {}",
+                prefix,
+                n,
+                if n == 1 { "" } else { "s" },
+                input.display()
+            );
+        }
+        if !dry_run {
+            eprintln!("Output written to {}", output_path.display());
+        }
+    }
+}
+
+fn describe_exth_change(change: &mobi_rewrite::ExthChange) -> String {
+    match change {
+        mobi_rewrite::ExthChange::Added { exth_type, value } => {
+            format!("added EXTH {} ({})", exth_type, preview_bytes(value))
+        }
+        mobi_rewrite::ExthChange::Replaced {
+            exth_type,
+            old_value,
+            new_value,
+        } => format!(
+            "replaced EXTH {} ({} -> {})",
+            exth_type,
+            preview_bytes(old_value),
+            preview_bytes(new_value)
+        ),
+        mobi_rewrite::ExthChange::Removed { exth_type, old_value } => {
+            format!("removed EXTH {} ({})", exth_type, preview_bytes(old_value))
+        }
+    }
+}
+
+fn preview_bytes(b: &[u8]) -> String {
+    const MAX: usize = 80;
+    match std::str::from_utf8(b) {
+        Ok(s) if s.chars().all(|c| !c.is_control() || c == '\n' || c == '\t') => {
+            if s.len() <= MAX {
+                format!("{:?}", s)
+            } else {
+                format!("{:?}...", &s[..MAX])
+            }
+        }
+        _ => format!("{} bytes", b.len()),
+    }
+}
+
+/// Serialize a [`mobi_rewrite::RewriteReport`] to a JSON string. Implemented
+/// by hand so the module does not need a serde dependency.
+fn rewrite_report_to_json(report: &mobi_rewrite::RewriteReport) -> String {
+    let mut out = String::new();
+    out.push('{');
+    out.push_str(&format!(
+        "\"input_path\":{},",
+        json_string(&report.input_path.display().to_string())
+    ));
+    out.push_str(&format!(
+        "\"output_path\":{},",
+        json_string(&report.output_path.display().to_string())
+    ));
+    out.push_str(&format!("\"no_op\":{},", report.no_op));
+    out.push_str(&format!("\"cover_updated\":{},", report.cover_updated));
+    out.push_str("\"changes\":[");
+    for (i, change) in report.changes.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&exth_change_to_json(change));
+    }
+    out.push(']');
+    out.push('}');
+    out
+}
+
+fn exth_change_to_json(change: &mobi_rewrite::ExthChange) -> String {
+    match change {
+        mobi_rewrite::ExthChange::Added { exth_type, value } => format!(
+            "{{\"kind\":\"added\",\"exth_type\":{},\"value\":{}}}",
+            exth_type,
+            json_bytes(value)
+        ),
+        mobi_rewrite::ExthChange::Replaced {
+            exth_type,
+            old_value,
+            new_value,
+        } => format!(
+            "{{\"kind\":\"replaced\",\"exth_type\":{},\"old_value\":{},\"new_value\":{}}}",
+            exth_type,
+            json_bytes(old_value),
+            json_bytes(new_value)
+        ),
+        mobi_rewrite::ExthChange::Removed {
+            exth_type,
+            old_value,
+        } => format!(
+            "{{\"kind\":\"removed\",\"exth_type\":{},\"old_value\":{}}}",
+            exth_type,
+            json_bytes(old_value)
+        ),
+    }
+}
+
+fn json_bytes(b: &[u8]) -> String {
+    match std::str::from_utf8(b) {
+        Ok(s) => json_string(s),
+        Err(_) => {
+            // Fall back to a base64-free hex-ish notation so the JSON stays
+            // self-contained without adding a base64 dependency.
+            let mut out = String::from("{\"hex\":\"");
+            for byte in b {
+                out.push_str(&format!("{:02x}", byte));
+            }
+            out.push_str("\"}");
+            out
+        }
+    }
+}
+
+fn json_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
