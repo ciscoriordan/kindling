@@ -221,3 +221,202 @@ fn validate_book_with_warnings_strict_exits_one() {
         dump(&out)
     );
 }
+
+// ---------------------------------------------------------------------------
+// Default output extension: KF8-only (.azw3) for non-dict build,
+// legacy MOBI7+KF8 (.mobi) for dict build, KF8-only (.azw3) for comics.
+//
+// These tests run the actual `kindling-cli build` / `kindling-cli comic`
+// binary with no `-o` flag and assert the default output path that
+// kindling picks.
+// ---------------------------------------------------------------------------
+
+/// Run `kindling-cli build <args...>` and return the full `Output`.
+fn run_build(args: &[&str]) -> Output {
+    Command::new(kindling_bin())
+        .arg("build")
+        .args(args)
+        .output()
+        .expect("failed to spawn kindling-cli build")
+}
+
+/// Run `kindling-cli comic <args...>` and return the full `Output`.
+fn run_comic(args: &[&str]) -> Output {
+    Command::new(kindling_bin())
+        .arg("comic")
+        .args(args)
+        .output()
+        .expect("failed to spawn kindling-cli comic")
+}
+
+/// Tiny RAII temp dir that creates a unique subdirectory under
+/// `std::env::temp_dir()` and removes it on drop. The repo intentionally
+/// does not pull in the `tempfile` crate, so this is a minimal stand-in
+/// just for CLI integration tests.
+struct TempDir {
+    path: PathBuf,
+}
+
+impl TempDir {
+    fn new(label: &str) -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "kindling-cli-{}-{}-{}-{}",
+            label,
+            std::process::id(),
+            nanos,
+            n
+        ));
+        std::fs::create_dir_all(&path).expect("create tempdir");
+        TempDir { path }
+    }
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+/// Copy a fixture directory into a fresh temp dir so tests do not litter
+/// the source tree with generated `.azw3` / `.mobi` artifacts. Returns the
+/// path to the copied OPF inside the temp dir, plus the TempDir guard.
+fn stage_fixture(name: &str, opf_name: &str) -> (TempDir, PathBuf) {
+    let src = fixture_dir(name);
+    let tmp = TempDir::new(name);
+    for entry in std::fs::read_dir(&src).expect("read fixture dir") {
+        let entry = entry.expect("dir entry");
+        let src_path = entry.path();
+        if src_path.is_file() {
+            let dst = tmp.path().join(entry.file_name());
+            std::fs::copy(&src_path, &dst).expect("copy fixture file");
+        }
+    }
+    let opf = tmp.path().join(opf_name);
+    (tmp, opf)
+}
+
+#[test]
+fn build_non_dict_defaults_to_azw3() {
+    // `clean_book` has no DictionaryInLanguage metadata, so is_dictionary()
+    // is false and kindling should default to KF8-only `.azw3`.
+    let (tmp, opf) = stage_fixture("clean_book", "clean_book.opf");
+    let out = run_build(&[opf.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "build clean_book should succeed\n{}",
+        dump(&out)
+    );
+
+    let expected = tmp.path().join("clean_book.azw3");
+    let unexpected = tmp.path().join("clean_book.mobi");
+    assert!(
+        expected.exists(),
+        "expected default output at {:?}\n{}",
+        expected,
+        dump(&out)
+    );
+    assert!(
+        !unexpected.exists(),
+        "did not expect legacy .mobi at {:?}\n{}",
+        unexpected,
+        dump(&out)
+    );
+}
+
+#[test]
+fn build_dict_defaults_to_mobi() {
+    // `clean_dict` has DictionaryInLanguage set, so is_dictionary() is true
+    // and kindling must keep defaulting to dual-format MOBI7+KF8 `.mobi`
+    // because Kindle's lookup popup requires the MOBI7 INDX format.
+    let (tmp, opf) = stage_fixture("clean_dict", "clean_dict.opf");
+    let out = run_build(&[opf.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "build clean_dict should succeed\n{}",
+        dump(&out)
+    );
+
+    let expected = tmp.path().join("clean_dict.mobi");
+    let unexpected = tmp.path().join("clean_dict.azw3");
+    assert!(
+        expected.exists(),
+        "expected dict default output at {:?}\n{}",
+        expected,
+        dump(&out)
+    );
+    assert!(
+        !unexpected.exists(),
+        "did not expect KF8-only .azw3 for dict at {:?}\n{}",
+        unexpected,
+        dump(&out)
+    );
+}
+
+#[test]
+fn build_non_dict_legacy_mobi_flag_produces_mobi() {
+    // `--legacy-mobi` is the escape hatch: even on a non-dict book, this
+    // should produce dual-format MOBI7+KF8 `.mobi` and pick the `.mobi`
+    // default extension.
+    let (tmp, opf) = stage_fixture("clean_book", "clean_book.opf");
+    let out = run_build(&["--legacy-mobi", opf.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "build clean_book --legacy-mobi should succeed\n{}",
+        dump(&out)
+    );
+
+    let expected = tmp.path().join("clean_book.mobi");
+    assert!(
+        expected.exists(),
+        "expected legacy dual-format output at {:?}\n{}",
+        expected,
+        dump(&out)
+    );
+}
+
+#[test]
+fn comic_defaults_to_azw3_from_cbr_fixture() {
+    // The repo ships a small CBR fixture at tests/fixtures/test_comic.cbr.
+    // Copy it into a temp dir and build with no -o to assert the default
+    // extension is `.azw3`.
+    let src = fixture_dir("test_comic.cbr");
+    if !src.exists() {
+        eprintln!("skipping comic default-extension test: no CBR fixture");
+        return;
+    }
+    let tmp = TempDir::new("test_comic");
+    let cbr = tmp.path().join("test_comic.cbr");
+    std::fs::copy(&src, &cbr).expect("copy cbr fixture");
+
+    let out = run_comic(&[cbr.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "comic build should succeed\n{}",
+        dump(&out)
+    );
+
+    let expected = tmp.path().join("test_comic.azw3");
+    let unexpected = tmp.path().join("test_comic.mobi");
+    assert!(
+        expected.exists(),
+        "expected comic default output at {:?}\n{}",
+        expected,
+        dump(&out)
+    );
+    assert!(
+        !unexpected.exists(),
+        "did not expect legacy .mobi at {:?}\n{}",
+        unexpected,
+        dump(&out)
+    );
+}

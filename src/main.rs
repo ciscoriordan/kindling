@@ -58,10 +58,19 @@ enum Commands {
         #[arg(long)]
         creator_tag: bool,
 
-        /// Output KF8-only format (.azw3) instead of dual MOBI7+KF8 (.mobi).
-        /// KF8-only files are smaller and handled better by Calibre.
-        /// Dual format remains available for maximum compatibility with older Kindles.
+        /// Build legacy dual-format MOBI7+KF8 (.mobi) instead of the modern
+        /// KF8-only (.azw3) default. Only useful for pre-2012 Kindles; modern
+        /// devices prefer KF8-only output. Dictionaries always use legacy
+        /// MOBI7 because Kindle's lookup popup requires the MOBI7 INDX format,
+        /// so this flag is a no-op on dictionary builds.
         #[arg(long)]
+        legacy_mobi: bool,
+
+        /// Deprecated no-op. KF8-only (.azw3) is now the default for
+        /// non-dictionary builds; pass `--legacy-mobi` to opt back into the
+        /// old dual MOBI7+KF8 behavior. Kept so existing scripts that pass
+        /// `--kf8-only` keep working.
+        #[arg(long, hide = true)]
         kf8_only: bool,
 
         /// Enforce Kindle publishing limits: split HTML chunks >30MB at entry/paragraph
@@ -196,10 +205,17 @@ enum Commands {
         #[arg(long)]
         cover_fill: bool,
 
-        /// Output KF8-only format (.azw3) instead of dual MOBI7+KF8 (.mobi).
-        /// KF8-only files are smaller and handled better by Calibre.
-        /// Dual format remains available for maximum compatibility with older Kindles.
+        /// Build legacy dual-format MOBI7+KF8 (.mobi) instead of the modern
+        /// KF8-only (.azw3) default. Only useful for pre-2012 Kindles; modern
+        /// devices prefer KF8-only output.
         #[arg(long)]
+        legacy_mobi: bool,
+
+        /// Deprecated no-op. KF8-only (.azw3) is now the default for comics;
+        /// pass `--legacy-mobi` to opt back into the old dual MOBI7+KF8
+        /// behavior. Kept so existing scripts that pass `--kf8-only` keep
+        /// working.
+        #[arg(long, hide = true)]
         kf8_only: bool,
 
         /// Enforce Kindle publishing limits: warn if >300 HTML files.
@@ -297,10 +313,11 @@ fn parse_kindlegen_args() -> (PathBuf, Option<String>, bool, bool) {
 
 /// Resolve the output path for a build.
 ///
-/// If an explicit output is given, use it. For kindlegen compat mode, the -o flag
-/// specifies just a filename (output goes next to input). For the build subcommand,
-/// -o is a full path. If no output is specified, replace the input extension with
-/// .azw3 (KF8-only) or .mobi (dual format).
+/// If an explicit output is given, use it verbatim (the user's extension
+/// choice always wins, even if it does not match the actual container
+/// format). If no output is specified, derive a default filename by
+/// replacing the input extension with `.azw3` for KF8-only builds or
+/// `.mobi` for dual-format (legacy MOBI7+KF8 and dictionary) builds.
 fn resolve_output_path(input: &PathBuf, output: Option<PathBuf>, kf8_only: bool) -> PathBuf {
     match output {
         Some(p) => p,
@@ -308,6 +325,38 @@ fn resolve_output_path(input: &PathBuf, output: Option<PathBuf>, kf8_only: bool)
             let ext = if kf8_only { "azw3" } else { "mobi" };
             input.with_extension(ext)
         }
+    }
+}
+
+/// Best-effort detection of whether the build input describes a dictionary.
+///
+/// For `.opf` inputs this parses the OPF directly and consults
+/// `OPFData::is_dictionary()`. For `.epub` inputs this extracts the archive
+/// into a temporary directory, parses the inner OPF, and cleans up. Any
+/// error (parse failure, missing metadata) is treated as "not a dictionary",
+/// which is the safer default since the worst case is a non-dictionary book
+/// accidentally built as dual-format MOBI7+KF8 instead of KF8-only.
+fn detect_is_dictionary(input: &std::path::Path) -> bool {
+    let is_epub = input
+        .extension()
+        .map(|ext| ext.eq_ignore_ascii_case("epub"))
+        .unwrap_or(false);
+
+    if is_epub {
+        match epub::extract_epub(input) {
+            Ok((temp_dir, opf_path)) => {
+                let result = opf::OPFData::parse(&opf_path)
+                    .map(|data| data.is_dictionary())
+                    .unwrap_or(false);
+                epub::cleanup_temp_dir(&temp_dir);
+                result
+            }
+            Err(_) => false,
+        }
+    } else {
+        opf::OPFData::parse(input)
+            .map(|data| data.is_dictionary())
+            .unwrap_or(false)
     }
 }
 
@@ -476,6 +525,7 @@ fn main() {
                 include_cmet,
                 no_hd_images,
                 creator_tag,
+                legacy_mobi,
                 kf8_only,
                 kindle_limits,
                 no_kindle_limits,
@@ -498,8 +548,48 @@ fn main() {
                     // books only warn, not split)
                     true
                 };
-                let output_path = resolve_output_path(&input, output, kf8_only);
-                do_build(&input, &output_path, no_compress, headwords_only, !no_embed_source, include_cmet, no_hd_images, creator_tag, kf8_only, effective_kindle_limits, no_validate, !no_self_check);
+
+                // Deprecated: `--kf8-only` is now the default for non-dict
+                // builds and a no-op for dicts. Note this loudly so users
+                // update their scripts, but do not fail.
+                if kf8_only {
+                    eprintln!(
+                        "Note: --kf8-only is now the default for non-dictionary \
+                         builds and has no effect. Dictionaries still build as \
+                         dual-format MOBI7+KF8 because Kindle's lookup popup \
+                         requires the MOBI7 INDX format."
+                    );
+                }
+
+                // Detect dictionary vs non-dictionary up front so we can flip
+                // the kf8_only default correctly and pick the right output
+                // extension when the user has not passed -o.
+                let is_dictionary = detect_is_dictionary(&input);
+
+                // Dictionaries always build as dual-format MOBI7+KF8.
+                // Non-dictionaries default to KF8-only (.azw3); the user can
+                // opt back into legacy dual-format via --legacy-mobi.
+                let effective_kf8_only = if is_dictionary {
+                    if legacy_mobi {
+                        eprintln!(
+                            "Note: --legacy-mobi is implicit for dictionary \
+                             builds (dictionaries always use MOBI7 INDX)."
+                        );
+                    }
+                    false
+                } else if legacy_mobi {
+                    eprintln!(
+                        "Building dual-format MOBI7+KF8 (.mobi). Modern Kindles \
+                         prefer KF8-only .azw3. Drop --legacy-mobi to use the \
+                         modern default."
+                    );
+                    false
+                } else {
+                    true
+                };
+
+                let output_path = resolve_output_path(&input, output, effective_kf8_only);
+                do_build(&input, &output_path, no_compress, headwords_only, !no_embed_source, include_cmet, no_hd_images, creator_tag, effective_kf8_only, effective_kindle_limits, no_validate, !no_self_check);
             }
             Commands::Comic {
                 input,
@@ -523,6 +613,7 @@ fn main() {
                 cover,
                 cover_fill,
                 panel_reading_order,
+                legacy_mobi,
                 kf8_only,
                 kindle_limits,
                 no_kindle_limits,
@@ -536,10 +627,34 @@ fn main() {
                     }
                 };
 
+                // Deprecated: `--kf8-only` is now the default for comic
+                // builds. Keep the flag as a hidden no-op so existing scripts
+                // keep working, but nudge users toward dropping it.
+                if kf8_only {
+                    eprintln!(
+                        "Note: --kf8-only is now the default for comic builds \
+                         and has no effect. Pass --legacy-mobi for the old \
+                         dual MOBI7+KF8 behavior."
+                    );
+                }
+
+                // Comics default to KF8-only (.azw3). --legacy-mobi opts back
+                // into dual-format MOBI7+KF8 for pre-2012 Kindles.
+                let effective_kf8_only = if legacy_mobi {
+                    eprintln!(
+                        "Building dual-format MOBI7+KF8 (.mobi). Modern Kindles \
+                         prefer KF8-only .azw3. Drop --legacy-mobi to use the \
+                         modern default."
+                    );
+                    false
+                } else {
+                    true
+                };
+
                 let output_path = match output {
                     Some(p) => p,
                     None => {
-                        let ext = if kf8_only { "azw3" } else { "mobi" };
+                        let ext = if effective_kf8_only { "azw3" } else { "mobi" };
                         input.with_extension(ext)
                     }
                 };
@@ -598,13 +713,13 @@ fn main() {
                     panel_reading_order,
                     cover_fill,
                     kindle_limits: effective_kindle_limits,
-                    kf8_only,
+                    kf8_only: effective_kf8_only,
                     self_check: !no_self_check,
                 };
 
                 match comic::build_comic_with_options(&input, &output_path, &profile, &options) {
                     Ok(()) => {
-                        let format_name = if kf8_only { "AZW3" } else { "MOBI" };
+                        let format_name = if effective_kf8_only { "AZW3" } else { "MOBI" };
                         eprintln!("Comic {} built successfully: {}", format_name, output_path.display());
                     }
                     Err(e) => {

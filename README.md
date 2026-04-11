@@ -20,8 +20,8 @@ Pre-built binaries for Mac (Apple Silicon, Intel), Linux (x86_64), and Windows (
 ## Features
 
 - **Dictionaries**: Full orth index with headword + inflection lookup, UTF-8 labels (non-ASCII headwords like Greek render correctly in the lookup popup), SPL sort tables, fontsignature
-- **Books**: EPUB or OPF input, embedded images, KF8 dual-format (KF7+KF8) or KF8-only (.azw3), HD image container, fixed-layout support
-- **Comics**: Image folder, CBZ, CBR, or EPUB input, device-specific resizing, spread splitting, margin cropping, auto-contrast, moire correction for color e-ink, manga RTL, webtoon with overlap fallback, Panel View, KF8-only (.azw3), metadata overrides
+- **Books**: EPUB or OPF input, embedded images, KF8-only (.azw3) by default with legacy dual-format (MOBI7+KF8) available via `--legacy-mobi`, HD image container, fixed-layout support
+- **Comics**: Image folder, CBZ, CBR, or EPUB input, device-specific resizing, spread splitting, margin cropping, auto-contrast, moire correction for color e-ink, manga RTL, webtoon with overlap fallback, Panel View, KF8-only (.azw3) by default, metadata overrides
 - Drop-in *kindlegen* replacement (same CLI flags, same status codes)
 - Kindle Previewer compatible (EPUB source embedded by default)
 - Comprehensive test suite with CI on every push (see [Testing](#testing))
@@ -65,37 +65,38 @@ Every `build` also runs the Kindle Publishing Guidelines validator as an automat
 ### Books
 
 ```bash
-kindling-cli build input.epub -o output.mobi
-kindling-cli build input.epub                          # output next to input as input.mobi
-kindling-cli build input.epub --kf8-only               # KF8-only output (.azw3), smaller files
-kindling-cli build input.epub --kf8-only -o book.azw3  # explicit output path
+kindling-cli build input.epub                          # output next to input as input.azw3 (KF8-only)
+kindling-cli build input.epub -o output.azw3           # explicit output path
+kindling-cli build input.epub --legacy-mobi            # opt into legacy dual MOBI7+KF8 (.mobi)
 kindling-cli build input.epub --no-hd-images           # skip HD image container
 kindling-cli build input.epub --no-embed-source        # smaller file, but breaks Kindle Previewer
 kindling-cli build input.epub --kindle-limits          # warn about HTML files exceeding 30 MB
 kindling-cli build input.epub --no-validate            # skip KDP pre-flight validation
 ```
 
-Auto-detects dictionary vs book by checking for `<idx:entry>` tags. Book MOBIs include embedded images, HD image container (for high-DPI Kindle screens), and KF8 dual-format output. The original EPUB is embedded by default for Kindle Previewer compatibility (`--no-embed-source` to skip).
+Auto-detects dictionary vs book from the OPF's `DictionaryInLanguage` metadata. Book MOBIs include embedded images and an HD image container (for high-DPI Kindle screens). The original EPUB is embedded by default for Kindle Previewer compatibility (`--no-embed-source` to skip).
+
+Non-dictionary builds default to **KF8-only `.azw3`**, because Amazon deprecated MOBI for Send-to-Kindle in August 2022 and modern Kindles prefer KF8-only. Dictionaries continue to build as dual-format MOBI7+KF8 `.mobi`, because Kindle's lookup popup requires the MOBI7 INDX structure and KF8 has no equivalent. Pass `--legacy-mobi` on a book build to opt back into the old dual-format `.mobi` output for pre-2012 Kindles; the flag is a no-op on dictionary builds. If you pass `-o foo.mobi` or `-o foo.azw3` explicitly, kindling respects whatever extension you chose.
 
 Every `build` runs the Kindle Publishing Guidelines validator automatically before writing the MOBI. Findings are printed with severity, rule id, and file:line; the build is aborted on any error (warnings are advisory). Pass `--no-validate` to skip pre-flight entirely.
-
-The `--kf8-only` flag outputs KF8-only format with `.azw3` extension instead of the default dual MOBI7+KF8 `.mobi`. KF8-only files are smaller (no redundant MOBI7 section) and handled better by Calibre. Dual format remains the default for maximum compatibility with older Kindle devices. Available for both books and comics.
 
 ### Comics
 
 ```bash
-kindling-cli comic input.cbz -o output.mobi --device paperwhite
-kindling-cli comic input.cbr -o output.mobi                     # CBR (RAR) input
-kindling-cli comic manga.epub -o output.mobi --rtl              # EPUB comic/manga
-kindling-cli comic manga.cbz -o output.mobi --rtl              # manga (right-to-left)
-kindling-cli comic webtoon/ -o output.mobi --webtoon            # webtoon (vertical strip)
-kindling-cli comic input/ -o output.mobi --no-split --no-crop   # disable smart processing
+kindling-cli comic input.cbz --device paperwhite                # output next to input as input.azw3
+kindling-cli comic input.cbr -o output.azw3                     # CBR (RAR) input, explicit output
+kindling-cli comic manga.epub --rtl                             # EPUB comic/manga
+kindling-cli comic manga.cbz --rtl                              # manga (right-to-left)
+kindling-cli comic webtoon/ --webtoon                           # webtoon (vertical strip)
+kindling-cli comic input/ --no-split --no-crop                  # disable smart processing
 kindling-cli comic input.cbz --title "My Comic" --language ja   # metadata overrides
 kindling-cli comic input.cbz --doc-type ebok                    # appear under Books on Kindle
 kindling-cli comic input.cbz --cover 3                          # use page 3 as cover
-kindling-cli comic input.cbz --kf8-only                         # KF8-only output (.azw3), smaller files
+kindling-cli comic input.cbz --legacy-mobi                      # opt into legacy dual MOBI7+KF8 (.mobi)
 kindling-cli comic input.cbz --embed-source                     # embed EPUB source (off by default, see note below)
 ```
+
+Comics default to **KF8-only `.azw3`** for the same reason books do: Amazon deprecated MOBI for Send-to-Kindle in August 2022, and the legacy MOBI7 section in dual-format files is at best wasted bytes on modern Kindles. `--legacy-mobi` is the escape hatch for pre-2012 devices. If you pass `-o foo.mobi` explicitly, kindling respects your extension choice.
 
 Comic builds do **not** embed the intermediate EPUB as a SRCS record by default (this changed in v0.7.7). Embedding duplicates every page image as a zipped EPUB inside the MOBI, which for a large comic produces a single PalmDB record over 100 MB. Kindle devices index the resulting file but then fail to open it with "Unable to Open Item". Pass `--embed-source` only when you need to round-trip through Kindle Previewer.
 
@@ -113,7 +114,7 @@ Converts image folders, CBZ files, CBR files, and EPUB files to Kindle-optimized
 - **ComicInfo.xml**: Auto-reads metadata and manga direction from CBZ and CBR files
 - **Metadata overrides**: `--title`, `--author`, `--language`, `--cover` (page number or file path)
 - **Document type**: `--doc-type ebok` to appear under Books instead of Documents on Kindle (default: `pdoc`)
-- **KF8-only**: `--kf8-only` outputs `.azw3` with only the KF8 section (no MOBI7), producing smaller files handled better by Calibre
+- **KF8-only by default**: comics output `.azw3` with only the KF8 section (no MOBI7); pass `--legacy-mobi` for the old dual-format behavior on pre-2012 Kindles
 
 ### Validation
 
@@ -348,13 +349,13 @@ The suite currently contains around 280 tests spanning unit tests in `src/tests.
 - **PalmDB and MOBI structure**: PalmDB header fields, record count and offset tables, MOBI header (magic, version, encoding, language, capability marker 0x50 vs 0x4850), text record count, image record ranges, boundary records, FLIS/FCIS/EOF/SRCS records, trailing byte order
 - **Record 0 cross-checks**: MOBI header offsets are internally consistent with the PalmDOC header, EXTH block, full name, and image/INDX record indexes
 - **Dictionary output**: Orth INDX presence and structure, headword count, EXTH 531/532/547 language and `InMemory` records, EXTH 201 cover embedding, compressed and uncompressed roundtrips
-- **Book and KF8 output**: Dual KF7+KF8 format (BOUNDARY record, KF8 section version), KF8-only `.azw3` output, image record JPEG magic, complete EXTH metadata set, SRCS embedding
+- **Book and KF8 output**: KF8-only `.azw3` output (default for non-dictionaries), legacy dual KF7+KF8 format via `--legacy-mobi` (BOUNDARY record, KF8 section version), image record JPEG magic, complete EXTH metadata set, SRCS embedding
 - **EXTH records**: Every documented EXTH record in the table above is checked for both dictionaries and books, including KF8-only cases
 - **HTML/XHTML validation**: Text blobs extracted from MOBI output are reparsed with a relaxed quick-xml pass plus a custom balanced-tag walker, catching unclosed tags, malformed `<hr/`, unclosed attribute quotes, and stray `<` / `>`
 - **KDP validator**: One test per rule in `src/kdp_rules.rs`, asserting both the positive case (rule fires on bad input) and the negative case (clean input passes)
 - **CLI smoke test**: `tests/cli_validate.rs` builds the `kindling-cli` binary via Cargo and runs `validate` against `tests/fixtures/clean_book`, `clean_dict`, `book_with_warnings`, and `book_with_errors`, asserting exit codes and expected findings
 - **Comic pipeline**: Device profiles (including kpw5, scribe2025, kindle2024), spread detection and splitting, crop-before-split symmetry, margin cropping, auto-contrast, moire wiring for color devices, webtoon merge/split with overlap fallback, dark gutter detection, Panel View markup, manga RTL ordering and cover selection, JPEG quality, ComicInfo.xml parsing, EPUB image extraction
-- **Comic CLI flags**: doc-type EBOK/PDOC, title/author/language overrides, `--kf8-only` output
+- **Comic CLI flags**: doc-type EBOK/PDOC, title/author/language overrides, `--legacy-mobi` opt-in for legacy dual-format output
 - **Compression**: PalmDOC LZ77 compress/decompress roundtrips for various sizes and encodings
 - **Regression tests**: Dictionary capability marker (0x50 vs 0x4850), JFIF density patching, RTL spread cover selection, dictionary text record trailing byte order
 
