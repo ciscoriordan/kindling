@@ -357,6 +357,41 @@ pub fn build_comic_with_options(
         &temp_dir, &processed, profile, rtl, metadata.as_ref(), options.panel_view, options,
     )?;
 
+    // Step 4b: Run KDP validation on the generated OPF. Errors fail the
+    // build (with cleanup); warnings print but continue. This lets us
+    // catch OPF-level regressions (missing cover, bad manifest references,
+    // unsupported tags) before they ship in a MOBI.
+    match crate::validate::validate_opf(&opf_path) {
+        Ok(report) => {
+            for finding in &report.findings {
+                // Only show warnings and errors; comic OPFs always emit an
+                // info about marketing cover which is noise here.
+                if !matches!(finding.level, crate::validate::Level::Info) {
+                    eprintln!("  {}", finding);
+                }
+            }
+            let errors = report.error_count();
+            if errors > 0 {
+                if temp_dir.exists() {
+                    let _ = fs::remove_dir_all(&temp_dir);
+                }
+                if let Some(ref cbz_dir) = cbz_temp_dir {
+                    if cbz_dir.exists() {
+                        let _ = fs::remove_dir_all(cbz_dir);
+                    }
+                }
+                return Err(format!(
+                    "Comic OPF validation failed with {} errors",
+                    errors
+                )
+                .into());
+            }
+        }
+        Err(e) => {
+            eprintln!("Warning: could not validate comic OPF: {}", e);
+        }
+    }
+
     // Capture the OPF title/author for the post-build readback check.
     let opf_snapshot: Option<(String, String)> = crate::opf::OPFData::parse(&opf_path)
         .ok()
@@ -2397,5 +2432,83 @@ mod tests {
 </ComicInfo>"#;
         let meta = parse_comic_info_xml(xml).expect("parse should succeed");
         assert!(meta.manga_rtl, "manga RTL should be detected case-insensitively");
+    }
+
+    #[test]
+    fn test_comic_opf_passes_validate() {
+        // Write a minimal comic OPF to disk and confirm the KDP validator
+        // accepts it. This guards against a regression where an OPF-level
+        // problem (missing cover manifest entry, bad manifest reference,
+        // etc.) would be introduced by the comic writer and only caught
+        // by real Kindle devices, since the comic build path used to
+        // skip validation entirely.
+        let dir = std::env::temp_dir().join("kindling_comic_validate_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Minimal 1x1 JPEG.
+        let jpeg: Vec<u8> = vec![
+            0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01,
+            0x01, 0x01, 0x00, 0x48, 0x00, 0x48, 0x00, 0x00, 0xFF, 0xDB, 0x00, 0x43,
+            0x00, 0x08, 0x06, 0x06, 0x07, 0x06, 0x05, 0x08, 0x07, 0x07, 0x07, 0x09,
+            0x09, 0x08, 0x0A, 0x0C, 0x14, 0x0D, 0x0C, 0x0B, 0x0B, 0x0C, 0x19, 0x12,
+            0x13, 0x0F, 0x14, 0x1D, 0x1A, 0x1F, 0x1E, 0x1D, 0x1A, 0x1C, 0x1C, 0x20,
+            0x24, 0x2E, 0x27, 0x20, 0x22, 0x2C, 0x23, 0x1C, 0x1C, 0x28, 0x37, 0x29,
+            0x2C, 0x30, 0x31, 0x34, 0x34, 0x34, 0x1F, 0x27, 0x39, 0x3D, 0x38, 0x32,
+            0x3C, 0x2E, 0x33, 0x34, 0x32, 0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x01,
+            0x00, 0x01, 0x01, 0x01, 0x11, 0x00, 0xFF, 0xC4, 0x00, 0x1F, 0x00, 0x00,
+            0x01, 0x05, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+            0x09, 0x0A, 0x0B, 0xFF, 0xC4, 0x00, 0xB5, 0x10, 0x00, 0x02, 0x01, 0x03,
+            0x03, 0x02, 0x04, 0x03, 0x05, 0x05, 0x04, 0x04, 0x00, 0x00, 0x01, 0x7D,
+            0x01, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05, 0x12, 0x21, 0x31, 0x41, 0x06,
+            0x13, 0x51, 0x61, 0x07, 0x22, 0x71, 0x14, 0x32, 0x81, 0x91, 0xA1, 0x08,
+            0x23, 0x42, 0xB1, 0xC1, 0x15, 0x52, 0xD1, 0xF0, 0x24, 0x33, 0x62, 0x72,
+            0x82, 0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3F, 0x00, 0xFB,
+            0xD0, 0xFF, 0xD9,
+        ];
+        std::fs::write(dir.join("cover.jpg"), &jpeg).unwrap();
+        std::fs::write(
+            dir.join("page.xhtml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>P</title></head>
+<body><div><img src="cover.jpg" alt="p"/></div></body></html>"#,
+        )
+        .unwrap();
+
+        let opf = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="3.0" xmlns="http://www.idpf.org/2007/opf" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Test Comic</dc:title>
+    <dc:language>en</dc:language>
+    <dc:identifier id="uid">kindling-comic-test</dc:identifier>
+    <dc:creator>Unknown</dc:creator>
+    <meta name="fixed-layout" content="true"/>
+    <meta name="original-resolution" content="1072x1448"/>
+    <meta name="cover" content="cover-img"/>
+  </metadata>
+  <manifest>
+    <item id="cover-img" href="cover.jpg" media-type="image/jpeg"/>
+    <item id="page1" href="page.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="page1"/>
+  </spine>
+</package>
+"#;
+        let opf_path = dir.join("content.opf");
+        std::fs::write(&opf_path, opf).unwrap();
+
+        let report = crate::validate::validate_opf(&opf_path)
+            .expect("validate should parse the OPF");
+        assert_eq!(
+            report.error_count(),
+            0,
+            "comic OPF should have 0 errors, got: {:?}",
+            report.findings,
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
