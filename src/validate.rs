@@ -14,7 +14,7 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::kdp_rules::{self, KPG_VERSION};
+use crate::kdp_rules;
 use crate::opf::OPFData;
 
 /// Severity of a validation finding.
