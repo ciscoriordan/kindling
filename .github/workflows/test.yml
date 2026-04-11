@@ -12,5 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install libarchive-tools for CBR support
+        run: sudo apt-get update && sudo apt-get install -y libarchive-tools
       - name: Run tests
         run: cargo test -- --show-output
