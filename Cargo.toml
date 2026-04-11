@@ -4,6 +4,10 @@ version = "0.7.7"
 edition = "2024"
 description = "Kindle MOBI/AZW3 builder for dictionaries, books, and comics"
 
+[lib]
+name = "kindling"
+path = "src/lib.rs"
+
 [[bin]]
 name = "kindling-cli"
 path = "src/main.rs"

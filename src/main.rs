@@ -8,25 +8,9 @@
 ///     kindling input.epub
 ///     kindling input.opf -o output.mobi -dont_append_source -verbose
 
-mod cbr;
-mod comic;
-mod epub;
-mod exth;
-mod html_check;
-mod indx;
-mod kdp_rules;
-mod kf8;
-mod mobi;
-mod mobi_check;
-mod moire;
-mod opf;
-mod palmdoc;
-#[cfg(test)]
-mod tests;
-mod validate;
-mod vwi;
+use kindling::{comic, epub, kdp_rules, mobi, mobi_check, opf, validate};
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process;
 
 use clap::{Parser, Subcommand};
@@ -381,7 +365,7 @@ fn do_build(
         };
 
         // Pre-flight KDP validation on the extracted OPF.
-        if let Err(errors) = run_preflight_validation(&opf_path, no_validate) {
+        if let Err(errors) = kindling::run_preflight_validation(&opf_path, no_validate) {
             epub::cleanup_temp_dir(&temp_dir);
             eprintln!(
                 "Build aborted: {} validation errors. Run with --no-validate to skip.",
@@ -403,7 +387,7 @@ fn do_build(
         result
     } else {
         // Direct OPF input: run pre-flight validation first.
-        if let Err(errors) = run_preflight_validation(input, no_validate) {
+        if let Err(errors) = kindling::run_preflight_validation(input, no_validate) {
             eprintln!(
                 "Build aborted: {} validation errors. Run with --no-validate to skip.",
                 errors
@@ -668,58 +652,4 @@ fn do_validate(opf_path: &PathBuf, strict: bool) {
     if fail {
         process::exit(1);
     }
-}
-
-/// Run the KDP validator as a pre-flight step inside `do_build` and friends.
-///
-/// When `no_validate` is true, prints a skip notice and returns `Ok(())`.
-/// Otherwise runs `validate_opf`, prints each finding, and prints the summary
-/// line. Returns `Err(error_count)` if the report contains any errors (caller
-/// should abort the build); `Ok(())` otherwise. Warnings never abort but a
-/// "validation passed with N warnings" notice is printed.
-///
-/// Unlike `do_validate`, this function does NOT call `process::exit` on error
-/// so the caller can clean up temp directories before aborting.
-fn run_preflight_validation(opf_path: &Path, no_validate: bool) -> Result<(), usize> {
-    if no_validate {
-        println!("Skipping KDP validation (--no-validate)");
-        return Ok(());
-    }
-
-    println!(
-        "Validating {} against Kindle Publishing Guidelines v{}",
-        opf_path.display(),
-        kdp_rules::KPG_VERSION
-    );
-
-    let report = match validate::validate_opf(opf_path) {
-        Ok(r) => r,
-        Err(e) => {
-            // Can't parse the OPF at all: print a warning and continue; the
-            // build itself will produce a clearer error below.
-            eprintln!(
-                "Warning: could not parse OPF for pre-flight validation ({}): {}",
-                opf_path.display(),
-                e
-            );
-            return Ok(());
-        }
-    };
-
-    for finding in &report.findings {
-        println!("{}", finding);
-    }
-
-    let errors = report.error_count();
-    let warnings = report.warning_count();
-    let infos = report.info_count();
-    println!("{} errors, {} warnings, {} info", errors, warnings, infos);
-
-    if errors > 0 {
-        return Err(errors);
-    }
-    if warnings > 0 {
-        println!("Validation passed with {} warnings", warnings);
-    }
-    Ok(())
 }
