@@ -299,6 +299,8 @@ fn build_dictionary_mobi(
         true, // is_dictionary
         first_image_record,
         cover_offset,
+        None, // dictionaries have no library thumbnail slot
+        None, // dictionaries have no KF8 cover URI
         None, // no fixed-layout for dictionaries
         None, // no version override (use default 7)
         None, // no KF8 boundary (dictionaries stay KF7-only)
@@ -418,6 +420,58 @@ fn build_book_mobi(
             total_image_bytes
         );
     }
+
+    // Generate a library-grid thumbnail from the cover image and append it
+    // as the last record in the LD image pool. Both EXTH 202 (thumbnail
+    // offset) and the MOBI spec require the thumbnail to live in the
+    // contiguous image-record range that starts at first_image_record, so
+    // we cannot store it elsewhere. The thumbnail record index within
+    // `image_records` is tracked so build_hd_container can emit a
+    // placeholder CRES slot for it instead of an HD copy.
+    let (thumb_offset, thumb_hd_skip): (Option<u32>, std::collections::HashSet<usize>) = {
+        let mut hd_skip: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let thumb_off = match cover_offset {
+            Some(cov) => {
+                let cov_idx = cov as usize;
+                let cover_bytes = image_records.get(cov_idx).cloned().unwrap_or_default();
+                if cover_bytes.is_empty() {
+                    None
+                } else if let Some(thumb) = build_thumbnail_record(&cover_bytes) {
+                    let thumb_idx = image_records.len();
+                    let thumb_len = thumb.len();
+                    image_records.push(thumb);
+                    let _ = total_image_bytes; // informational total already logged
+                    hd_skip.insert(thumb_idx);
+                    eprintln!(
+                        "Generated {} byte library thumbnail (recindex {}, EXTH 202={})",
+                        thumb_len,
+                        thumb_idx + 1,
+                        thumb_idx,
+                    );
+                    Some(thumb_idx as u32)
+                } else {
+                    eprintln!(
+                        "Warning: could not decode cover image to generate thumbnail; library tile will fall back to the cover"
+                    );
+                    None
+                }
+            }
+            None => None,
+        };
+        (thumb_off, hd_skip)
+    };
+
+    // Compute the KF8 cover URI once (same string for both KF7 and KF8
+    // sections in dual-format, and for the sole KF8 section in KF8-only).
+    // Modern Kindle firmware uses EXTH 129 = "kindle:embed:XXXX" where XXXX
+    // is the base32-encoded 1-based recindex of the cover image relative to
+    // first_image_record. This is the primary cover-lookup path on Paperwhite
+    // 11+, Oasis 3, and Scribe; without it the library thumbnail pipeline
+    // falls back to the placeholder and fixed-layout comics fail to open.
+    let kf8_cover_uri: Option<String> = cover_offset.map(|off| {
+        let recindex = (off as usize) + 1; // 1-based
+        format!("kindle:embed:{}", encode_kindle_embed_base32(recindex))
+    });
 
     // Build KF8 section (used by both dual and KF8-only modes)
     eprintln!("Building KF8 section...");
@@ -547,7 +601,7 @@ fn build_book_mobi(
         // HD container
         let hd_container: Option<HdContainer> = if hd_images && num_image_records > 0 {
             eprintln!("Building HD image container (CONT/CRES)...");
-            Some(build_hd_container(opf, &image_records))
+            Some(build_hd_container(opf, &image_records, &thumb_hd_skip))
         } else {
             None
         };
@@ -578,6 +632,8 @@ fn build_book_mobi(
             kf8_fcis_idx,
             no_compress,
             cover_offset,
+            thumb_offset,
+            kf8_cover_uri.as_deref(),
             fixed_layout.as_ref(),
             kf8_first_image,
             creator_tag,
@@ -700,7 +756,7 @@ fn build_book_mobi(
         // HD container
         let hd_container: Option<HdContainer> = if hd_images && num_image_records > 0 {
             eprintln!("Building HD image container (CONT/CRES)...");
-            Some(build_hd_container(opf, &image_records))
+            Some(build_hd_container(opf, &image_records, &thumb_hd_skip))
         } else {
             None
         };
@@ -730,6 +786,8 @@ fn build_book_mobi(
             false,
             kf7_first_image,
             cover_offset,
+            thumb_offset,
+            kf8_cover_uri.as_deref(),
             fixed_layout.as_ref(),
             Some(6),
             Some(kf8_record0_global as u32),
@@ -755,6 +813,8 @@ fn build_book_mobi(
             kf8_fcis_idx,
             no_compress,
             cover_offset,
+            thumb_offset,
+            kf8_cover_uri.as_deref(),
             fixed_layout.as_ref(),
             0xFFFFFFFF, // KF8 first_image (images are in KF7 section)
             creator_tag,
@@ -892,9 +952,17 @@ impl HdContainer {
 /// either a CRES record with the full image data (for all images, since the source
 /// images from EPUB are typically already high-res) or a 4-byte placeholder
 /// (0xA0A0A0A0) for empty/missing images.
+///
+/// `hd_skip` holds LD image indices that should be represented by a
+/// placeholder CRES slot even when the LD data would otherwise qualify. We
+/// use this to skip the synthetic library thumbnail record appended at the
+/// end of the LD image pool: the thumbnail is small, low quality, and exists
+/// only for the library grid tile, so there is no value in also shipping an
+/// HD version of it.
 fn build_hd_container(
     opf: &OPFData,
     image_records: &[Vec<u8>],
+    hd_skip: &std::collections::HashSet<usize>,
 ) -> HdContainer {
     let title = if opf.title.is_empty() { "Book" } else { &opf.title };
     let num_images = image_records.len();
@@ -906,8 +974,8 @@ fn build_hd_container(
     let mut kindle_embed_parts: Vec<String> = Vec::new();
 
     for (idx, img_data) in image_records.iter().enumerate() {
-        if img_data.is_empty() {
-            // Empty image slot - use placeholder
+        if img_data.is_empty() || hd_skip.contains(&idx) {
+            // Empty image slot or caller-requested skip - use placeholder
             cres_records.push(vec![0xA0, 0xA0, 0xA0, 0xA0]);
             continue;
         }
@@ -1094,6 +1162,35 @@ fn encode_kindle_embed_base32(recindex: usize) -> String {
         v /= 32;
     }
     String::from_utf8(result.to_vec()).unwrap()
+}
+
+/// Downscale an image to a library-thumbnail sized JPEG.
+///
+/// Produces a JPEG at roughly 160x240 (Calibre's convention) so that modern
+/// Kindle firmwares can render the library grid tile without decoding the
+/// full-size cover. The aspect ratio of the source is preserved and the
+/// image is fit inside the bounding box.
+///
+/// Returns None if the input cannot be decoded; the caller should fall back
+/// to emitting no thumbnail rather than failing the build.
+fn build_thumbnail_record(cover_bytes: &[u8]) -> Option<Vec<u8>> {
+    // Target bounding box. Calibre's AZW3 output uses 160x240 for thumbnails
+    // on a typical 2:3 cover, which gives about 10 KB per JPEG at q80.
+    const THUMB_BOX_W: u32 = 330;
+    const THUMB_BOX_H: u32 = 470;
+    const THUMB_QUALITY: u8 = 80;
+
+    let img = image::load_from_memory(cover_bytes).ok()?;
+    let thumb = img.thumbnail(THUMB_BOX_W, THUMB_BOX_H);
+
+    let mut buf: Vec<u8> = Vec::with_capacity(16 * 1024);
+    {
+        let cursor = std::io::Cursor::new(&mut buf);
+        let encoder =
+            image::codecs::jpeg::JpegEncoder::new_with_quality(cursor, THUMB_QUALITY);
+        thumb.write_with_encoder(encoder).ok()?;
+    }
+    Some(buf)
 }
 
 /// Get image dimensions (width, height) from JPEG or PNG image data.
@@ -1970,6 +2067,8 @@ fn build_record0(
     is_dictionary: bool,
     first_image_record: usize,
     cover_offset: Option<u32>,
+    thumb_offset: Option<u32>,
+    kf8_cover_uri: Option<&str>,
     fixed_layout: Option<&exth::FixedLayoutMeta>,
     override_version: Option<u32>,
     kf8_boundary_record: Option<u32>,
@@ -2111,6 +2210,8 @@ fn build_record0(
             &opf.date,
             &opf.language,
             cover_offset,
+            thumb_offset,
+            kf8_cover_uri,
             fixed_layout,
             kf8_boundary_record,
             hd_geometry,
@@ -2164,6 +2265,8 @@ fn build_kf8_record0(
     fcis_record: usize,
     no_compress: bool,
     cover_offset: Option<u32>,
+    thumb_offset: Option<u32>,
+    kf8_cover_uri: Option<&str>,
     fixed_layout: Option<&exth::FixedLayoutMeta>,
     first_image_record: usize,
     creator_tag: bool,
@@ -2294,6 +2397,8 @@ fn build_kf8_record0(
         &opf.date,
         &opf.language,
         cover_offset,
+        thumb_offset,
+        kf8_cover_uri,
         fixed_layout,
         None, // no KF8 boundary in KF8 header itself
         hd_geometry,

@@ -5355,7 +5355,11 @@ mod tests {
             "Image record should start with JPEG magic (FF D8)"
         );
 
-        // Verify all 3 images are present
+        // Verify all 3 source images plus 1 synthesised library thumbnail
+        // are present. build_book_mobi appends a downscaled thumbnail as an
+        // extra image record so EXTH 202 can point at a small library tile
+        // separate from the full-size cover; this raises the total JPEG
+        // count by one on every comic build.
         let mut jpeg_count = 0;
         for i in 0..offsets.len() {
             let rec = get_record(&data, &offsets, i);
@@ -5363,8 +5367,12 @@ mod tests {
                 jpeg_count += 1;
             }
         }
-        assert_eq!(jpeg_count, 3, "Should have 3 JPEG images, found {}", jpeg_count);
-        println!("  \u{2713} Comic KF8-only: {} images at index {}", jpeg_count, first_img);
+        assert_eq!(
+            jpeg_count, 4,
+            "Should have 3 source images + 1 library thumbnail = 4 JPEGs, found {}",
+            jpeg_count
+        );
+        println!("  \u{2713} Comic KF8-only: {} JPEGs (3 source + 1 thumbnail) at index {}", jpeg_count, first_img);
     }
 
     #[test]

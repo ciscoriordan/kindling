@@ -439,6 +439,7 @@ fn check_cover_image(
     data: &[u8],
     first_image_record: Option<u32>,
     is_comic: bool,
+    is_kf8_only: bool,
     report: &mut CheckReport,
 ) {
     // first_image_record is the global record index of the first image; EXTH
@@ -463,14 +464,72 @@ fn check_cover_image(
     // the value was present but pointed at an oversized cover image that the
     // firmware could not downscale, which we can't detect here. What we CAN
     // detect is the "EXTH 201 is missing entirely" case.
+    let exth201 = find_exth_string(&section.exth, 201);
+    let exth202 = find_exth_string(&section.exth, 202);
+
     if is_comic {
-        if find_exth_string(&section.exth, 201).is_none() {
+        if exth201.is_none() {
             report.fail(
                 "comic MOBI is missing EXTH 201 (cover_offset); the Kindle \
                  library thumbnail pipeline depends on this".to_string(),
             );
         } else {
             report.pass();
+        }
+
+        // EXTH 202 (thumbnail offset) must be present AND point at a
+        // different record than EXTH 201. Pointing both at the same full
+        // 1072x1448 cover record (as kindling <=0.7.7 did) is why the
+        // Vader Down build showed a grey placeholder: the Kindle thumbnail
+        // pipeline refuses to render a full comic page as a 330x470
+        // library tile and silently falls back.
+        if exth202.is_none() {
+            report.fail(
+                "comic MOBI is missing EXTH 202 (thumbnail_offset); the library \
+                 grid tile will fall back to the grey placeholder".to_string(),
+            );
+        } else {
+            report.pass();
+        }
+
+        if let (Some(p201), Some(p202)) = (exth201, exth202) {
+            if p201.len() == 4 && p202.len() == 4 && p201 == p202 {
+                report.fail(
+                    "comic MOBI has EXTH 201 and EXTH 202 pointing at the same \
+                     record; the thumbnail must live in its own downscaled \
+                     record or the Kindle library tile renders as placeholder".to_string(),
+                );
+            } else {
+                report.pass();
+            }
+        }
+
+        // KF8-only comics require EXTH 129 (kindle:embed URI). This is the
+        // primary cover-lookup path on Paperwhite 11+, Oasis 3, and Scribe.
+        // A missing EXTH 129 on a fixed-layout comic is why Vader Down
+        // indexed but failed to open ("Unable to Open Item") even after the
+        // SRCS bloat fix in v0.7.7: the reader could not resolve the cover
+        // image for the opening spread.
+        if is_kf8_only {
+            match find_exth_string(&section.exth, 129) {
+                None => {
+                    report.fail(
+                        "KF8-only comic MOBI is missing EXTH 129 (kindle:embed \
+                         cover URI); modern Kindle firmware uses this to locate \
+                         the cover and the book will fail to open"
+                            .to_string(),
+                    );
+                }
+                Some(v) if v.is_empty() || !v.starts_with(b"kindle:embed:") => {
+                    report.fail(format!(
+                        "EXTH 129 has invalid value {:?} (expected \"kindle:embed:XXXX\")",
+                        String::from_utf8_lossy(v)
+                    ));
+                }
+                Some(_) => {
+                    report.pass();
+                }
+            }
         }
     }
 
@@ -504,7 +563,63 @@ fn check_cover_image(
         } else {
             report.pass();
         }
+
+        // For the thumbnail (EXTH 202) specifically, verify the record is
+        // a small downscaled image. A 1072x1448 cover reused as a thumb
+        // was the original Vader Down bug. We only check rough bounds;
+        // the dimensions have to come from a JPEG SOF marker scan.
+        if rtype == 202 && is_jpeg && is_comic {
+            if let Some((w, h)) = parse_jpeg_dimensions(rec) {
+                let long_edge = w.max(h);
+                if long_edge > 800 {
+                    report.fail(format!(
+                        "EXTH 202 thumbnail record {} is {}x{}; expected a \
+                         downscaled library tile (<= 800px long edge) or the \
+                         Kindle library grid will fall back to a placeholder",
+                        idx, w, h
+                    ));
+                } else {
+                    report.pass();
+                }
+            }
+        }
     }
+}
+
+/// Minimal JPEG SOF scanner to pull out (width, height) for thumbnail
+/// verification. Mirrors src/mobi.rs get_jpeg_dimensions but kept local to
+/// the checker to avoid exposing internal helpers.
+fn parse_jpeg_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+    let mut i = 0;
+    while i + 1 < data.len() {
+        if data[i] != 0xFF {
+            i += 1;
+            continue;
+        }
+        let marker = data[i + 1];
+        match marker {
+            0xD8 => i += 2,
+            0xD9 | 0xDA => break,
+            0xC0..=0xC3 => {
+                if i + 9 <= data.len() {
+                    let h = u16::from_be_bytes([data[i + 5], data[i + 6]]) as u32;
+                    let w = u16::from_be_bytes([data[i + 7], data[i + 8]]) as u32;
+                    return Some((w, h));
+                }
+                break;
+            }
+            0x00 => i += 2,
+            _ => {
+                if i + 4 <= data.len() {
+                    let length = u16::from_be_bytes([data[i + 2], data[i + 3]]) as usize;
+                    i += 2 + length;
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+    None
 }
 
 fn first_image_record(section: &MobiSection, record0: &[u8]) -> Option<u32> {
@@ -541,8 +656,23 @@ pub fn check_mobi_file(
 
     check_exth_metadata("KF7 section", &kf7, expected, &mut report);
 
+    // A .azw3 file with file_version >= 8 in its only MOBI section is a
+    // KF8-only comic (no KF7 boundary), which modern Kindle firmware reads
+    // via the EXTH 129 kindle:embed cover URI path. We pass this flag into
+    // the cover-image check so it can require EXTH 129 on KF8-only comics
+    // without falsely flagging dual-format builds where the KF7 section
+    // does not need it.
+    let is_kf8_only_section = kf7.file_version >= 8;
     let first_image = first_image_record(&kf7, rec0);
-    check_cover_image(&kf7, &palmdb, &data, first_image, expected.is_comic, &mut report);
+    check_cover_image(
+        &kf7,
+        &palmdb,
+        &data,
+        first_image,
+        expected.is_comic,
+        is_kf8_only_section,
+        &mut report,
+    );
 
     // Oversized PalmDB record check (P0).
     //
@@ -605,7 +735,7 @@ pub fn check_mobi_file(
 
     // KF8 boundary handling. Dual-format files have EXTH 121 in the KF7
     // section pointing at the KF8 record 0.
-    let is_kf8_only = kf7.file_version >= 8;
+    let is_kf8_only = is_kf8_only_section;
     if let Some(boundary) = kf7.kf8_boundary {
         let boundary = boundary as usize;
         if boundary >= palmdb.num_records {

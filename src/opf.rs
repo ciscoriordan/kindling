@@ -261,6 +261,81 @@ impl OPFData {
         items.into_iter().map(|(_, href, mt)| (href, mt)).collect()
     }
 
+    /// Find the cover image manifest item id from OPF metadata.
+    ///
+    /// Returns the OPF manifest item `id` attribute for the cover image, which
+    /// is the string used for EXTH 129 (KF8 cover URI) on modern Kindle
+    /// firmware. Mirrors `get_cover_image_href`: prefers
+    /// `properties="coverimage"` (EPUB 3) and falls back to
+    /// `<meta name="cover" content="...">`.
+    pub fn get_cover_image_id(&self) -> Option<String> {
+        if let Some(ref cover_id) = self.coverimage_id {
+            if let Some((_, media_type)) = self.manifest.get(cover_id) {
+                if media_type.starts_with("image/") {
+                    return Some(cover_id.clone());
+                }
+            }
+        }
+
+        let opf_path = self.base_dir.join(
+            std::fs::read_dir(&self.base_dir)
+                .ok()?
+                .filter_map(|e| e.ok())
+                .find(|e| {
+                    e.path()
+                        .extension()
+                        .map(|ext| ext == "opf")
+                        .unwrap_or(false)
+                })?
+                .file_name(),
+        );
+
+        let content = std::fs::read_to_string(&opf_path).ok()?;
+        let cleaned = clean_opf_xml(&content);
+
+        let mut reader = Reader::from_str(&cleaned);
+        reader.config_mut().trim_text(true);
+        let mut buf = Vec::new();
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+                    let local_name = local_tag_name(e.name().as_ref());
+                    if local_name == "meta" {
+                        let mut name_val = String::new();
+                        let mut content_val = String::new();
+                        for attr in e.attributes().flatten() {
+                            match attr.key.as_ref() {
+                                b"name" => {
+                                    name_val =
+                                        String::from_utf8_lossy(&attr.value).to_string()
+                                }
+                                b"content" => {
+                                    content_val =
+                                        String::from_utf8_lossy(&attr.value).to_string()
+                                }
+                                _ => {}
+                            }
+                        }
+                        if name_val == "cover" && !content_val.is_empty() {
+                            if let Some((_, media_type)) = self.manifest.get(&content_val) {
+                                if media_type.starts_with("image/") {
+                                    return Some(content_val);
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(Event::Eof) => break,
+                Err(_) => break,
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        None
+    }
+
     /// Find the cover image href from OPF metadata.
     ///
     /// Supports both cover image methods from the Amazon Kindle Publishing

@@ -243,6 +243,8 @@ pub fn build_book_exth(
     date: &str,
     language: &str,
     cover_offset: Option<u32>,
+    thumb_offset: Option<u32>,
+    kf8_cover_uri: Option<&str>,
     fixed_layout: Option<&FixedLayoutMeta>,
     kf8_boundary_record: Option<u32>,
     hd_geometry: Option<&str>,
@@ -332,10 +334,30 @@ pub fn build_book_exth(
     // Creator build (207)
     records.push(exth_record(207, &0u32.to_be_bytes())); // build = 0
 
-    // Cover image offset (201) and thumb offset (202)
+    // KF8 cover URI (129). Modern Kindle firmware (Paperwhite 11+, Oasis 3,
+    // Scribe, etc.) looks up the cover via a `kindle:embed:XXXX` URI where
+    // XXXX is the 4-char base32 encoding of the 1-based recindex of the
+    // cover image relative to first_image_record. This is what kindlegen
+    // and Calibre emit. Without it, the library thumbnail pipeline and the
+    // open-book flow both fall back to a grey placeholder and, for
+    // fixed-layout comics, the reader may refuse to open the file at all.
+    if let Some(uri) = kf8_cover_uri {
+        if !uri.is_empty() {
+            records.push(exth_record(129, uri.as_bytes()));
+        }
+    }
+
+    // Cover image offset (201) and thumb offset (202). 201 and 202 are both
+    // 0-based record offsets relative to first_image_record: 201 is the
+    // full-size cover and 202 is a small library-grid thumbnail. Older
+    // firmware reads 201 for the cover display and 202 for the grid tile;
+    // pointing both at the same record (as kindling <=0.7.7 did) makes the
+    // grid tile pipeline try to render a 1072x1448 comic page as a 330x470
+    // library tile and silently fall back to the grey placeholder.
     if let Some(offset) = cover_offset {
         records.push(exth_record(201, &offset.to_be_bytes()));
-        records.push(exth_record(202, &offset.to_be_bytes()));
+        let thumb = thumb_offset.unwrap_or(offset);
+        records.push(exth_record(202, &thumb.to_be_bytes()));
     }
 
     // Fixed-layout metadata
@@ -558,7 +580,7 @@ mod tests {
     fn test_exth_doc_type_pdoc_default() {
         let exth = build_book_exth(
             "Test Book", "Author", "2026-01-01", "en",
-            None, None, None, None, false,
+            None, None, None, None, None, None, false,
             None,          // doc_type: None should produce PDOC
             None, None, None, None,
         );
@@ -572,7 +594,7 @@ mod tests {
     fn test_exth_doc_type_pdoc_explicit() {
         let exth = build_book_exth(
             "Test Book", "Author", "2026-01-01", "en",
-            None, None, None, None, false,
+            None, None, None, None, None, None, false,
             Some("PDOC"),
             None, None, None, None,
         );
@@ -586,7 +608,7 @@ mod tests {
     fn test_exth_doc_type_ebok() {
         let exth = build_book_exth(
             "Test Book", "Author", "2026-01-01", "en",
-            None, None, None, None, false,
+            None, None, None, None, None, None, false,
             Some("EBOK"),
             None, None, None, None,
         );
@@ -600,7 +622,7 @@ mod tests {
     fn test_exth_series_metadata() {
         let exth = build_book_exth(
             "One Piece Vol 1", "Eiichiro Oda", "2026-01-01", "en",
-            None, None, None, None, false,
+            None, None, None, None, None, None, false,
             None,
             Some("Luffy begins his adventure"),  // description (103)
             Some("Manga, Adventure"),             // subject (105)
@@ -627,7 +649,7 @@ mod tests {
     fn test_exth_series_metadata_omitted_when_none() {
         let exth = build_book_exth(
             "Standalone Book", "Author", "2026-01-01", "en",
-            None, None, None, None, false,
+            None, None, None, None, None, None, false,
             None, None, None, None, None,
         );
         let records = parse_exth_records(&exth);
@@ -643,7 +665,7 @@ mod tests {
     fn test_exth_series_metadata_omitted_when_empty() {
         let exth = build_book_exth(
             "Standalone Book", "Author", "2026-01-01", "en",
-            None, None, None, None, false,
+            None, None, None, None, None, None, false,
             None,
             Some(""),  // empty description
             Some(""),  // empty subject
@@ -664,7 +686,7 @@ mod tests {
         // Verify the EXTH block has valid structure: magic, length, record count
         let exth = build_book_exth(
             "Test", "Author", "2026-01-01", "en",
-            None, None, None, None, false,
+            None, None, None, None, None, None, false,
             Some("EBOK"),
             Some("A test book"), Some("Fiction"), Some("Test Series"), Some("3"),
         );
