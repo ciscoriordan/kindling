@@ -22,6 +22,7 @@ Pre-built binaries for Mac (Apple Silicon, Intel), Linux (x86_64), and Windows (
 - **Dictionaries**: Full orth index with headword + inflection lookup, UTF-8 labels (non-ASCII headwords like Greek render correctly in the lookup popup), SPL sort tables, fontsignature
 - **Books**: EPUB or OPF input, embedded images, KF8-only (.azw3) by default with legacy dual-format (MOBI7+KF8) available via `--legacy-mobi`, HD image container, fixed-layout support
 - **Comics**: Image folder, CBZ, CBR, or EPUB input, device-specific resizing, spread splitting, margin cropping, auto-contrast, moire correction for color e-ink, manga RTL, webtoon with overlap fallback, Panel View, KF8-only (.azw3) by default, metadata overrides
+- **EPUB repair**: `kindling repair` applies a small, byte-stable, idempotent set of structural fixes to an EPUB for cleaner Send-to-Kindle ingest (see [Repair](#repair))
 - Drop-in *kindlegen* replacement (same CLI flags, same status codes)
 - Kindle Previewer compatible (EPUB source embedded by default)
 - Comprehensive test suite with CI on every push (see [Testing](#testing))
@@ -138,6 +139,26 @@ Runs pre-flight checks against the [Amazon Kindle Publishing Guidelines](http://
 Output: one line per finding with severity (`info`/`warning`/`error`), rule id (e.g. `R4.2.1`), KPG section, PDF page reference, message, and file:line where applicable, followed by a summary (`X errors, Y warnings, Z info`). Exit code is 0 on success, 1 if any errors are present (or any warnings in `--strict` mode).
 
 The rule catalog is a single Rust const array in [`src/kdp_rules.rs`](src/kdp_rules.rs) with a `KPG_VERSION` constant and a `Rule` struct holding id, section, level, title, PDF page, and description. Check functions in `src/validate.rs` reference rules by id and inherit their severity and metadata, so updating the guidelines version touches one file plus any affected checks.
+
+### Repair
+
+```bash
+kindling-cli repair input.epub                    # writes input-fixed.epub next to input
+kindling-cli repair input.epub -o output.epub     # explicit output path
+kindling-cli repair input.epub --dry-run          # scan without writing
+kindling-cli repair input.epub --report-json      # full report as JSON on stdout
+```
+
+`kindling repair` runs a structural repair pass on an EPUB that fixes a small set of issues Amazon's Send-to-Kindle pipeline is unusually strict about. It is a Rust port of [`innocenat/kindle-epub-fix`](https://github.com/innocenat/kindle-epub-fix) (public domain), and applies the same four fixes the reference does:
+
+1. **Missing XML declaration**: prepend `<?xml version="1.0" encoding="utf-8"?>` to any XHTML/HTML file that lacks one. Send-to-Kindle otherwise assumes ISO-8859-1 and corrupts non-ASCII characters.
+2. **Body-id hyperlinks**: rewrite `filename#body-id` references to just `filename`, because Kindle silently drops fragments that point at a `<body>` tag, breaking TOC entries.
+3. **Missing `dc:language`**: inject a fallback `en` into OPFs that have no `<dc:language>`, and warn when an existing language is outside Amazon's allowed list.
+4. **Stray `<img>`**: delete `<img>` tags with no `src` attribute, which otherwise show up as broken image placeholders on Kindle.
+
+The pass is **byte-stable on clean input**: if no fixes are needed, the output is a `fs::copy` of the input with identical bytes, so content-hash-based book identity stays the same. It is **idempotent**: running it twice produces the same result as running it once. It **rejects DRM-protected EPUBs** (`META-INF/encryption.xml` or `META-INF/rights.xml`) with exit code 1 and does not touch them; no DRM removal code is linked or referenced.
+
+`kindling build` and `kindling validate` do not automatically invoke repair; it is a separate explicit pass. This lets downstream consumers that need reliable EPUB preprocessing run `repair` in their ingest pipeline without affecting the build or validation paths.
 
 ### Build-time self-check
 
@@ -314,7 +335,7 @@ Standard Rust layout with `Cargo.toml` at the repo root:
 kindling/
 ├── Cargo.toml            # edition 2024, Rust 1.85+
 ├── src/
-│   ├── main.rs           # CLI: build, comic, validate, kindlegen-compat
+│   ├── main.rs           # CLI: build, comic, validate, repair, kindlegen-compat
 │   ├── mobi.rs           # PalmDB + MOBI record 0 + EXTH writer
 │   ├── kf8.rs            # KF8 section, BOUNDARY, FDST, skeleton/fragment indexes
 │   ├── indx.rs           # Orthographic INDX records for dictionaries
@@ -326,10 +347,12 @@ kindling/
 │   ├── comic.rs          # Comic pipeline (crop, split, enhance, Panel View)
 │   ├── moire.rs          # Moire correction for color e-ink
 │   ├── validate.rs       # KDP pre-flight checks
+│   ├── repair.rs         # Structural EPUB repair pass for Kindle ingest
 │   ├── kdp_rules.rs      # Rule catalog (KPG_VERSION, Rule struct, RULES array)
 │   └── tests.rs          # Unit tests
 ├── tests/
-│   ├── cli_validate.rs   # CLI smoke test (runs compiled binary)
+│   ├── cli_validate.rs   # CLI smoke test for `validate` (runs compiled binary)
+│   ├── cli_repair.rs     # CLI smoke test for `repair` (runs compiled binary)
 │   └── fixtures/         # OPF fixtures (clean_book, clean_dict, book_with_errors, book_with_warnings)
 └── target/release/kindling-cli   # compiled binary
 ```
