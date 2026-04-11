@@ -1714,24 +1714,106 @@ fn insert_guide_reference(text_bytes: &[u8]) -> Vec<u8> {
 /// Threshold for parallel compression (1 MB).
 const PARALLEL_THRESHOLD: usize = 1024 * 1024;
 
+/// Compute the chunk size used when splitting text into records.
+///
+/// The PalmDOC `record_size` field in the header is an upper bound on
+/// individual record sizes. For dictionaries with more than 65000 records
+/// worth of 4096-byte chunks the limit is scaled up so the record count
+/// fits in 16 bits.
+fn compute_chunk_size(total_length: usize) -> usize {
+    let mut chunk_size = RECORD_SIZE;
+    if total_length / chunk_size > 65000 {
+        chunk_size = (total_length / 65000) + 1;
+        chunk_size = chunk_size.next_power_of_two();
+    }
+    chunk_size
+}
+
+/// Count how many trailing bytes of `chunk` belong to an incomplete UTF-8
+/// character, i.e. a multi-byte sequence whose leading byte is present but
+/// one or more continuation bytes are missing.
+///
+/// Returns a value in 0..=3. A return of 0 means the chunk ends on a
+/// complete UTF-8 character boundary.
+fn incomplete_utf8_tail_bytes(chunk: &[u8]) -> usize {
+    // Walk backward over continuation bytes (0x80..=0xBF) to find the
+    // most recent non-continuation byte.
+    let mut trailing = 0usize;
+    while trailing < 3 && trailing < chunk.len() {
+        let b = chunk[chunk.len() - 1 - trailing];
+        if (0x80..=0xBF).contains(&b) {
+            trailing += 1;
+            continue;
+        }
+        // b is the lead byte (or ASCII) for the final character.
+        let expected = if b < 0x80 {
+            1
+        } else if (0xC0..=0xDF).contains(&b) {
+            2
+        } else if (0xE0..=0xEF).contains(&b) {
+            3
+        } else if (0xF0..=0xF7).contains(&b) {
+            4
+        } else {
+            // Stray continuation byte deeper than 3 or invalid byte.
+            // Not a valid UTF-8 character but we cannot fix it here.
+            return 0;
+        };
+        let have = trailing + 1;
+        return if have < expected { have } else { 0 };
+    }
+    0
+}
+
+/// Split `text_bytes` into chunk ranges of at most `chunk_size` bytes,
+/// shifting chunk ends backwards so that no chunk ends inside a multi-byte
+/// UTF-8 character. Returns the start..end byte offsets for each chunk.
+///
+/// Kindle readers concatenate decoded records back into a single byte
+/// stream, but each record is also decoded independently for HTML parsing
+/// and pagination. When a chunk ends in the middle of a multi-byte
+/// character the head record contains an orphan lead byte which renders
+/// as tofu and can destabilize HTML state in subsequent records. Ending
+/// each chunk on a UTF-8 character boundary removes that class of bug.
+fn split_on_utf8_boundaries(text_bytes: &[u8], chunk_size: usize) -> Vec<(usize, usize)> {
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    let total = text_bytes.len();
+    let mut start = 0usize;
+    while start < total {
+        let natural_end = (start + chunk_size).min(total);
+        let end = if natural_end == total {
+            natural_end
+        } else {
+            let trailing = incomplete_utf8_tail_bytes(&text_bytes[start..natural_end]);
+            // Never shrink a chunk below 1 byte. A lone character wider than
+            // the whole chunk is not something we can handle here, but this
+            // only matters for pathological tiny chunk_size values.
+            if trailing >= natural_end - start {
+                natural_end
+            } else {
+                natural_end - trailing
+            }
+        };
+        ranges.push((start, end));
+        start = end;
+    }
+    ranges
+}
+
 /// Compress text into PalmDOC records with trailing bytes.
 ///
 /// Uses std::thread for parallel compression on large inputs (>1 MB)
 /// since each chunk is independent.
 fn compress_text(text_bytes: &[u8]) -> (Vec<Vec<u8>>, usize) {
     let total_length = text_bytes.len();
+    let chunk_size = compute_chunk_size(total_length);
 
-    // Scale chunk size if needed for >65000 records
-    let mut chunk_size = RECORD_SIZE;
-    if total_length / chunk_size > 65000 {
-        chunk_size = (total_length / 65000) + 1;
-        chunk_size = chunk_size.next_power_of_two();
-    }
-
-    // Split into owned chunks for thread safety
-    let chunks: Vec<Vec<u8>> = text_bytes
-        .chunks(chunk_size)
-        .map(|c| c.to_vec())
+    // Split into owned chunks for thread safety. Chunks end on UTF-8
+    // character boundaries, so individual record sizes may be up to 3
+    // bytes smaller than chunk_size near a multi-byte character.
+    let chunks: Vec<Vec<u8>> = split_on_utf8_boundaries(text_bytes, chunk_size)
+        .into_iter()
+        .map(|(s, e)| text_bytes[s..e].to_vec())
         .collect();
 
     let records = if total_length > PARALLEL_THRESHOLD && chunks.len() > 1 {
@@ -1761,7 +1843,8 @@ fn compress_text(text_bytes: &[u8]) -> (Vec<Vec<u8>>, usize) {
                     let mut compressed = palmdoc::compress(&chunks[idx]);
                     // Trailing bytes for extra_flags=3 (bit 0=multibyte, bit 1=TBS):
                     // 0x81 = TBS entry (stop bit set, size=1: just this byte, no payload)
-                    // 0x00 = multibyte byte (low 2 bits=0: no extra multibyte bytes)
+                    // 0x00 = multibyte byte (low 2 bits=0: no overhang, chunks end on
+                    //        UTF-8 character boundaries so there is nothing to strip).
                     // Order matters: TBS comes first, multibyte last (parsed from end).
                     compressed.push(0x81);
                     compressed.push(0x00);
@@ -1799,18 +1882,14 @@ fn compress_text(text_bytes: &[u8]) -> (Vec<Vec<u8>>, usize) {
 /// Split text into uncompressed records with trailing bytes.
 fn split_text_uncompressed(text_bytes: &[u8]) -> (Vec<Vec<u8>>, usize) {
     let total_length = text_bytes.len();
+    let chunk_size = compute_chunk_size(total_length);
 
-    let mut chunk_size = RECORD_SIZE;
-    if total_length / chunk_size > 65000 {
-        chunk_size = (total_length / 65000) + 1;
-        chunk_size = chunk_size.next_power_of_two();
-    }
-
-    let records: Vec<Vec<u8>> = text_bytes
-        .chunks(chunk_size)
-        .map(|chunk| {
-            let mut rec = chunk.to_vec();
-            // Trailing bytes: TBS(0x81) then multibyte(0x00)
+    let records: Vec<Vec<u8>> = split_on_utf8_boundaries(text_bytes, chunk_size)
+        .into_iter()
+        .map(|(s, e)| {
+            let mut rec = text_bytes[s..e].to_vec();
+            // Trailing bytes: TBS(0x81) then multibyte(0x00). Chunks end on
+            // UTF-8 character boundaries so the multibyte byte is always 0.
             rec.push(0x81);
             rec.push(0x00);
             rec
@@ -1818,6 +1897,256 @@ fn split_text_uncompressed(text_bytes: &[u8]) -> (Vec<Vec<u8>>, usize) {
         .collect();
 
     (records, total_length)
+}
+
+#[cfg(test)]
+mod record_split_tests {
+    use super::*;
+
+    /// Strip the two trailing bytes (TBS 0x81 + multibyte 0x00) written by
+    /// both record-producing functions.
+    fn strip_trailers(rec: &[u8]) -> &[u8] {
+        assert!(rec.len() >= 2, "record too small to contain trailers");
+        let mb_byte = rec[rec.len() - 1];
+        assert_eq!(mb_byte & 0x3, 0, "multibyte byte overhang must be 0");
+        let tbs_byte = rec[rec.len() - 2];
+        assert_eq!(tbs_byte, 0x81, "TBS byte must be 0x81");
+        &rec[..rec.len() - 2]
+    }
+
+    /// Minimal PalmDOC (LZ77 + RLE) decompressor for round-trip testing.
+    fn palmdoc_decompress(src: &[u8]) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::with_capacity(src.len() * 2);
+        let mut i = 0usize;
+        while i < src.len() {
+            let b = src[i];
+            i += 1;
+            if b == 0 {
+                out.push(0);
+            } else if (1..=8).contains(&b) {
+                let n = b as usize;
+                let end = (i + n).min(src.len());
+                out.extend_from_slice(&src[i..end]);
+                i = end;
+            } else if (9..=0x7F).contains(&b) {
+                out.push(b);
+            } else if (0x80..=0xBF).contains(&b) {
+                if i >= src.len() {
+                    break;
+                }
+                let b2 = src[i];
+                i += 1;
+                let word = ((b as u16) << 8) | (b2 as u16);
+                let distance = ((word >> 3) & 0x7FF) as usize;
+                let length = ((word & 0x7) as usize) + 3;
+                if distance == 0 || distance > out.len() {
+                    break;
+                }
+                let start = out.len() - distance;
+                for k in 0..length {
+                    let byte = out[start + k];
+                    out.push(byte);
+                }
+            } else {
+                // 0xC0..=0xFF: space + (b ^ 0x80)
+                out.push(0x20);
+                out.push(b ^ 0x80);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn incomplete_utf8_tail_bytes_on_clean_ascii() {
+        assert_eq!(incomplete_utf8_tail_bytes(b"hello"), 0);
+    }
+
+    #[test]
+    fn incomplete_utf8_tail_bytes_on_complete_two_byte() {
+        // "αβ" is two 2-byte characters, total 4 bytes.
+        assert_eq!(incomplete_utf8_tail_bytes("αβ".as_bytes()), 0);
+    }
+
+    #[test]
+    fn incomplete_utf8_tail_bytes_on_lead_only_two_byte() {
+        // "α" = CE B1. Drop the B1 to leave a dangling lead byte.
+        let bytes = [0xCEu8];
+        assert_eq!(incomplete_utf8_tail_bytes(&bytes), 1);
+    }
+
+    #[test]
+    fn incomplete_utf8_tail_bytes_on_lead_only_three_byte() {
+        // U+2020 DAGGER = E2 80 A0. Various partial prefixes.
+        assert_eq!(incomplete_utf8_tail_bytes(&[0xE2]), 1);
+        assert_eq!(incomplete_utf8_tail_bytes(&[0xE2, 0x80]), 2);
+        assert_eq!(incomplete_utf8_tail_bytes(&[0xE2, 0x80, 0xA0]), 0);
+    }
+
+    #[test]
+    fn incomplete_utf8_tail_bytes_on_lead_only_four_byte() {
+        // "͵Ζ" ... actually "͵Ζ" is two 2-byte chars (CD B4 CE 96).
+        // For a 4-byte test use U+1F600 GRINNING FACE = F0 9F 98 80.
+        assert_eq!(incomplete_utf8_tail_bytes(&[0xF0]), 1);
+        assert_eq!(incomplete_utf8_tail_bytes(&[0xF0, 0x9F]), 2);
+        assert_eq!(incomplete_utf8_tail_bytes(&[0xF0, 0x9F, 0x98]), 3);
+        assert_eq!(incomplete_utf8_tail_bytes(&[0xF0, 0x9F, 0x98, 0x80]), 0);
+    }
+
+    #[test]
+    fn split_on_utf8_boundaries_shrinks_when_char_would_be_split() {
+        // Build text: 4095 ASCII bytes, then "α" (CE B1), then more ASCII.
+        // With chunk_size=4096 the natural end at 4096 would land on B1
+        // (the continuation byte of α). The splitter must back up by 1
+        // so the first chunk ends at 4095, leaving α intact in chunk 2.
+        let mut text = vec![b'x'; 4095];
+        text.extend_from_slice("α".as_bytes());
+        text.extend_from_slice(&[b'y'; 100]);
+        let ranges = split_on_utf8_boundaries(&text, 4096);
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(ranges[0], (0, 4095));
+        assert_eq!(ranges[1], (4095, text.len()));
+        // Verify each chunk is valid UTF-8.
+        for (s, e) in &ranges {
+            std::str::from_utf8(&text[*s..*e]).expect("chunk must be valid UTF-8");
+        }
+    }
+
+    #[test]
+    fn split_on_utf8_boundaries_three_byte_char() {
+        // U+2020 DAGGER = E2 80 A0. Place the lead byte at position 4095
+        // so a naive split at 4096 leaves E2 80 in chunk 1 and A0 in chunk 2.
+        let mut text = vec![b'x'; 4093];
+        text.extend_from_slice("\u{2020}".as_bytes()); // 3 bytes at positions 4093..4096
+        text.extend_from_slice(&[b'y'; 50]);
+        let ranges = split_on_utf8_boundaries(&text, 4096);
+        // natural end = 4096 lands on A0 (the final byte of the dagger).
+        // incomplete_utf8_tail_bytes should report 0 (the character is complete
+        // exactly at position 4096) so the split stays at 4096.
+        assert_eq!(ranges[0], (0, 4096));
+
+        // Now shift the dagger so it straddles the boundary: place it at 4094..4097.
+        let mut text2 = vec![b'x'; 4094];
+        text2.extend_from_slice("\u{2020}".as_bytes());
+        text2.extend_from_slice(&[b'y'; 50]);
+        let ranges2 = split_on_utf8_boundaries(&text2, 4096);
+        // natural end=4096 would land on 80 (middle byte). Back up to 4094.
+        assert_eq!(ranges2[0], (0, 4094));
+        assert_eq!(ranges2[1], (4094, text2.len()));
+        for (s, e) in &ranges2 {
+            std::str::from_utf8(&text2[*s..*e]).expect("chunk must be valid UTF-8");
+        }
+    }
+
+    #[test]
+    fn split_on_utf8_boundaries_greek_numeral_sign() {
+        // The problematic character from the real dictionary: ͵Ζ
+        // ͵ = CD B4 (2 bytes), Ζ = CE 96 (2 bytes). Put them around 4096
+        // in various positions and ensure no split lands mid-character.
+        for lead_pos in 4093..=4097 {
+            let mut text = vec![b'x'; lead_pos];
+            text.extend_from_slice("͵Ζ".as_bytes());
+            text.extend_from_slice(&[b'y'; 50]);
+            let ranges = split_on_utf8_boundaries(&text, 4096);
+            for (s, e) in &ranges {
+                std::str::from_utf8(&text[*s..*e])
+                    .unwrap_or_else(|err| panic!("lead_pos={} chunk {}..{} invalid UTF-8: {}",
+                                                 lead_pos, s, e, err));
+            }
+        }
+    }
+
+    #[test]
+    fn split_on_utf8_boundaries_reassembles_to_original() {
+        // Random-ish mix of ASCII and multi-byte chars. After splitting,
+        // concatenating all ranges back together must equal the original.
+        let mut text: Vec<u8> = Vec::new();
+        for i in 0..5000 {
+            if i % 7 == 0 {
+                text.extend_from_slice("αβγ".as_bytes());
+            } else if i % 11 == 0 {
+                text.extend_from_slice("\u{2020}".as_bytes()); // 3 bytes
+            } else if i % 13 == 0 {
+                text.extend_from_slice("\u{1F600}".as_bytes()); // 4 bytes
+            } else {
+                text.push(b'a' + (i as u8 % 26));
+            }
+        }
+        let ranges = split_on_utf8_boundaries(&text, 4096);
+        let mut reassembled = Vec::with_capacity(text.len());
+        for (s, e) in &ranges {
+            reassembled.extend_from_slice(&text[*s..*e]);
+            // Each chunk decodes as valid UTF-8 standalone.
+            std::str::from_utf8(&text[*s..*e]).expect("chunk must be valid UTF-8");
+            // Each chunk (except possibly the last) is close to chunk_size.
+            assert!(e - s <= 4096);
+        }
+        assert_eq!(reassembled, text);
+    }
+
+    #[test]
+    fn split_text_uncompressed_emits_utf8_clean_records() {
+        // Build a text large enough to span several records, with Greek
+        // 2-byte chars densely enough that some would naturally fall on a
+        // 4096-byte boundary.
+        let mut text = String::new();
+        while text.len() < 20_000 {
+            text.push_str("αβγδεζηθικλμνξοπρστυφχψω ");
+        }
+        let text_bytes = text.as_bytes();
+        let (records, total_length) = split_text_uncompressed(text_bytes);
+        assert_eq!(total_length, text_bytes.len());
+        assert!(records.len() >= 4, "expected several records");
+        let mut reassembled = Vec::with_capacity(text_bytes.len());
+        for rec in &records {
+            let stripped = strip_trailers(rec);
+            assert!(stripped.len() <= 4096);
+            std::str::from_utf8(stripped).expect("record must be valid UTF-8");
+            reassembled.extend_from_slice(stripped);
+        }
+        assert_eq!(reassembled, text_bytes);
+    }
+
+    #[test]
+    fn compress_text_emits_utf8_clean_records() {
+        // Large enough to exercise both sequential and parallel paths,
+        // and dense in 2-byte Greek chars so boundaries land on them.
+        let mut text = String::new();
+        while text.len() < 20_000 {
+            text.push_str("αβγδεζηθικλμνξοπρστυφχψω ");
+        }
+        let text_bytes = text.as_bytes();
+        let (records, total_length) = compress_text(text_bytes);
+        assert_eq!(total_length, text_bytes.len());
+        let mut reassembled = Vec::with_capacity(text_bytes.len());
+        for rec in &records {
+            let stripped = strip_trailers(rec);
+            // Decompress with the local palmdoc decoder.
+            let decomp = palmdoc_decompress(stripped);
+            std::str::from_utf8(&decomp).expect("record must decode as valid UTF-8");
+            reassembled.extend_from_slice(&decomp);
+        }
+        assert_eq!(reassembled, text_bytes);
+    }
+
+    #[test]
+    fn compress_text_large_parallel_path_is_utf8_clean() {
+        // Exceeds PARALLEL_THRESHOLD (1 MB) so the parallel worker path runs.
+        let mut text = String::new();
+        while text.len() < 1_200_000 {
+            text.push_str("αβγδεζηθικλμνξοπρστυφχψω ");
+        }
+        let text_bytes = text.as_bytes();
+        let (records, total_length) = compress_text(text_bytes);
+        assert_eq!(total_length, text_bytes.len());
+        let mut reassembled = Vec::with_capacity(text_bytes.len());
+        for rec in &records {
+            let stripped = strip_trailers(rec);
+            let decomp = palmdoc_decompress(stripped);
+            std::str::from_utf8(&decomp).expect("record must decode as valid UTF-8");
+            reassembled.extend_from_slice(&decomp);
+        }
+        assert_eq!(reassembled, text_bytes);
+    }
 }
 
 /// Find the byte position of each dictionary entry in the stripped text.
