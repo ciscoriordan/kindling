@@ -12,6 +12,7 @@ pub mod kdp_rules;
 pub mod mobi;
 pub mod mobi_check;
 pub mod opf;
+pub mod repair;
 pub mod validate;
 
 // Internal implementation modules, visible inside the crate only.
