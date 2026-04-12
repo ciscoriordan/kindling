@@ -84,8 +84,11 @@ pub struct ComicOptions {
     pub rtl: bool,
     /// Enable double-page spread splitting (default: true).
     pub split: bool,
-    /// Enable border/margin cropping (default: true).
-    pub crop: bool,
+    /// Crop mode matching KCC's `--cropping` flag:
+    /// - 0: disabled
+    /// - 1: margins only
+    /// - 2: margins + page numbers (default)
+    pub crop: u8,
     /// Enable auto-contrast and gamma correction (default: true).
     pub enhance: bool,
     /// Force webtoon mode (vertical strip merge + split).
@@ -145,7 +148,7 @@ impl Default for ComicOptions {
         ComicOptions {
             rtl: false,
             split: true,
-            crop: true,
+            crop: 2,
             enhance: true,
             webtoon: false,
             panel_view: true,
@@ -867,10 +870,17 @@ fn process_image_pipeline(
     // Cropping the full spread first ensures both halves get symmetric treatment.
     // If we split first and crop each half independently, asymmetric borders on
     // the left vs. right half can produce mismatched page sizes.
-    let img = if options.crop {
-        crop_borders(&img)
-    } else {
-        img
+    let img = match options.crop {
+        0 => img,
+        // Mode 1: margin crop only
+        // Mode 2: margins + page numbers. The page-number detection
+        // algorithm (KCC uses a connected-component analysis on the
+        // bottom strip) is not yet ported. For now modes 1 and 2 both
+        // call crop_borders; a dedicated crop_page_numbers pass will
+        // be added later.
+        // TODO: implement page-number crop for mode 2 (see KCC's
+        // page_number_crop_alg.py / cropPageNumber).
+        _ => crop_borders(&img),
     };
 
     // Step 2: Detect and split double-page spreads

@@ -126,8 +126,12 @@ enum Commands {
         #[arg(long)]
         rotate_spreads: bool,
 
-        /// Disable automatic border/margin cropping
-        #[arg(long)]
+        /// Crop mode: 0=disabled, 1=margins only, 2=margins+page numbers (default)
+        #[arg(long, default_value = "2", value_parser = clap::value_parser!(u8).range(0..=2))]
+        crop: u8,
+
+        /// Deprecated: equivalent to --crop 0
+        #[arg(long, hide = true)]
         no_crop: bool,
 
         /// Disable auto-contrast and gamma correction
@@ -727,6 +731,7 @@ fn main() {
                 rtl,
                 no_split,
                 rotate_spreads,
+                crop,
                 no_crop,
                 no_enhance,
                 webtoon,
@@ -824,10 +829,13 @@ fn main() {
                 }
                 let effective_embed_source = embed_source;
 
+                // --no-crop is a deprecated alias for --crop 0
+                let effective_crop = if no_crop { 0 } else { crop };
+
                 let options = comic::ComicOptions {
                     rtl,
                     split: !no_split,
-                    crop: !no_crop,
+                    crop: effective_crop,
                     enhance: !no_enhance,
                     webtoon,
                     panel_view: !no_panel_view,

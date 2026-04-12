@@ -93,7 +93,7 @@ kindling-cli comic input.cbr -o output.azw3                     # CBR (RAR) inpu
 kindling-cli comic manga.epub --rtl                             # EPUB comic/manga
 kindling-cli comic manga.cbz --rtl                              # manga (right-to-left)
 kindling-cli comic webtoon/ --webtoon                           # webtoon (vertical strip)
-kindling-cli comic input/ --no-split --no-crop                  # disable smart processing
+kindling-cli comic input/ --no-split --crop 0                   # disable smart processing
 kindling-cli comic input.cbz --title "My Comic" --language ja   # metadata overrides
 kindling-cli comic input.cbz --doc-type ebok                    # appear under Books on Kindle
 kindling-cli comic input.cbz --cover 3                          # use page 3 as cover
@@ -108,7 +108,7 @@ Comic builds do **not** embed the intermediate EPUB as a SRCS record by default 
 Converts image folders, CBZ files, CBR files, and EPUB files to Kindle-optimized MOBI with:
 - **Device profiles**: *paperwhite*, *kpw5*, *oasis*, *scribe*, *scribe2025*, *kindle2024*, *basic*, *colorsoft*, *fire-hd-10*
 - **Spread splitting**: Landscape images auto-split into two pages (disable: `--no-split`)
-- **Margin cropping**: Uniform-color borders auto-removed (disable: `--no-crop`)
+- **Margin cropping**: `--crop 2` (default) crops margins + page numbers, `--crop 1` crops margins only, `--crop 0` disables cropping
 - **Auto-contrast**: Histogram stretching and gamma correction for e-ink (disable: `--no-enhance`)
 - **Moire correction**: Rainbow artifact removal for color e-ink screens (Colorsoft), applied automatically to grayscale source images
 - **Manga mode**: `--rtl` reverses page order and split direction

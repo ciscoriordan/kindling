@@ -1457,7 +1457,7 @@ mod tests {
         let options = comic::ComicOptions {
             rtl: true,
             split: false, // disable split so page count stays at 3
-            crop: false,
+            crop: 0,
             enhance: false,
             webtoon: false,
             panel_view: false, // disable for simpler test
@@ -1537,7 +1537,7 @@ mod tests {
         let options = comic::ComicOptions {
             rtl: false,
             split: true,
-            crop: false,
+            crop: 0,
             enhance: false,
             webtoon: false,
             panel_view: false,
@@ -1587,7 +1587,7 @@ mod tests {
         let options = comic::ComicOptions {
             rtl: true,
             split: true,
-            crop: false,
+            crop: 0,
             enhance: false,
             webtoon: false,
             panel_view: false,
@@ -1636,7 +1636,7 @@ mod tests {
         let ltr_options = comic::ComicOptions {
             rtl: false,
             split: true,
-            crop: false,
+            crop: 0,
             enhance: false,
             webtoon: false,
             panel_view: false,
@@ -1691,7 +1691,7 @@ mod tests {
 
         // With splitting
         let opt_split = comic::ComicOptions {
-            rtl: false, split: true, crop: false, enhance: false, webtoon: false, panel_view: false,
+            rtl: false, split: true, crop: 0, enhance: false, webtoon: false, panel_view: false,
             jpeg_quality: 85, max_height: 65536, embed_source: false,
             ..Default::default()
         };
@@ -1699,7 +1699,7 @@ mod tests {
 
         // Without splitting
         let opt_nosplit = comic::ComicOptions {
-            rtl: false, split: false, crop: false, enhance: false, webtoon: false, panel_view: false,
+            rtl: false, split: false, crop: 0, enhance: false, webtoon: false, panel_view: false,
             jpeg_quality: 85, max_height: 65536, embed_source: false,
             ..Default::default()
         };
@@ -1737,7 +1737,7 @@ mod tests {
         let profile = comic::get_profile("colorsoft").unwrap();
         assert!(!profile.grayscale, "colorsoft should not be grayscale");
         let options = comic::ComicOptions {
-            rtl: false, split: false, crop: false, enhance: true, webtoon: false, panel_view: false,
+            rtl: false, split: false, crop: 0, enhance: true, webtoon: false, panel_view: false,
             jpeg_quality: 85, max_height: 65536, embed_source: false,
             ..Default::default()
         };
@@ -1778,7 +1778,7 @@ mod tests {
         let options = comic::ComicOptions {
             rtl: false,
             split: false,
-            crop: false,
+            crop: 0,
             enhance: false,
             webtoon: false,
             panel_view: false,
@@ -1954,7 +1954,7 @@ mod tests {
         let profile = comic::get_profile("paperwhite").unwrap();
         let options = comic::ComicOptions {
             split: false,
-            crop: false,
+            crop: 0,
             enhance: false,
             webtoon: false,
             panel_view: false,
@@ -2722,7 +2722,7 @@ mod tests {
         let options = comic::ComicOptions {
             rtl: false,
             split: false,
-            crop: false,
+            crop: 0,
             enhance: false,
             webtoon: false, // rely on auto-detection
             panel_view: false,
@@ -2777,7 +2777,7 @@ mod tests {
         let options = comic::ComicOptions {
             rtl: false,
             split: false,
-            crop: false,
+            crop: 0,
             enhance: false,
             webtoon: true, // force webtoon mode
             panel_view: false,
@@ -2821,7 +2821,7 @@ mod tests {
         let options = comic::ComicOptions {
             rtl: false,
             split: false,
-            crop: false,
+            crop: 0,
             enhance: false,
             webtoon: true,
             panel_view: false,
@@ -2962,7 +2962,7 @@ mod tests {
         let options = comic::ComicOptions {
             rtl: false,
             split: false,
-            crop: false,
+            crop: 0,
             enhance: false,
             webtoon: false,
             panel_view: true,
@@ -3010,7 +3010,7 @@ mod tests {
         let options_no_pv = comic::ComicOptions {
             rtl: false,
             split: false,
-            crop: false,
+            crop: 0,
             enhance: false,
             webtoon: false,
             panel_view: false,
@@ -3026,7 +3026,7 @@ mod tests {
         let options_with_pv = comic::ComicOptions {
             rtl: false,
             split: false,
-            crop: false,
+            crop: 0,
             enhance: false,
             webtoon: false,
             panel_view: true,
@@ -3110,7 +3110,7 @@ mod tests {
         let options = comic::ComicOptions {
             rtl: false,
             split: false,
-            crop: false,
+            crop: 0,
             enhance: false,
             webtoon: false,
             panel_view: true,
@@ -3126,7 +3126,7 @@ mod tests {
         let options_no = comic::ComicOptions {
             rtl: false,
             split: false,
-            crop: false,
+            crop: 0,
             enhance: false,
             webtoon: false,
             panel_view: false,
@@ -3210,7 +3210,7 @@ mod tests {
         // Build at low quality (30)
         let output_low = dir.path().join("quality_low.mobi");
         let options_low = comic::ComicOptions {
-            rtl: false, split: false, crop: false, enhance: false,
+            rtl: false, split: false, crop: 0, enhance: false,
             webtoon: false, panel_view: false,
             jpeg_quality: 30,
             max_height: 65536, embed_source: false,
@@ -3222,7 +3222,7 @@ mod tests {
         // Build at high quality (95)
         let output_high = dir.path().join("quality_high.mobi");
         let options_high = comic::ComicOptions {
-            rtl: false, split: false, crop: false, enhance: false,
+            rtl: false, split: false, crop: 0, enhance: false,
             webtoon: false, panel_view: false,
             jpeg_quality: 95,
             max_height: 65536, embed_source: false,
@@ -3274,7 +3274,7 @@ mod tests {
         // Build with a max_height that forces chunking (3000 < total 6000)
         let output_chunked = dir.path().join("chunked.mobi");
         let options_chunked = comic::ComicOptions {
-            rtl: false, split: false, crop: false, enhance: false,
+            rtl: false, split: false, crop: 0, enhance: false,
             webtoon: true, panel_view: false,
             jpeg_quality: 85,
             max_height: 3000,
@@ -3287,7 +3287,7 @@ mod tests {
         // Build with default (no chunking)
         let output_normal = dir.path().join("normal.mobi");
         let options_normal = comic::ComicOptions {
-            rtl: false, split: false, crop: false, enhance: false,
+            rtl: false, split: false, crop: 0, enhance: false,
             webtoon: true, panel_view: false,
             jpeg_quality: 85,
             max_height: 65536, embed_source: false,
@@ -3332,7 +3332,7 @@ mod tests {
         let output_path = dir.path().join("corrupt_test.mobi");
         let profile = comic::get_profile("paperwhite").unwrap();
         let options = comic::ComicOptions {
-            rtl: false, split: false, crop: false, enhance: false,
+            rtl: false, split: false, crop: 0, enhance: false,
             webtoon: false, panel_view: false,
             jpeg_quality: 85,
             max_height: 65536, embed_source: false,
@@ -3392,7 +3392,7 @@ mod tests {
         let output_path = dir.path().join("zero_dim_test.mobi");
         let profile = comic::get_profile("paperwhite").unwrap();
         let options = comic::ComicOptions {
-            rtl: false, split: false, crop: false, enhance: false,
+            rtl: false, split: false, crop: 0, enhance: false,
             webtoon: false, panel_view: false,
             jpeg_quality: 85,
             max_height: 65536, embed_source: false,
@@ -3484,7 +3484,7 @@ mod tests {
         let profile = comic::get_profile("colorsoft").unwrap();
         assert!(!profile.grayscale, "colorsoft should be a color device");
         let options = comic::ComicOptions {
-            rtl: false, split: false, crop: false, enhance: false,
+            rtl: false, split: false, crop: 0, enhance: false,
             webtoon: false, panel_view: false,
             jpeg_quality: 85, max_height: 65536, embed_source: false,
             ..Default::default()
@@ -3523,7 +3523,7 @@ mod tests {
         let profile = comic::get_profile("paperwhite").unwrap();
         assert!(profile.grayscale, "paperwhite should be a grayscale device");
         let options = comic::ComicOptions {
-            rtl: false, split: false, crop: false, enhance: false,
+            rtl: false, split: false, crop: 0, enhance: false,
             webtoon: false, panel_view: false,
             jpeg_quality: 85, max_height: 65536, embed_source: false,
             ..Default::default()
@@ -3750,7 +3750,7 @@ mod tests {
         let output_path = dir.path().join("ebok_comic.mobi");
         let profile = comic::get_profile("paperwhite").unwrap();
         let options = comic::ComicOptions {
-            rtl: false, split: false, crop: false, enhance: false,
+            rtl: false, split: false, crop: 0, enhance: false,
             webtoon: false, panel_view: false,
             jpeg_quality: 85, max_height: 65536, embed_source: false,
             doc_type: Some("EBOK".to_string()),
@@ -3787,7 +3787,7 @@ mod tests {
         let output_path = dir.path().join("titled_comic.mobi");
         let profile = comic::get_profile("paperwhite").unwrap();
         let options = comic::ComicOptions {
-            rtl: false, split: false, crop: false, enhance: false,
+            rtl: false, split: false, crop: 0, enhance: false,
             webtoon: false, panel_view: false,
             jpeg_quality: 85, max_height: 65536, embed_source: false,
             title_override: Some("Custom Title".to_string()),
@@ -3844,7 +3844,7 @@ mod tests {
         let output_path = dir.path().join("ja_comic.mobi");
         let profile = comic::get_profile("paperwhite").unwrap();
         let options = comic::ComicOptions {
-            rtl: false, split: false, crop: false, enhance: false,
+            rtl: false, split: false, crop: 0, enhance: false,
             webtoon: false, panel_view: false,
             jpeg_quality: 85, max_height: 65536, embed_source: false,
             language: Some("ja".to_string()),
@@ -4056,7 +4056,7 @@ mod tests {
         let options = comic::ComicOptions {
             rtl: false,
             split: true, // split is true, but rotate_spreads overrides it for spreads
-            crop: false,
+            crop: 0,
             enhance: false,
             webtoon: false,
             panel_view: false,
@@ -4082,7 +4082,7 @@ mod tests {
         let split_options = comic::ComicOptions {
             rtl: false,
             split: true,
-            crop: false,
+            crop: 0,
             enhance: false,
             webtoon: false,
             panel_view: false,
@@ -4222,7 +4222,7 @@ mod tests {
         let profile = comic::get_profile("paperwhite").unwrap();
         let options = comic::ComicOptions {
             cover_fill: true,
-            crop: false,
+            crop: 0,
             enhance: false,
             split: false,
             panel_view: false,
@@ -5287,7 +5287,7 @@ mod tests {
         let output_path = dir.join("comic.azw3");
         let profile = comic::get_profile("paperwhite").unwrap();
         let options = comic::ComicOptions {
-            rtl: false, split: false, crop: false, enhance: false,
+            rtl: false, split: false, crop: 0, enhance: false,
             webtoon: false, panel_view: false,
             jpeg_quality: 85, max_height: 65536, embed_source: false,
             kf8_only: true,
@@ -5421,7 +5421,7 @@ mod tests {
         let output_dual = dir_dual.path().join("comic.mobi");
         let profile = comic::get_profile("paperwhite").unwrap();
         let options_dual = comic::ComicOptions {
-            rtl: false, split: false, crop: false, enhance: false,
+            rtl: false, split: false, crop: 0, enhance: false,
             webtoon: false, panel_view: false,
             jpeg_quality: 85, max_height: 65536, embed_source: false,
             kf8_only: false,
