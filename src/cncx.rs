@@ -11,7 +11,7 @@
 /// owning INDX records.
 ///
 /// Layout per string:
-///   [vwi_length_prefix][utf8 bytes]
+///   [inverted_vwi_length_prefix][utf8 bytes]
 ///
 /// Records are aligned to 4-byte boundaries and capped at
 /// `RECORD_LIMIT = 0x10000 - 1024 = 64512` bytes per record, matching
@@ -19,7 +19,7 @@
 
 use std::collections::HashMap;
 
-use crate::vwi::encode_vwi;
+use crate::vwi::encode_vwi_inv;
 
 /// Max bytes of a single CNCX string (kindlegen convention).
 pub const MAX_STRING_LENGTH: usize = 500;
@@ -80,7 +80,9 @@ impl CncxBuilder {
         };
 
         let bytes = s_trunc.as_bytes();
-        let len_prefix = encode_vwi(bytes.len() as u32);
+        // CNCX string lengths use inverted VWI (high bit = last byte),
+        // matching KCC/kindlegen. Forward VWI causes Kindle to misparse strings.
+        let len_prefix = encode_vwi_inv(bytes.len() as u32);
         let entry_size = len_prefix.len() + bytes.len();
 
         // Roll over to a new record if this entry would exceed the

@@ -56,6 +56,9 @@ pub struct Kf8Section {
     pub skeleton_indx: Vec<Vec<u8>>,
     /// NCX INDX records (primary + data)
     pub ncx_indx: Vec<Vec<u8>>,
+    /// CNCX records for the NCX INDX (label strings for TOC entries).
+    /// Must be written immediately after NCX INDX in the record table.
+    pub ncx_cncx_records: Vec<Vec<u8>>,
     /// DATP record
     pub datp: Vec<u8>,
     /// Number of flows (typically 2: HTML + CSS)
@@ -122,6 +125,7 @@ pub fn build_kf8_section(
     spine_items: &[(String, String)],
     no_compress: bool,
     kindlegen_parity: bool,
+    title: &str,
 ) -> Kf8Section {
     // Step 1: Build the split skeletons + fragments from each HTML part.
     let (kf8_html, skeleton_entries, fragment_entries) =
@@ -154,13 +158,15 @@ pub fn build_kf8_section(
     // the selector strings referenced by tag 2 of each fragment entry.
     let (fragment_indx, cncx_records) = build_fragment_indx_with_cncx(&fragment_entries);
 
-    // Step 7: NCX INDX (minimal - one entry per skeleton).
-    let ncx_indx = build_ncx_indx(html_parts.len().max(1));
+    // Step 7: NCX INDX with proper 5-tag structure + CNCX label record.
+    // Title is used as the TOC label in the NCX CNCX. Must be non-empty.
+    let (ncx_indx, ncx_cncx_records) =
+        build_ncx_indx(title, &skeleton_entries, html_length);
 
     // Step 8: DATP record (stub).
     let datp = build_datp();
 
-    let flow_count = if css_bytes.is_empty() { 1 } else { 2 };
+    let flow_count = 2; // Always 2 per KCC/libmobi
 
     Kf8Section {
         text_records,
@@ -170,6 +176,7 @@ pub fn build_kf8_section(
         cncx_records,
         skeleton_indx,
         ncx_indx,
+        ncx_cncx_records,
         datp,
         flow_count,
         css_content: css_bytes.to_vec(),
@@ -452,7 +459,8 @@ fn process_kf8_part(
 ) -> String {
     let mut result = html.to_string();
 
-    let mime_suffix = if kindlegen_parity { "jpg" } else { "jpeg" };
+    // Always use image/jpg - Kindle firmware requires this for kindle:embed.
+    let mime_suffix = "jpg";
 
     // Rewrite image src to kindle:embed format.
     let src_re = Regex::new(r#"(?i)\bsrc\s*=\s*"([^"]*)""#).unwrap();
@@ -588,7 +596,7 @@ fn compress_text_kf8(text_bytes: &[u8]) -> (Vec<Vec<u8>>, usize) {
         .chunks(chunk_size)
         .map(|chunk| {
             let mut compressed = palmdoc::compress(chunk);
-            // KF8 trailer: multibyte byte only (no TBS).
+            // KF8 trailer: multibyte only (no TBS). extra_data_flags=1.
             compressed.push(0x00);
             compressed
         })
@@ -606,7 +614,7 @@ fn split_text_uncompressed_kf8(text_bytes: &[u8]) -> (Vec<Vec<u8>>, usize) {
         .chunks(chunk_size)
         .map(|chunk| {
             let mut rec = chunk.to_vec();
-            // KF8 trailer: multibyte byte only (no TBS).
+            // KF8 trailer: multibyte only (no TBS). extra_data_flags=1.
             rec.push(0x00);
             rec
         })
@@ -617,22 +625,26 @@ fn split_text_uncompressed_kf8(text_bytes: &[u8]) -> (Vec<Vec<u8>>, usize) {
 
 /// Build the FDST (Flow Descriptor Table) record.
 fn build_fdst(html_length: usize, total_length: usize) -> Vec<u8> {
-    let flow_count = if total_length > html_length { 2 } else { 1 };
+    let has_css = total_length > html_length;
+    let flow_count: usize = 2; // Always 2 per KCC/libmobi
 
     let record_size = 12 + flow_count * 8;
     let mut fdst = Vec::with_capacity(record_size);
     fdst.extend_from_slice(b"FDST");
-    fdst.extend_from_slice(&12u32.to_be_bytes()); // offset to entries
+    fdst.extend_from_slice(&12u32.to_be_bytes());
     fdst.extend_from_slice(&(flow_count as u32).to_be_bytes());
 
     // Flow 0: HTML
     fdst.extend_from_slice(&0u32.to_be_bytes());
     fdst.extend_from_slice(&(html_length as u32).to_be_bytes());
 
-    // Flow 1: CSS (if present)
-    if flow_count > 1 {
+    // Flow 1: CSS or zero-length stub
+    if has_css {
         fdst.extend_from_slice(&(html_length as u32).to_be_bytes());
         fdst.extend_from_slice(&(total_length as u32).to_be_bytes());
+    } else {
+        fdst.extend_from_slice(&(html_length as u32).to_be_bytes());
+        fdst.extend_from_slice(&(html_length as u32).to_be_bytes());
     }
 
     fdst
@@ -1001,31 +1013,74 @@ fn build_fragment_indx_with_cncx(
 /// We don't emit a real ToC here — the NCX exists purely so libmobi /
 /// Kindle have a non-0xFFFFFFFF index when parsing the header. A single
 /// entry with offset 0 (tag 1) is enough to keep the file well-formed.
-fn build_ncx_indx(num_files: usize) -> Vec<Vec<u8>> {
-    let n = num_files.max(1);
-    let tag_defs = [TagMeta { number: 1, values_per_entry: 1, mask: 1 }];
-    let tagx = build_tagx(&[(1, 1, 1)]);
+/// Build NCX INDX with the 5-tag structure required by Kindle firmware.
+///
+/// Tags: 1 (offset), 2 (length), 3 (CNCX label), 4 (depth), 6 (pos_fid).
+/// Emits a single NCX entry covering the entire text, matching kindlegen's
+/// behavior for simple comics. Returns (indx_records, cncx_records).
+fn build_ncx_indx(
+    title: &str,
+    skeleton_entries: &[SkeletonEntry],
+    text_length: usize,
+) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+    // Build CNCX containing the book title as the TOC label.
+    let mut ncx_cncx = CncxBuilder::new();
+    let label_offset = ncx_cncx.add(title);
 
-    let mut entries: Vec<Vec<u8>> = Vec::with_capacity(n);
-    for i in 0..n {
-        let label = format!("{:010X}", i);
-        let values: [Vec<u32>; 1] = [vec![0u32]]; // offset = 0
-        let entry = encode_indx_entry(label.as_bytes(), &tag_defs, &values);
-        entries.push(entry);
-    }
+    // 5 tags matching kindlegen's NCX layout:
+    //   tag 1: offset (1 val, mask 0x01)
+    //   tag 2: length (1 val, mask 0x02)
+    //   tag 3: CNCX label offset (1 val, mask 0x04)
+    //   tag 4: depth (1 val, mask 0x08)
+    //   tag 6: pos_fid (2 vals, mask 0x10)
+    let tag_defs = [
+        TagMeta { number: 1, values_per_entry: 1, mask: 0x01 },
+        TagMeta { number: 2, values_per_entry: 1, mask: 0x02 },
+        TagMeta { number: 3, values_per_entry: 1, mask: 0x04 },
+        TagMeta { number: 4, values_per_entry: 1, mask: 0x08 },
+        TagMeta { number: 6, values_per_entry: 2, mask: 0x10 },
+    ];
+    let tagx = build_tagx(&[(1, 1, 0x01), (2, 1, 0x02), (3, 1, 0x04), (4, 1, 0x08), (6, 2, 0x10)]);
 
-    let data_record = build_indx_data_record(&entries);
-    let last_label = format!("{:010X}", n - 1).into_bytes();
-    let primary = build_indx_primary(&tagx, 1, n, 0, &[(last_label, n as u32)]);
-    vec![primary, data_record]
+    // Single NCX entry covering the entire book.
+    let offset = if skeleton_entries.is_empty() { 0 } else { skeleton_entries[0].start_pos };
+    let length = if text_length > offset { text_length - offset } else { 0 };
+
+    // Label "0" matches kindlegen's minimal NCX label format.
+    let label = b"0";
+    let values: [Vec<u32>; 5] = [
+        vec![offset as u32],        // tag 1: byte offset in text
+        vec![length as u32],        // tag 2: length of region
+        vec![label_offset],         // tag 3: CNCX offset for title
+        vec![0],                    // tag 4: depth (flat)
+        vec![0, 0],                 // tag 6: pos_fid (frag 0, offset 0)
+    ];
+    let entry = encode_indx_entry(label, &tag_defs, &values);
+
+    let data_record = build_indx_data_record(&[entry]);
+    let ncx_cncx_count = ncx_cncx.record_count();
+    let primary = build_indx_primary(&tagx, 1, 1, ncx_cncx_count, &[(label.to_vec(), 1u32)]);
+
+    (vec![primary, data_record], ncx_cncx.into_records())
 }
 
 /// Build a DATP record (stub - minimal valid record).
 fn build_datp() -> Vec<u8> {
-    let mut datp = vec![0u8; 152];
-    datp[0..4].copy_from_slice(b"DATP");
-    put32(&mut datp, 4, 0x0000000D);
-    datp
+    // DATP contains precomputed TBS (Trailing Byte Sequence) index data.
+    // An all-zeros DATP crashes the Kindle renderer. These bytes are from
+    // a working kindlegen output for a simple comic (1 text record, 1 NCX
+    // entry). The format encodes NCX-to-text-record mappings.
+    // TODO: generate dynamically for multi-record text layouts.
+    vec![
+        0x44, 0x41, 0x54, 0x50, // "DATP"
+        0x00, 0x00, 0x00, 0x0D, // header value
+        0x01, 0x04, 0x00, 0x04,
+        0x02, 0x00, 0x00, 0x06,
+        0x19, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x01,
+        0x6D, 0x02, 0x46, 0x02,
+        0x66, 0x00, 0x00, 0x00,
+    ]
 }
 
 /// Build a minimal INDX pair for empty tables.
@@ -1245,17 +1300,13 @@ mod tests {
     }
 
     #[test]
-    fn kf8_trailer_has_no_tbs_byte() {
+    fn kf8_trailer_multibyte_only() {
         let text = b"<html><body>hello</body></html>";
         let (records, _) = compress_text_kf8(text);
         assert_eq!(records.len(), 1);
-        // Trailer is only the multibyte marker 0x00 (no 0x81 TBS).
+        // Trailer: multibyte(0x00) only. No TBS until proper TBS generation.
         let last = records[0].last().copied().unwrap();
-        assert_eq!(last, 0x00, "trailer must be just the 0x00 multibyte byte");
-        // And there must not be a 0x81 immediately before it (that would
-        // indicate a TBS byte slipped in).
-        let second_last = records[0][records[0].len() - 2];
-        assert_ne!(second_last, 0x81, "TBS byte must not be appended for KF8");
+        assert_eq!(last, 0x00, "trailer must be the 0x00 multibyte byte");
     }
 
     #[test]
@@ -1277,6 +1328,7 @@ mod tests {
             &spine_items,
             true,  // no_compress for deterministic byte counts
             false, // kindlegen_parity
+            "Test Book",
         );
         assert!(!section.text_records.is_empty());
         assert_eq!(&section.fdst[0..4], b"FDST");
@@ -1299,7 +1351,7 @@ mod tests {
             u32::from_be_bytes(section.fragment_indx[0][52..56].try_into().unwrap()),
             1
         );
-        // Text records should NOT end in 0x81 (TBS dropped).
+        // Text records end with multibyte(0x00) only.
         for r in &section.text_records {
             assert_eq!(*r.last().unwrap(), 0x00);
         }

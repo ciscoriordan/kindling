@@ -269,7 +269,7 @@ fn build_dictionary_mobi(
 
     // Build FLIS, FCIS, EOF records
     let flis = build_flis();
-    let fcis = build_fcis(text_length);
+    let fcis = build_fcis(text_length, 1); // dictionaries: 1 flow
     let eof = build_eof();
 
     // Build optional SRCS and CMET records
@@ -534,6 +534,7 @@ fn build_book_mobi(
     }
 
     let css_content = extract_css_content(opf);
+    let kf8_title = if opf.title.is_empty() { "Book" } else { &opf.title };
     let kf8_section = crate::kf8::build_kf8_section(
         &html_parts,
         &css_content,
@@ -541,6 +542,7 @@ fn build_book_mobi(
         &opf.spine_items,
         no_compress,
         kindlegen_parity,
+        kf8_title,
     );
     eprintln!(
         "KF8: {} text records ({} bytes), {} flows",
@@ -629,16 +631,20 @@ fn build_book_mobi(
             + kf8_section.fragment_indx.len()
             + kf8_section.cncx_records.len();
         let kf8_ncx_start = kf8_skeleton_start + kf8_section.skeleton_indx.len();
-        let kf8_fdst_idx = kf8_ncx_start + kf8_section.ncx_indx.len();
-        let kf8_datp_idx = kf8_fdst_idx + 1;
-        let kf8_flis_idx = kf8_datp_idx + 1;
+        let kf8_fdst_idx = kf8_ncx_start
+            + kf8_section.ncx_indx.len()
+            + kf8_section.ncx_cncx_records.len();
+        // Record order must match kindlegen: FDST, FLIS, FCIS, DATP, EOF
+        let kf8_flis_idx = kf8_fdst_idx + 1;
         let kf8_fcis_idx = kf8_flis_idx + 1;
+        let kf8_datp_idx = kf8_fcis_idx + 1;
         let kf8_srcs_idx = if srcs_record.is_some() {
             Some(kf8_fcis_idx + 1)
         } else {
             None
         };
-        let kf8_first_nonbook = kf8_text_count + 1;
+        // +2 skips the NULL pad record (text_count+1=NULL, +2=first INDX)
+        let kf8_first_nonbook = kf8_text_count + 2;
 
         // HD container
         let hd_container: Option<HdContainer> = if hd_images && num_image_records > 0 {
@@ -655,6 +661,7 @@ fn build_book_mobi(
             + kf8_section.cncx_records.len()
             + kf8_section.skeleton_indx.len()
             + kf8_section.ncx_indx.len()
+            + kf8_section.ncx_cncx_records.len()
             + 1 + 1 + 1 + 1  // FDST + DATP + FLIS + FCIS
             + num_optional + 1  // [SRCS] + [CMET] + EOF
             + hd_record_count;
@@ -687,9 +694,9 @@ fn build_book_mobi(
         );
 
         let kf8_flis_rec = build_flis();
-        let kf8_fcis_rec = build_fcis(kf8_section.text_length);
+        let kf8_fcis_rec = build_fcis(kf8_section.text_length, kf8_section.flow_count);
         let eof = build_eof();
-        let null_pad_rec = vec![0x00u8];
+        let null_pad_rec = vec![0x00u8, 0x00u8]; // 2-byte NULL pad (matches KCC)
 
         // Assemble KF8-only records
         let mut all_records: Vec<Vec<u8>> = Vec::new();
@@ -701,10 +708,12 @@ fn build_book_mobi(
         all_records.extend(kf8_section.cncx_records);
         all_records.extend(kf8_section.skeleton_indx);
         all_records.extend(kf8_section.ncx_indx);
+        all_records.extend(kf8_section.ncx_cncx_records);
         all_records.push(kf8_section.fdst);
-        all_records.push(kf8_section.datp);
+        // Order must match kindlegen: FLIS, FCIS, DATP (not DATP first)
         all_records.push(kf8_flis_rec);
         all_records.push(kf8_fcis_rec);
+        all_records.push(kf8_section.datp);
         if let Some(srcs) = srcs_record {
             all_records.push(srcs);
         }
@@ -796,11 +805,15 @@ fn build_book_mobi(
             + kf8_section.fragment_indx.len()
             + kf8_section.cncx_records.len();
         let kf8_ncx_start = kf8_skeleton_start + kf8_section.skeleton_indx.len();
-        let kf8_fdst_idx = kf8_ncx_start + kf8_section.ncx_indx.len();
-        let kf8_datp_idx = kf8_fdst_idx + 1;
-        let kf8_flis_idx = kf8_datp_idx + 1;
+        let kf8_fdst_idx = kf8_ncx_start
+            + kf8_section.ncx_indx.len()
+            + kf8_section.ncx_cncx_records.len();
+        // Record order must match kindlegen: FDST, FLIS, FCIS, DATP, EOF
+        let kf8_flis_idx = kf8_fdst_idx + 1;
         let kf8_fcis_idx = kf8_flis_idx + 1;
-        let kf8_first_nonbook = kf8_text_count + 1;
+        let kf8_datp_idx = kf8_fcis_idx + 1;
+        // +2 skips the NULL pad record (text_count+1=NULL, +2=first INDX)
+        let kf8_first_nonbook = kf8_text_count + 2;
 
         // HD container
         let hd_container: Option<HdContainer> = if hd_images && num_image_records > 0 {
@@ -817,6 +830,7 @@ fn build_book_mobi(
             + kf8_section.cncx_records.len()
             + kf8_section.skeleton_indx.len()
             + kf8_section.ncx_indx.len()
+            + kf8_section.ncx_cncx_records.len()
             + 1 + 1 + 3  // FDST + DATP + FLIS + FCIS + EOF
             + hd_record_count;
 
@@ -867,7 +881,7 @@ fn build_book_mobi(
             thumb_offset,
             kf8_cover_uri.as_deref(),
             fixed_layout.as_ref(),
-            0xFFFFFFFF, // KF8 first_image (images are in KF7 section)
+            kf8_fdst_idx, // KF8 first_image = fdst_idx (matches KCC/kindlegen)
             creator_tag,
             None,  // no SRCS in KF8 section of dual format
             None,  // no HD geometry in KF8 section of dual format
@@ -877,12 +891,12 @@ fn build_book_mobi(
 
         // Build FLIS/FCIS/EOF for both sections
         let kf7_flis_rec = build_flis();
-        let kf7_fcis_rec = build_fcis(text_length);
+        let kf7_fcis_rec = build_fcis(text_length, 1); // KF7: 1 flow
         let kf8_flis_rec = build_flis();
-        let kf8_fcis_rec = build_fcis(kf8_section.text_length);
+        let kf8_fcis_rec = build_fcis(kf8_section.text_length, kf8_section.flow_count);
         let eof = build_eof();
         let boundary_rec = b"BOUNDARY".to_vec();
-        let null_pad_rec = vec![0x00u8];
+        let null_pad_rec = vec![0x00u8, 0x00u8]; // 2-byte NULL pad (matches KCC)
 
         // Assemble all records
         let mut all_records: Vec<Vec<u8>> = Vec::new();
@@ -911,10 +925,12 @@ fn build_book_mobi(
         all_records.extend(kf8_section.cncx_records);
         all_records.extend(kf8_section.skeleton_indx);
         all_records.extend(kf8_section.ncx_indx);
+        all_records.extend(kf8_section.ncx_cncx_records);
         all_records.push(kf8_section.fdst);
-        all_records.push(kf8_section.datp);
+        // Order must match kindlegen: FLIS, FCIS, DATP (not DATP first)
         all_records.push(kf8_flis_rec);
         all_records.push(kf8_fcis_rec);
+        all_records.push(kf8_section.datp);
         all_records.push(eof);
 
         // HD image container
@@ -2510,22 +2526,24 @@ fn build_record0(
 
     // EXTH flags / locale marker at offset 112.
     // Dictionaries: 0x50 (bit 6 = EXTH present, bit 4 set) - matches Kindle Previewer output.
-    // Books: 0x4850 required for Kindle Previewer compatibility.
-    // Using 0x4850 for dictionaries breaks dictionary recognition on Kindle devices.
+    // KCC uses 0x850 for KF7 books/comics. 0x4850 was a Kindle Previewer
+    // artifact that may cause rejection on real Kindle hardware.
     if is_dictionary {
         put32(&mut mobi, 112, 0x50);
     } else {
-        put32(&mut mobi, 112, 0x4850);
+        put32(&mut mobi, 112, 0x850);
     }
 
     put32(&mut mobi, 148, 0xFFFFFFFF); // DRM flags
     put32(&mut mobi, 152, 0xFFFFFFFF);
 
-    // FDST flow count
+    // FDST flow count composite (KF7 only): high word = 1 (flow count),
+    // low word = index of last content record before FLIS/FCIS.
+    // KCC/kindlegen uses (flis_record - 1), NOT total_records.
     put32(
         &mut mobi,
         176,
-        (1u32 << 16) | ((total_records - 1) as u32),
+        (1u32 << 16) | ((flis_record - 1) as u32),
     );
     put32(&mut mobi, 180, 1);
 
@@ -2608,9 +2626,15 @@ fn build_record0(
     record0.extend_from_slice(&exth_data);
     record0.extend_from_slice(full_name_bytes);
 
-    // Pad to 4-byte boundary
+    // Pad to 4-byte boundary, then pad to minimum size matching
+    // KCC/kindlegen output (~8K). DualMetaFix-style tools need
+    // padding space to insert EXTH records without changing record size.
     while record0.len() % 4 != 0 {
         record0.push(0x00);
+    }
+    const MIN_RECORD0_SIZE: usize = 8892;
+    if record0.len() < MIN_RECORD0_SIZE {
+        record0.resize(MIN_RECORD0_SIZE, 0x00);
     }
 
     record0
@@ -2623,6 +2647,10 @@ fn build_record0(
 /// provides the HD image geometry string. `_total_records` is no longer used
 /// (the KF8 MOBI header's fdst_idx at offset 176 is now written unconditionally
 /// to the FDST record index, matching the Calibre writer8 layout).
+///
+/// NOTE: For dual-format .mobi files, the Kindle reads the library title from
+/// the KF8 Record 0's full name, not the KF7 Record 0. Both must be set but
+/// the KF8 value is what appears in the Kindle library.
 fn build_kf8_record0(
     opf: &OPFData,
     text_length: usize,
@@ -2687,7 +2715,7 @@ fn build_kf8_record0(
     put32(&mut mobi, 16, unique_id);
 
     put32(&mut mobi, 20, 8); // file version = 8 (KF8)
-    put32(&mut mobi, 24, 0xFFFFFFFF); // orth index (none for KF8 books)
+    put32(&mut mobi, 24, fragment_indx_record as u32); // orth index = fragment INDX (matches KCC)
     put32(&mut mobi, 28, 0xFFFFFFFF); // inflection index
     put32(&mut mobi, 32, 0xFFFFFFFF); // index names
     put32(&mut mobi, 36, 0xFFFFFFFF); // index keys
@@ -2704,7 +2732,7 @@ fn build_kf8_record0(
     put32(&mut mobi, 96, 0); // huffman record
     put32(&mut mobi, 100, 0); // huffman count
 
-    put32(&mut mobi, 112, 0x4850); // locale/capability marker (required by Kindle Previewer)
+    put32(&mut mobi, 112, 0x50); // exth_flags (matches KCC KF8 section)
 
     put32(&mut mobi, 148, 0xFFFFFFFF); // DRM flags
     put32(&mut mobi, 152, 0xFFFFFFFF);
@@ -2752,10 +2780,12 @@ fn build_kf8_record0(
         put32(&mut mobi, 208, 0xFFFFFFFF);
         put32(&mut mobi, 212, 0);
     }
+    // Unknown fields at 216/220: 0xFFFFFFFF (matches KCC/kindlegen)
+    put32(&mut mobi, 216, 0xFFFFFFFF);
+    put32(&mut mobi, 220, 0xFFFFFFFF);
 
-    // Extra record data flags: bit 0 (multibyte) only. No TBS byte for KF8
-    // per Calibre writer8/mobi.py (extra_data_flags = 1). The kf8.rs
-    // compressor already omits the TBS trailing byte.
+    // Extra record data flags: multibyte only, no TBS.
+    // KCC uses 3 (with TBS navigation data) but our TBS stubs crash the renderer.
     put32(&mut mobi, 224, 1);
 
     // NCX (primary index record)
@@ -2766,8 +2796,9 @@ fn build_kf8_record0(
     put32(&mut mobi, 236, skeleton_indx_record as u32);
     put32(&mut mobi, 240, datp_record as u32);
     put32(&mut mobi, 244, 0xFFFFFFFF);
+    // Offsets 248-256: match KCC (248=0xFFFFFFFF, 252=0x00000000, 256=0xFFFFFFFF)
     put32(&mut mobi, 248, 0xFFFFFFFF);
-    put32(&mut mobi, 252, 0xFFFFFFFF);
+    put32(&mut mobi, 252, 0x00000000);
     put32(&mut mobi, 256, 0xFFFFFFFF);
 
     // Build EXTH header
@@ -2804,9 +2835,13 @@ fn build_kf8_record0(
     record0.extend_from_slice(&exth_data);
     record0.extend_from_slice(full_name_bytes);
 
-    // Pad to 4-byte boundary
+    // Pad to match KCC/kindlegen Record 0 size
     while record0.len() % 4 != 0 {
         record0.push(0x00);
+    }
+    const MIN_RECORD0_SIZE: usize = 8892;
+    if record0.len() < MIN_RECORD0_SIZE {
+        record0.resize(MIN_RECORD0_SIZE, 0x00);
     }
 
     record0
@@ -2830,16 +2865,26 @@ fn build_flis() -> Vec<u8> {
 }
 
 /// Build the FCIS record.
-fn build_fcis(text_length: usize) -> Vec<u8> {
-    let mut fcis = Vec::with_capacity(44);
+fn build_fcis(text_length: usize, flow_count: usize) -> Vec<u8> {
+    // FCIS entry count should match FDST flow count.
+    // KCC/kindlegen uses entry_count=2 for dual-flow (HTML+CSS) files,
+    // with an extra 8-byte block per additional flow.
+    let entry_count = flow_count.max(1);
+    let mut fcis = Vec::with_capacity(44 + (entry_count - 1) * 8);
     fcis.extend_from_slice(b"FCIS");
     fcis.extend_from_slice(&20u32.to_be_bytes());
     fcis.extend_from_slice(&16u32.to_be_bytes());
-    fcis.extend_from_slice(&1u32.to_be_bytes());
+    fcis.extend_from_slice(&(entry_count as u32).to_be_bytes());
     fcis.extend_from_slice(&0u32.to_be_bytes());
     fcis.extend_from_slice(&(text_length as u32).to_be_bytes());
     fcis.extend_from_slice(&0u32.to_be_bytes());
-    fcis.extend_from_slice(&32u32.to_be_bytes());
+    // Per-flow block: KCC uses 0x28 for 2-flow, 0x20 for 1-flow
+    let block_size: u32 = if entry_count > 1 { 0x28 } else { 0x20 };
+    fcis.extend_from_slice(&block_size.to_be_bytes());
+    for _ in 1..entry_count {
+        fcis.extend_from_slice(&0u32.to_be_bytes());
+        fcis.extend_from_slice(&block_size.to_be_bytes());
+    }
     fcis.extend_from_slice(&8u32.to_be_bytes());
     fcis.extend_from_slice(&1u16.to_be_bytes());
     fcis.extend_from_slice(&1u16.to_be_bytes());
@@ -2962,24 +3007,30 @@ fn build_palmdb(title: &str, records: &[Vec<u8>]) -> Vec<u8> {
 }
 
 /// Convert a language code to a MOBI locale code.
+/// Map a language tag to a Windows LCID (locale identifier).
+/// KCC/kindlegen uses full LCIDs (e.g., 0x0409 for en-US), not just the
+/// primary language ID (0x09). Using primary IDs causes Kindle to reject files.
 fn locale_code(lang: &str) -> u32 {
     match lang {
-        "en" => 9,
-        "el" => 8,
-        "de" => 7,
-        "fr" => 12,
-        "es" => 10,
-        "it" => 16,
-        "pt" => 22,
-        "nl" => 19,
-        "ru" => 25,
-        "ja" => 17,
-        "zh" => 4,
-        "ko" => 18,
-        "ar" => 1,
-        "he" => 13,
-        "tr" => 31,
-        _ => 0,
+        "en" | "en-US" => 0x0409,
+        "en-GB" => 0x0809,
+        "el" | "el-GR" => 0x0408,
+        "de" | "de-DE" => 0x0407,
+        "fr" | "fr-FR" => 0x040C,
+        "es" | "es-ES" => 0x0C0A,
+        "it" | "it-IT" => 0x0410,
+        "pt" | "pt-BR" => 0x0416,
+        "pt-PT" => 0x0816,
+        "nl" | "nl-NL" => 0x0413,
+        "ru" | "ru-RU" => 0x0419,
+        "ja" | "ja-JP" => 0x0411,
+        "zh" | "zh-CN" => 0x0804,
+        "zh-TW" => 0x0404,
+        "ko" | "ko-KR" => 0x0412,
+        "ar" | "ar-SA" => 0x0401,
+        "he" | "he-IL" => 0x040D,
+        "tr" | "tr-TR" => 0x041F,
+        _ => 0x0409, // default to en-US
     }
 }
 

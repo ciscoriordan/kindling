@@ -204,9 +204,10 @@ fn roundtrip_simple_book() {
         "book: KF8 encoding must be UTF-8 (65001), got {}",
         kf7.header.encoding
     );
-    assert_eq!(
+    // KF8 orth_index points to fragment INDX record (matches KCC/kindlegen).
+    assert_ne!(
         kf7.header.orth_index, 0xFFFFFFFF,
-        "book: orth_index should be unset (0xFFFFFFFF), got 0x{:08x}",
+        "book: KF8 orth_index should point to fragment INDX, got 0x{:08x}",
         kf7.header.orth_index
     );
     assert_required_exth(kf7, "book KF8", true);

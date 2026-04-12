@@ -448,11 +448,12 @@ mod tests {
         let (_, _, offsets) = parse_palmdb(&data);
         let rec0 = get_record(&data, &offsets, 0);
 
-        // Book KF7 Record 0 should use 0x4850
+        // Book KF7 Record 0 should use 0x850 (matches KCC/kindlegen;
+        // 0x4850 was a Kindle Previewer artifact).
         let cap_marker = read_u32_be(rec0, 128);
         assert_eq!(
-            cap_marker, 0x4850,
-            "Book capability marker at offset 112 should be 0x4850, got 0x{:X}",
+            cap_marker, 0x850,
+            "Book capability marker at offset 112 should be 0x850, got 0x{:X}",
             cap_marker
         );
         println!("  \u{2713} Book capability marker: 0x{:X}", cap_marker);
@@ -5830,7 +5831,7 @@ mod tests {
         // Offset 76: language code - should be non-zero for "en"
         let lang = read_u32_be(rec0, 16 + 76);
         assert_ne!(lang, 0, "Dict language code should be non-zero");
-        assert_eq!(lang, 9, "Dict language code for 'en' should be 9, got {}", lang);
+        assert_eq!(lang, 0x0409, "Dict language code for 'en' should be 0x0409 (Windows LCID), got 0x{:X}", lang);
         println!("  \u{2713} Dict language code: {}", lang);
     }
 
@@ -6062,7 +6063,7 @@ mod tests {
 
         let lang = read_u32_be(rec0, 16 + 76);
         assert_ne!(lang, 0, "Book language code should be non-zero for 'en'");
-        assert_eq!(lang, 9, "Book language code for 'en' should be 9, got {}", lang);
+        assert_eq!(lang, 0x0409, "Book language code for 'en' should be 0x0409 (Windows LCID), got 0x{:X}", lang);
         println!("  \u{2713} Book language code: {}", lang);
     }
 
@@ -6115,7 +6116,7 @@ mod tests {
         let rec0 = get_record(&data, &offsets, 0);
 
         let cap = read_u32_be(rec0, 16 + 112);
-        assert_eq!(cap, 0x4850, "Book capability marker should be 0x4850, got 0x{:X}", cap);
+        assert_eq!(cap, 0x850, "Book capability marker should be 0x850, got 0x{:X}", cap);
         println!("  \u{2713} Book capability marker: 0x{:X}", cap);
     }
 
@@ -6157,15 +6158,15 @@ mod tests {
         assert_eq!(read_u32_be(rec0, 16 + 20), 8);
         // Min version = 8
         assert_eq!(read_u32_be(rec0, 16 + 88), 8);
-        // Orth index = 0xFFFFFFFF (no dictionary)
-        assert_eq!(read_u32_be(rec0, 16 + 24), 0xFFFFFFFF);
+        // Orth index = fragment INDX record (matches KCC/kindlegen)
+        let orth = read_u32_be(rec0, 16 + 24);
+        assert_ne!(orth, 0, "KF8 orth index should point to fragment INDX");
         // First non-book record valid
         let fnbr = read_u32_be(rec0, 16 + 64);
         assert!(fnbr > 0 && (fnbr as u16) <= record_count);
-        // Capability marker = 0x4850
-        assert_eq!(read_u32_be(rec0, 16 + 112), 0x4850);
-        // Extra record data flags = 1 (bit 0 multibyte only; no TBS for KF8
-        // per Calibre writer8/mobi.py). The KF8 compressor omits TBS bytes.
+        // Capability marker = 0x50 for KF8 (matches KCC/kindlegen)
+        assert_eq!(read_u32_be(rec0, 16 + 112), 0x50);
+        // Extra record data flags = 1 (multibyte only, no TBS yet)
         assert_eq!(read_u32_be(rec0, 16 + 224), 1);
         println!("  \u{2713} KF8-only MOBI header fields all correct");
     }

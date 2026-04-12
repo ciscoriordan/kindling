@@ -117,7 +117,16 @@ Converts image folders, CBZ files, CBR files, and EPUB files to Kindle-optimized
 - **EPUB support**: Fixed-layout EPUB comics extracted in spine order (correct page sequence)
 - **CBR support**: RAR-based comic archives extracted via `bsdtar` (libarchive). `/usr/bin/bsdtar` ships with macOS; on Linux install `libarchive-tools` (`apt`) or `bsdtar` (`dnf`). Both RAR4 and RAR5 are supported. Header-encrypted CBRs are rejected with a clear error.
 - **ComicInfo.xml**: Auto-reads metadata and manga direction from CBZ and CBR files
-- **Metadata overrides**: `--title`, `--author`, `--language`, `--cover` (page number or file path)
+- **Metadata overrides**: `--title`, `--author`, `--language`, `--cover` (page number or file path). Without `--title`, the title is read from ComicInfo.xml or defaults to "Comic".
+
+**Kindle library field mapping** (what the Kindle actually displays for sideloaded content):
+
+| Library field | MOBI source | Notes |
+|---|---|---|
+| **Title** | EXTH 503 (updated_title) > KF8 Record 0 full_name > PalmDB name | EXTH 503 always wins. For dual-format `.mobi`, Kindle reads full_name from KF8 Record 0, not KF7. |
+| **Author** | EXTH 100 | Set via `--author` flag or ComicInfo.xml `<Writer>`/`<Penciller>`. Defaults to "Unknown". |
+| **Cover** | EXTH 201 (cover image offset in image pool) + EXTH 129 (KF8 cover URI) | Cover offset is 0-based index within image records starting at `first_image`. |
+| **Document type** | EXTH 501 | `PDOC` = Documents shelf (default), `EBOK` = Books shelf. Set via `--doc-type ebok`. |
 - **Document type**: `--doc-type ebok` to appear under Books instead of Documents on Kindle (default: `pdoc`)
 - **KF8-only by default**: comics output `.azw3` with only the KF8 section (no MOBI7); pass `--legacy-mobi` for the old dual-format behavior on pre-2012 Kindles
 

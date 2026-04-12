@@ -18,6 +18,11 @@
 
 use std::fs;
 use std::io::Read;
+
+/// Default author when no author is specified via CLI or ComicInfo.xml.
+/// Kindle silently refuses to index books with no author, so this must
+/// be non-empty.
+const DEFAULT_AUTHOR: &str = "kindling";
 use std::path::{Path, PathBuf};
 
 use crate::cbr;
@@ -218,6 +223,9 @@ struct ProcessedImage {
     index: usize,
     /// JPEG-encoded image bytes
     jpeg_data: Vec<u8>,
+    /// Actual pixel dimensions of the processed image
+    width: u32,
+    height: u32,
     /// Panel rectangles for Panel View (None = no panels / full-page splash)
     panels: Option<Vec<PanelRect>>,
 }
@@ -318,9 +326,15 @@ pub fn build_comic_with_options(
     let mut page_idx = 0;
     for (_orig_idx, pages) in &processed_groups {
         for jpeg_data in pages {
+            // Read actual image dimensions from the JPEG data
+            let (w, h) = image::load_from_memory(jpeg_data)
+                .map(|img| (img.width(), img.height()))
+                .unwrap_or((profile.width, profile.height));
             processed.push(ProcessedImage {
                 index: page_idx,
                 jpeg_data: jpeg_data.clone(),
+                width: w,
+                height: h,
                 panels: None, // Filled in below if panel_view is enabled
             });
             page_idx += 1;
@@ -430,7 +444,7 @@ pub fn build_comic_with_options(
         false,  // headwords_only (N/A for books)
         srcs_data.as_deref(),
         false,  // no CMET
-        false,  // allow HD images
+        true,   // skip HD images (KCC doesn't emit HD container)
         false,  // default creator identity
         options.kf8_only,
         options.doc_type.as_deref(),
@@ -2064,12 +2078,13 @@ fn write_fixed_layout_epub_v2(
 
     // Write XHTML pages
     for page in pages {
-        let xhtml = build_page_xhtml(page.index, profile, page.panels.as_deref(), options.kindlegen_parity);
+        let xhtml = build_page_xhtml(page.index, page.width, page.height, page.panels.as_deref(), options.kindlegen_parity);
         let filename = format!("page_{:04}.xhtml", page.index);
         fs::write(temp_dir.join(&filename), xhtml.as_bytes())?;
     }
-    // No comic.css: container styles are inlined into the page xhtml,
-    // matching kindlegen's single-flow KF8 layout (FDST flow_count = 1).
+    // CSS for KF8 fixed-layout rendering (kindle:flow:0001).
+    let css = "@page {\nmargin: 0;\n}\nbody {\ndisplay: block;\nmargin: 0;\npadding: 0;\n}\n";
+    fs::write(temp_dir.join("comic.css"), css.as_bytes())?;
 
     // Handle external cover image if provided
     let external_cover_id = if let Some(CoverSource::FilePath(ref path)) = options.cover {
@@ -2119,8 +2134,9 @@ fn build_comic_opf_v2(
     let mut manifest_items = String::new();
     let mut spine_items = String::new();
 
-    // NCX
+    // NCX + CSS
     manifest_items.push_str("    <item id=\"ncx\" href=\"toc.ncx\" media-type=\"application/x-dtbncx+xml\"/>\n");
+    manifest_items.push_str("    <item id=\"css\" href=\"comic.css\" media-type=\"text/css\"/>\n");
 
     for i in 0..num_pages {
         manifest_items.push_str(&format!(
@@ -2173,25 +2189,25 @@ fn build_comic_opf_v2(
             .unwrap_or_else(|| "Comic".to_string())
     };
 
-    // Determine creators: CLI override > ComicInfo.xml > "Unknown".
+    // Determine creators: CLI override > ComicInfo.xml > "kindling".
     // All creators are joined into a single <dc:creator> entry because the
     // OPF parser used downstream keeps only one creator, so multiple tags
     // would silently drop all but the last name (which is how EXTH 100 lost
-    // the Vader Down writers in v0.7.4). A fallback author of "Unknown" is
-    // critical: Kindle silently refuses to index books with no author, so
-    // an empty EXTH 100 is a library-invisibility bug.
+    // the Vader Down writers in v0.7.4). A fallback author is critical:
+    // Kindle silently refuses to index books with no author, so an empty
+    // EXTH 100 is a library-invisibility bug.
     let mut creator_entries = String::new();
     let creator_value: String = if let Some(ref author) = options.author_override {
         author.clone()
     } else if let Some(meta) = metadata {
         let creators = meta.creators();
         if creators.is_empty() {
-            "Unknown".to_string()
+            DEFAULT_AUTHOR.to_string()
         } else {
             creators.join(", ")
         }
     } else {
-        "Unknown".to_string()
+        "kindling".to_string()
     };
     creator_entries.push_str(&format!(
         "    <dc:creator>{}</dc:creator>\n",
@@ -2297,7 +2313,8 @@ fn escape_xml(s: &str) -> String {
 ///   except for genuinely unavoidable deltas (compression seeds etc).
 fn build_page_xhtml(
     page_index: usize,
-    profile: &DeviceProfile,
+    img_width: u32,
+    img_height: u32,
     panels: Option<&[PanelRect]>,
     kindlegen_parity: bool,
 ) -> String {
@@ -2324,8 +2341,8 @@ fn build_page_xhtml(
             r#"<?xml version="1.0" encoding="UTF-8"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>Page {page_num}</title></head><body><div><img src="images/page_{index:04}.jpg" alt="page {page_num}" width="{w}" height="{h}"/></div>{panel_divs}</body></html>"#,
             page_num = page_index + 1,
             index = page_index,
-            w = profile.width,
-            h = profile.height,
+            w = img_width,
+            h = img_height,
             panel_divs = panel_divs,
         );
     }
@@ -2350,29 +2367,25 @@ fn build_page_xhtml(
         _ => String::new(),
     };
 
-    // Page geometry comes from the fixed-layout EXTH records (122/307/527),
-    // not from a <meta name="viewport"> tag — kindlegen omits the viewport
-    // meta for KF8 comics and so do we. Container box-model rules are
-    // inlined as `style=` attributes so we don't need an external
-    // stylesheet (FDST stays at flow_count = 1).
-    let _ = profile;
+    // Fixed-layout template matching kindlegen's structure.
+    // Viewport and img dimensions use ACTUAL image size (not device profile),
+    // matching KCC's behavior. Using device profile dimensions causes cropping
+    // when image aspect ratio differs from screen.
     format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml">
-<head>
-  <meta charset="UTF-8"/>
-  <title>Page {page_num}</title>
-</head>
-<body style="margin:0;padding:0;width:100%;height:100%">
-  <div id="content" style="width:100%;height:100%;text-align:center">
-    <img src="images/page_{index:04}.jpg" alt="Page {page_num}" style="width:100%;height:100%;object-fit:contain"/>
-  </div>
-{panel_divs}</body>
-</html>
+        r#"<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml"><head>
+<title>Page {page_num}</title>
+<link href="kindle:flow:0001?mime=text/css" type="text/css" rel="stylesheet"/>
+<meta name="viewport" content="width={w}, height={h}"/>
+</head><body style="background-color:#000000;">
+<div style="text-align:center;">
+<img width="{w}" height="{h}" src="images/page_{index:04}.jpg"/>
+</div>
+{panel_divs}</body></html>
 "#,
         page_num = page_index + 1,
         index = page_index,
+        w = img_width,
+        h = img_height,
         panel_divs = panel_divs,
     )
 }

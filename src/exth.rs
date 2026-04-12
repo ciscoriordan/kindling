@@ -365,17 +365,24 @@ pub fn build_book_exth(
     // integrity check flag. Cheap to match so include it.
     records.push(exth_record(203, &0u32.to_be_bytes()));
 
-    // Fixed-layout metadata
+    // Fixed-layout metadata (matches KCC v9.6.2 + kindlegen reference)
     if let Some(fl) = fixed_layout {
         if fl.is_fixed_layout {
-            // EXTH 122: fixed-layout flag
             records.push(exth_record(122, b"true"));
-
-            // EXTH 307: original-resolution
+            records.push(exth_record(123, b"comic"));
+            records.push(exth_record(124, b"none"));
             let resolution = fl.original_resolution.as_deref().unwrap_or("1072x1448");
-            records.push(exth_record(307, resolution.as_bytes()));
-
-            // EXTH 527: page-progression-direction
+            records.push(exth_record(126, resolution.as_bytes()));
+            records.push(exth_record(127, b"true"));
+            records.push(exth_record(128, b"true"));
+            let fontsig: [u8; 36] = [
+                0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+            ];
+            records.push(exth_record(300, &fontsig));
             let ppd = fl.page_progression_direction.as_deref().unwrap_or("ltr");
             records.push(exth_record(527, ppd.as_bytes()));
         }
