@@ -28,6 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None,  // doc_type
         false, // kindle_limits
         true,  // self_check
+        false, // kindlegen_parity (byte-for-byte kindlegen shape; only the comic path uses it)
     )?;
 
     kindling::epub::cleanup_temp_dir(&temp_dir);

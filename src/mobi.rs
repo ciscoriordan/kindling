@@ -39,6 +39,7 @@ pub fn build_mobi(
     doc_type: Option<&str>,
     kindle_limits: bool,
     self_check: bool,
+    kindlegen_parity: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let opf = OPFData::parse(opf_path)?;
 
@@ -50,6 +51,8 @@ pub fn build_mobi(
             return Err("KF8-only output is not supported for dictionaries (dictionaries use MOBI7 format)".into());
         }
         eprintln!("Detected dictionary content");
+        // kindlegen_parity is a no-op for dictionaries (MOBI7 / KF7 path).
+        let _ = kindlegen_parity;
         build_dictionary_mobi(&opf, output_path, no_compress, headwords_only, srcs_data, include_cmet, creator_tag, kindle_limits, self_check)
     } else {
         if kf8_only {
@@ -57,7 +60,7 @@ pub fn build_mobi(
         } else {
             eprintln!("Detected book content (no idx:entry tags found)");
         }
-        build_book_mobi(&opf, output_path, no_compress, srcs_data, include_cmet, !no_hd_images, creator_tag, kf8_only, doc_type, kindle_limits, self_check)
+        build_book_mobi(&opf, output_path, no_compress, srcs_data, include_cmet, !no_hd_images, creator_tag, kf8_only, doc_type, kindle_limits, self_check, kindlegen_parity)
     }
 }
 
@@ -391,6 +394,7 @@ fn build_book_mobi(
     doc_type: Option<&str>,
     kindle_limits: bool,
     self_check: bool,
+    kindlegen_parity: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Collect images from the OPF manifest
     let image_items = opf.get_image_items(); // Vec<(href, media_type)>
@@ -536,6 +540,7 @@ fn build_book_mobi(
         &href_to_recindex,
         &opf.spine_items,
         no_compress,
+        kindlegen_parity,
     );
     eprintln!(
         "KF8: {} text records ({} bytes), {} flows",
@@ -1590,22 +1595,19 @@ fn strip_idx_markup(html: &str) -> String {
 
 /// Clean book HTML for non-dictionary content.
 ///
-/// Minimal cleanup: removes XML declarations and xmlns attributes,
-/// but preserves all HTML content as-is (no idx markup to strip).
+/// Minimal cleanup: drops any prefixed `xmlns:foo="..."` attributes
+/// (epub:/opf:/dc: etc) that EPUB spine files pick up from their
+/// authoring toolchain. The default `xmlns="http://www.w3.org/1999/xhtml"`
+/// and the `<?xml version="1.0" ?>` declaration are BOTH preserved —
+/// kindlegen's KF8 rawml keeps them and real Kindle hardware rejects
+/// content without the XHTML namespace on `<html>` ("Unable to Open
+/// Item", the v0.2.0..v0.10.0 Vader Down failure mode).
 fn clean_book_html(html: &str) -> String {
     let mut result = html.to_string();
 
-    // Remove XML declarations
-    let xml_decl = Regex::new(r"<\?xml[^?]*\?>\s*").unwrap();
-    result = xml_decl.replace_all(&result, "").to_string();
-
-    // Remove xmlns:* attributes
+    // Remove prefixed xmlns:* attributes (epub: / opf: / dc: / etc).
     let xmlns = Regex::new(r#"\s+xmlns:\w+="[^"]*""#).unwrap();
     result = xmlns.replace_all(&result, "").to_string();
-
-    // Remove the default xmlns attribute too (common in EPUB XHTML)
-    let xmlns_default = Regex::new(r#"\s+xmlns="[^"]*""#).unwrap();
-    result = xmlns_default.replace_all(&result, "").to_string();
 
     result.trim().to_string()
 }

@@ -125,6 +125,14 @@ pub struct ComicOptions {
     /// blob. Default: true. When a bad blob is detected the build emits
     /// warnings but does not abort.
     pub self_check: bool,
+    /// Emit KF8 comic output that matches kindlegen's byte-level shape
+    /// (single-line template, no DOCTYPE/meta charset, flat body/div
+    /// without inline styles, `image/jpg` mime, `page N` lowercase
+    /// alt, img without aid, AID stride of 1_000_000 per spine page).
+    /// Off by default: kindling's normal output is pretty-printed and
+    /// slightly richer ("better than kindlegen"). Turn this on for
+    /// parity tests or when producing reference builds.
+    pub kindlegen_parity: bool,
 }
 
 impl Default for ComicOptions {
@@ -159,6 +167,7 @@ impl Default for ComicOptions {
             kindle_limits: false,
             kf8_only: false,
             self_check: true,
+            kindlegen_parity: false,
         }
     }
 }
@@ -427,6 +436,7 @@ pub fn build_comic_with_options(
         options.doc_type.as_deref(),
         options.kindle_limits,
         options.self_check,
+        options.kindlegen_parity,
     );
 
     // Step 6: Clean up temp dirs
@@ -2054,14 +2064,12 @@ fn write_fixed_layout_epub_v2(
 
     // Write XHTML pages
     for page in pages {
-        let xhtml = build_page_xhtml(page.index, profile, page.panels.as_deref());
+        let xhtml = build_page_xhtml(page.index, profile, page.panels.as_deref(), options.kindlegen_parity);
         let filename = format!("page_{:04}.xhtml", page.index);
         fs::write(temp_dir.join(&filename), xhtml.as_bytes())?;
     }
-
-    // Write CSS
-    let css = build_comic_css(any_panels);
-    fs::write(temp_dir.join("comic.css"), css.as_bytes())?;
+    // No comic.css: container styles are inlined into the page xhtml,
+    // matching kindlegen's single-flow KF8 layout (FDST flow_count = 1).
 
     // Handle external cover image if provided
     let external_cover_id = if let Some(CoverSource::FilePath(ref path)) = options.cover {
@@ -2113,9 +2121,6 @@ fn build_comic_opf_v2(
 
     // NCX
     manifest_items.push_str("    <item id=\"ncx\" href=\"toc.ncx\" media-type=\"application/x-dtbncx+xml\"/>\n");
-
-    // CSS
-    manifest_items.push_str("    <item id=\"css\" href=\"comic.css\" media-type=\"text/css\"/>\n");
 
     for i in 0..num_pages {
         manifest_items.push_str(&format!(
@@ -2276,11 +2281,60 @@ fn escape_xml(s: &str) -> String {
 }
 
 /// Build an XHTML page for a single comic page, with optional Panel View markup.
-fn build_page_xhtml(page_index: usize, profile: &DeviceProfile, panels: Option<&[PanelRect]>) -> String {
+///
+/// Two shapes:
+///
+/// - Default ("better than kindlegen"): pretty-printed, XHTML 5-ish
+///   with DOCTYPE + meta charset, inline container box-model styles on
+///   body/div, `style="width:100%;height:100%;object-fit:contain"` on
+///   the img so it scales to the canvas on any Kindle regardless of
+///   the actual JPEG pixel dimensions, and "Page N" capitalized alt.
+///
+/// - kindlegen-parity: single-line, no DOCTYPE, no meta charset, flat
+///   body/div without inline styles, img with `width="W" height="H"`
+///   pixel attributes at the device-profile resolution, "page N"
+///   lowercase alt. Matches kindlegen's KF8 comic output byte-for-byte
+///   except for genuinely unavoidable deltas (compression seeds etc).
+fn build_page_xhtml(
+    page_index: usize,
+    profile: &DeviceProfile,
+    panels: Option<&[PanelRect]>,
+    kindlegen_parity: bool,
+) -> String {
+    if kindlegen_parity {
+        let panel_divs = match panels {
+            Some(rects) if !rects.is_empty() => {
+                let mut divs = String::new();
+                divs.push_str(r#"<div id="panels" style="position:absolute;top:0;left:0;width:100%;height:100%">"#);
+                for rect in rects {
+                    divs.push_str(&format!(
+                        r#"<div class="panel" style="position:absolute;left:{x:.1}%;top:{y:.1}%;width:{w:.1}%;height:{h:.1}%"></div>"#,
+                        x = rect.x,
+                        y = rect.y,
+                        w = rect.w,
+                        h = rect.h,
+                    ));
+                }
+                divs.push_str("</div>");
+                divs
+            }
+            _ => String::new(),
+        };
+        return format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>Page {page_num}</title></head><body><div><img src="images/page_{index:04}.jpg" alt="page {page_num}" width="{w}" height="{h}"/></div>{panel_divs}</body></html>"#,
+            page_num = page_index + 1,
+            index = page_index,
+            w = profile.width,
+            h = profile.height,
+            panel_divs = panel_divs,
+        );
+    }
+
+    // Default ("better than kindlegen") template.
     let panel_divs = match panels {
         Some(rects) if !rects.is_empty() => {
             let mut divs = String::new();
-            divs.push_str("  <div id=\"panels\">\n");
+            divs.push_str("  <div id=\"panels\" style=\"position:absolute;top:0;left:0;width:100%;height:100%\">\n");
             for rect in rects {
                 divs.push_str(&format!(
                     "    <div class=\"panel\" style=\"position:absolute;left:{x:.1}%;top:{y:.1}%;width:{w:.1}%;height:{h:.1}%\"></div>\n",
@@ -2296,66 +2350,31 @@ fn build_page_xhtml(page_index: usize, profile: &DeviceProfile, panels: Option<&
         _ => String::new(),
     };
 
+    // Page geometry comes from the fixed-layout EXTH records (122/307/527),
+    // not from a <meta name="viewport"> tag — kindlegen omits the viewport
+    // meta for KF8 comics and so do we. Container box-model rules are
+    // inlined as `style=` attributes so we don't need an external
+    // stylesheet (FDST stays at flow_count = 1).
+    let _ = profile;
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
   <meta charset="UTF-8"/>
-  <meta name="viewport" content="width={width}, height={height}"/>
-  <link rel="stylesheet" type="text/css" href="comic.css"/>
   <title>Page {page_num}</title>
 </head>
-<body>
-  <div id="content">
-    <img src="images/page_{index:04}.jpg" alt="Page {page_num}" style="width:100%;height:100%"/>
+<body style="margin:0;padding:0;width:100%;height:100%">
+  <div id="content" style="width:100%;height:100%;text-align:center">
+    <img src="images/page_{index:04}.jpg" alt="Page {page_num}" style="width:100%;height:100%;object-fit:contain"/>
   </div>
 {panel_divs}</body>
 </html>
 "#,
-        width = profile.width,
-        height = profile.height,
         page_num = page_index + 1,
         index = page_index,
         panel_divs = panel_divs,
     )
-}
-
-/// Build the CSS for full-bleed comic pages, with optional Panel View styles.
-fn build_comic_css(panel_view: bool) -> String {
-    let mut css = r#"html, body {
-  margin: 0;
-  padding: 0;
-  width: 100%;
-  height: 100%;
-}
-#content {
-  width: 100%;
-  height: 100%;
-  text-align: center;
-}
-#content img {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-}
-"#.to_string();
-
-    if panel_view {
-        css.push_str(r#"#panels {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-}
-.panel {
-  position: absolute;
-}
-"#);
-    }
-
-    css
 }
 
 /// Build a minimal NCX table of contents.

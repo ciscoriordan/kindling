@@ -233,6 +233,15 @@ enum Commands {
         /// blob. See `kindling build --help` for details.
         #[arg(long)]
         no_self_check: bool,
+
+        /// Emit KF8 comic output that matches kindlegen's byte-level
+        /// shape. Off by default (kindling emits its normal pretty-
+        /// printed "better than kindlegen" form). Turn this on for
+        /// parity tests or when producing reference builds — byte
+        /// differences between kindling and kindlegen shrink to the
+        /// unavoidable ones (compression seeds, timestamps, UIDs).
+        #[arg(long)]
+        kindlegen_parity: bool,
     },
 
     /// Validate an OPF manuscript against the Amazon Kindle Publishing Guidelines (2026.1).
@@ -549,6 +558,7 @@ fn do_build(
         let result = mobi::build_mobi(
             &opf_path, output_path, no_compress, headwords_only,
             srcs_data.as_deref(), include_cmet, no_hd_images, creator_tag, kf8_only, None, kindle_limits, self_check,
+            false, // kindlegen_parity: only meaningful for the comic path
         );
         epub::cleanup_temp_dir(&temp_dir);
         result
@@ -570,6 +580,7 @@ fn do_build(
         mobi::build_mobi(
             input, output_path, no_compress, headwords_only,
             srcs_data.as_deref(), include_cmet, no_hd_images, creator_tag, kf8_only, None, kindle_limits, self_check,
+            false, // kindlegen_parity: only meaningful for the comic path
         )
     };
 
@@ -736,6 +747,7 @@ fn main() {
                 kindle_limits,
                 no_kindle_limits,
                 no_self_check,
+                kindlegen_parity,
             } => {
                 let profile = match comic::get_profile(&device) {
                     Some(p) => p,
@@ -833,6 +845,7 @@ fn main() {
                     kindle_limits: effective_kindle_limits,
                     kf8_only: effective_kf8_only,
                     self_check: !no_self_check,
+                    kindlegen_parity,
                 };
 
                 match comic::build_comic_with_options(&input, &output_path, &profile, &options) {

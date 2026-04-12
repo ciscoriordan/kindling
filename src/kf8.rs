@@ -108,16 +108,24 @@ struct FragmentEntry {
 }
 
 /// Build the complete KF8 section for a book MOBI.
+///
+/// `kindlegen_parity` routes the spine-item HTML transform through a
+/// byte-for-byte-with-kindlegen mode (strips DOCTYPE/meta/styles, uses
+/// `image/jpg` mime, skips aid on img tags, resets the aid counter to
+/// `spine_idx * 1_000_000` per page). Off by default — kindling's normal
+/// output is "better than kindlegen" (pretty-printed, aided img tags,
+/// IANA-correct `image/jpeg` mime).
 pub fn build_kf8_section(
     html_parts: &[String],
     css_content: &str,
     href_to_recindex: &std::collections::HashMap<String, usize>,
     spine_items: &[(String, String)],
     no_compress: bool,
+    kindlegen_parity: bool,
 ) -> Kf8Section {
     // Step 1: Build the split skeletons + fragments from each HTML part.
     let (kf8_html, skeleton_entries, fragment_entries) =
-        build_kf8_html(html_parts, href_to_recindex, spine_items);
+        build_kf8_html(html_parts, href_to_recindex, spine_items, kindlegen_parity);
 
     // Step 2: Append CSS as a separate flow.
     let css_bytes = css_content.as_bytes();
@@ -178,20 +186,36 @@ fn build_kf8_html(
     html_parts: &[String],
     href_to_recindex: &std::collections::HashMap<String, usize>,
     spine_items: &[(String, String)],
+    kindlegen_parity: bool,
 ) -> (Vec<u8>, Vec<SkeletonEntry>, Vec<FragmentEntry>) {
     let path_to_recindex = build_image_path_lookup(href_to_recindex, spine_items);
 
-    let mut aid_counter: u32 = 0;
     let mut skeleton_entries: Vec<SkeletonEntry> = Vec::new();
     let mut fragment_entries: Vec<FragmentEntry> = Vec::new();
     let mut combined: Vec<u8> = Vec::new();
     let mut global_seq: usize = 0;
 
+    // AID counter: in parity mode kindlegen resets the intra-counter to
+    // 0 at each spine item and prefixes every AID with `spine_idx *
+    // AID_PAGE_STRIDE`, so pages never collide unless a page has a
+    // million+ tags. In default mode we count sequentially across the
+    // whole spine (simpler, self-consistent, also never collides).
+    const AID_PAGE_STRIDE: u32 = 1_000_000;
+    let mut global_aid_counter: u32 = 0;
+
     for (skel_idx, raw_part) in html_parts.iter().enumerate() {
+        let mut aid_counter: u32 = if kindlegen_parity {
+            (skel_idx as u32) * AID_PAGE_STRIDE
+        } else {
+            global_aid_counter
+        };
         // 1. Normalize this spine item into Calibre-style KF8 output:
         //    add aid attributes to aid-able tags and rewrite image src
         //    URLs to `kindle:embed:....`.
-        let processed = process_kf8_part(raw_part, &mut aid_counter, &path_to_recindex);
+        let processed = process_kf8_part(raw_part, &mut aid_counter, &path_to_recindex, kindlegen_parity);
+        if !kindlegen_parity {
+            global_aid_counter = aid_counter;
+        }
 
         // 2. Split into (skeleton, body_inner). The body tag is left
         //    on the skeleton with its aid attribute intact, but the
@@ -414,14 +438,21 @@ fn extract_aid_value(tag_str: &str) -> Option<String> {
 }
 
 /// Process a single HTML part for KF8: add aid attributes and rewrite
-/// image sources. This is Calibre's aid-able tag set + the standard
-/// `kindle:embed:XXXX?mime=image/jpeg` src rewrite.
+/// image sources. Calibre's aid-able tag set + the standard
+/// `kindle:embed:XXXX?mime=image/<ext>` src rewrite.
+///
+/// `kindlegen_parity` swaps the IANA-correct `image/jpeg` mime for the
+/// non-standard `image/jpg` kindlegen emits, and drops `img` from the
+/// aid-able tag set so img tags are left unaided (matching kindlegen).
 fn process_kf8_part(
     html: &str,
     aid_counter: &mut u32,
     path_to_recindex: &std::collections::HashMap<String, usize>,
+    kindlegen_parity: bool,
 ) -> String {
     let mut result = html.to_string();
+
+    let mime_suffix = if kindlegen_parity { "jpg" } else { "jpeg" };
 
     // Rewrite image src to kindle:embed format.
     let src_re = Regex::new(r#"(?i)\bsrc\s*=\s*"([^"]*)""#).unwrap();
@@ -430,14 +461,16 @@ fn process_kf8_part(
             let src_path = caps.get(1).unwrap().as_str();
             if let Some(&recindex) = path_to_recindex.get(src_path) {
                 format!(
-                    "src=\"kindle:embed:{}?mime=image/jpeg\"",
-                    encode_base32_4char(recindex)
+                    "src=\"kindle:embed:{}?mime=image/{}\"",
+                    encode_base32_4char(recindex),
+                    mime_suffix
                 )
             } else if let Some(fname) = src_path.rsplit('/').next() {
                 if let Some(&recindex) = path_to_recindex.get(fname) {
                     format!(
-                        "src=\"kindle:embed:{}?mime=image/jpeg\"",
-                        encode_base32_4char(recindex)
+                        "src=\"kindle:embed:{}?mime=image/{}\"",
+                        encode_base32_4char(recindex),
+                        mime_suffix
                     )
                 } else {
                     caps.get(0).unwrap().as_str().to_string()
@@ -448,15 +481,25 @@ fn process_kf8_part(
         })
         .to_string();
 
-    // Add aid attributes to block / inline tags that are in Calibre's
-    // aid-able set. Calibre explicitly pops then re-adds aid so it ends
-    // up last — we mimic that by appending the aid=".." attribute just
-    // before the closing `>` of each tag, so we need a slightly more
-    // careful regex here.
-    let tag_re = Regex::new(
-        r"(?i)<(p|div|h[1-6]|li|ul|ol|table|tr|td|th|section|article|aside|nav|header|footer|figure|figcaption|blockquote|img|span|a|em|strong|b|i|body)(\s[^>]*?)?(/?)>",
-    )
-    .unwrap();
+    // Add aid attributes to block / inline tags in Calibre's aid-able
+    // set. We append the aid attribute just before the closing `>` of
+    // each tag, to mirror Calibre's "pop then re-add last" behavior.
+    //
+    // Parity mode excludes `img` from the aid set because kindlegen's
+    // KF8 comic output leaves img tags unaided. Default mode INCLUDES
+    // `img` (kindling's normal behavior — gives Kindle readers one more
+    // selectable/interactive anchor per page).
+    let tag_re = if kindlegen_parity {
+        Regex::new(
+            r"(?i)<(p|div|h[1-6]|li|ul|ol|table|tr|td|th|section|article|aside|nav|header|footer|figure|figcaption|blockquote|span|a|em|strong|b|i|body)(\s[^>]*?)?(/?)>",
+        )
+        .unwrap()
+    } else {
+        Regex::new(
+            r"(?i)<(p|div|h[1-6]|li|ul|ol|table|tr|td|th|section|article|aside|nav|header|footer|figure|figcaption|blockquote|img|span|a|em|strong|b|i|body)(\s[^>]*?)?(/?)>",
+        )
+        .unwrap()
+    };
     result = tag_re
         .replace_all(&result, |caps: &regex::Captures| {
             let tag = caps.get(1).unwrap().as_str();
@@ -1088,7 +1131,7 @@ mod tests {
         let href_to_recindex = std::collections::HashMap::new();
         let spine_items: Vec<(String, String)> = Vec::new();
         let (combined, skels, frags) =
-            build_kf8_html(&parts, &href_to_recindex, &spine_items);
+            build_kf8_html(&parts, &href_to_recindex, &spine_items, false);
         assert_eq!(skels.len(), 5);
         assert_eq!(frags.len(), 5);
         // Global sequence numbers must be 0, 1, 2, 3, 4 in order.
@@ -1116,7 +1159,7 @@ mod tests {
         let parts = vec![make_comic_page("0", "img.jpg")];
         let href_to_recindex = std::collections::HashMap::new();
         let spine_items: Vec<(String, String)> = Vec::new();
-        let (_, _, frags) = build_kf8_html(&parts, &href_to_recindex, &spine_items);
+        let (_, _, frags) = build_kf8_html(&parts, &href_to_recindex, &spine_items, false);
         assert_eq!(frags.len(), 1);
         assert_eq!(frags[0].selector, "P-//*[@aid='0']");
     }
@@ -1126,7 +1169,7 @@ mod tests {
         let html = "<html><head></head><body><div><img src=\"a.jpg\"/></div></body></html>";
         let mut counter = 0u32;
         let lookup = std::collections::HashMap::new();
-        let out = process_kf8_part(html, &mut counter, &lookup);
+        let out = process_kf8_part(html, &mut counter, &lookup, false);
         assert!(out.contains("<body"));
         assert!(out.contains("aid=\""));
     }
@@ -1232,7 +1275,8 @@ mod tests {
             css,
             &href_to_recindex,
             &spine_items,
-            true, // no_compress for deterministic byte counts
+            true,  // no_compress for deterministic byte counts
+            false, // kindlegen_parity
         );
         assert!(!section.text_records.is_empty());
         assert_eq!(&section.fdst[0..4], b"FDST");

@@ -260,6 +260,7 @@ mod tests {
             None,  // doc_type
             false, // kindle_limits (disabled in tests by default)
             false, // self_check (off in tests; dedicated tests cover the checker)
+            false, // kindlegen_parity
         )
         .expect("build_mobi failed");
         fs::read(&output_path).expect("could not read output MOBI")
@@ -676,6 +677,7 @@ mod tests {
             None,  // doc_type
             false, // kindle_limits
             false, // self_check (off in tests for speed)
+            false, // kindlegen_parity
         )
         .expect("build_mobi (kf8_only) failed");
         fs::read(&output_path).expect("could not read output AZW3")
@@ -4293,6 +4295,7 @@ mod tests {
             None,  // doc_type
             true,  // kindle_limits ON
             false, // self_check
+            false, // kindlegen_parity
         )
         .expect("build_mobi with kindle_limits should succeed");
 
@@ -4342,6 +4345,7 @@ mod tests {
             None,  // doc_type
             true,  // kindle_limits ON
             false, // self_check
+            false, // kindlegen_parity
         )
         .expect("build_mobi with kindle_limits for book should succeed");
 
@@ -4374,6 +4378,7 @@ mod tests {
             None,  // doc_type
             false, // kindle_limits OFF
             false, // self_check
+            false, // kindlegen_parity
         )
         .expect("build_mobi without kindle_limits should succeed");
 
@@ -4506,6 +4511,7 @@ mod tests {
             None,  // doc_type
             true,  // kindle_limits ON
             false, // self_check
+            false, // kindlegen_parity
         )
         .expect("build_mobi with kindle_limits should succeed");
 
@@ -4617,6 +4623,7 @@ mod tests {
             None,  // doc_type
             true,  // kindle_limits ON
             false, // self_check
+            false, // kindlegen_parity
         )
         .expect("build_mobi with kindle_limits failed");
         fs::read(&output_path).expect("could not read output MOBI")
@@ -5213,6 +5220,7 @@ mod tests {
             None,
             false,
             false, // self_check
+            false, // kindlegen_parity
         )
         .expect("compressed build_mobi failed");
         let data_comp = fs::read(&output_comp).expect("could not read compressed MOBI");
@@ -6560,7 +6568,7 @@ mod tests {
         // Compressed
         let output_c = dir_c.path().join("output_comp.mobi");
         mobi::build_mobi(
-            &opf_c, &output_c, false, false, None, false, false, false, false, None, false, false,
+            &opf_c, &output_c, false, false, None, false, false, false, false, None, false, false, false,
         ).expect("compressed build failed");
         let data_c = fs::read(&output_c).unwrap();
 
@@ -8008,7 +8016,7 @@ mod tests {
         // And the MOBI build itself should still succeed end-to-end.
         let output = dir.path().join("out.mobi");
         mobi::build_mobi(
-            &opf, &output, true, false, None, false, false, false, false, None, false, false,
+            &opf, &output, true, false, None, false, false, false, false, None, false, false, false,
         )
         .expect("build should succeed for clean OPF");
         assert!(output.exists(), "MOBI output file must exist");
@@ -8531,6 +8539,7 @@ mod tests {
             None,  // doc_type
             false, // kindle_limits
             true,  // self_check ENABLED
+            false, // kindlegen_parity
         )
         .expect("build with self_check enabled should succeed");
 

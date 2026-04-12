@@ -969,7 +969,7 @@ mod tests {
         let opf = make_book_fixture(&dir);
         let out = dir.join("out.mobi");
         crate::mobi::build_mobi(
-            &opf, &out, true, false, None, false, true, false, false, None, false, false,
+            &opf, &out, true, false, None, false, true, false, false, None, false, false, false,
         )
         .expect("build should succeed");
 
@@ -1001,7 +1001,7 @@ mod tests {
         let opf = make_book_fixture(&dir);
         let out = dir.join("out.mobi");
         crate::mobi::build_mobi(
-            &opf, &out, true, false, None, false, true, false, false, None, false, false,
+            &opf, &out, true, false, None, false, true, false, false, None, false, false, false,
         )
         .unwrap();
 
@@ -1055,7 +1055,7 @@ mod tests {
         let opf = make_book_fixture(&dir);
         let out = dir.join("out.mobi");
         crate::mobi::build_mobi(
-            &opf, &out, true, false, None, false, true, false, false, None, false, false,
+            &opf, &out, true, false, None, false, true, false, false, None, false, false, false,
         )
         .unwrap();
 
