@@ -11,6 +11,7 @@ pub mod epub;
 pub mod kdp_rules;
 pub mod mobi;
 pub mod mobi_check;
+pub mod mobi_dump;
 pub mod mobi_rewrite;
 pub mod opf;
 pub mod repair;

@@ -9,7 +9,7 @@
 ///     kindling input.opf -o output.mobi -dont_append_source -verbose
 
 use kindling::{
-    comic, epub, kdp_rules, mobi, mobi_check, mobi_rewrite, opf, repair, validate,
+    comic, epub, kdp_rules, mobi, mobi_check, mobi_dump, mobi_rewrite, opf, repair, validate,
 };
 
 use std::path::PathBuf;
@@ -352,6 +352,20 @@ enum Commands {
         /// already have a cover.
         #[arg(long)]
         cover: Option<PathBuf>,
+    },
+
+    /// Dump the structural contents of a MOBI/AZW3 file to stdout.
+    ///
+    /// Emits one line per parsed field in `section.field = value` form so
+    /// `diff -u` between two dumps surfaces semantic differences (EXTH
+    /// records, MOBI header fields, INDX / ORDT2 tables, entry labels)
+    /// without drowning in absolute-offset cascades. Text and image
+    /// record contents are summarized (length + magic only) to keep the
+    /// diff focused on structure.
+    #[command(version)]
+    Dump {
+        /// Input MOBI or AZW3 file.
+        input: PathBuf,
     },
 }
 
@@ -880,6 +894,22 @@ fn main() {
                     cover.as_ref(),
                 );
             }
+            Commands::Dump { input } => {
+                do_dump(&input);
+            }
+        }
+    }
+}
+
+/// Parse a MOBI/AZW3 file and print a structural dump to stdout.
+fn do_dump(path: &PathBuf) {
+    match mobi_dump::dump_mobi(path) {
+        Ok(s) => {
+            print!("{}", s);
+        }
+        Err(e) => {
+            eprintln!("Error: could not dump {}: {}", path.display(), e);
+            process::exit(1);
         }
     }
 }
