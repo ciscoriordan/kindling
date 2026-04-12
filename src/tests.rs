@@ -1288,6 +1288,180 @@ mod tests {
     }
 
     #[test]
+    fn test_crop_page_number_bottom_strip() {
+        use crate::comic;
+        use image::GenericImageView;
+        // 500x1000 image: white background, dark content panel from y=50..930,
+        // and a small "page number" cluster at the bottom (y=960..980, x=230..270).
+        let img = image::DynamicImage::ImageLuma8(
+            image::GrayImage::from_fn(500, 1000, |x, y| {
+                if y >= 50 && y < 930 && x >= 20 && x < 480 {
+                    // Main content panel (dark)
+                    image::Luma([40])
+                } else if y >= 960 && y < 980 && x >= 230 && x < 270 {
+                    // Small page number cluster at bottom
+                    image::Luma([30])
+                } else {
+                    // White background
+                    image::Luma([255])
+                }
+            }),
+        );
+
+        let cropped = comic::crop_page_numbers(&img);
+        let (w, h) = cropped.dimensions();
+        // The bottom strip (6% = 60px) contains only a tiny ink cluster,
+        // so it should be cropped off. Height should decrease.
+        assert_eq!(w, 500, "Width should be unchanged");
+        assert!(
+            h < 1000,
+            "Page number strip at bottom should be cropped, but height is still {}",
+            h,
+        );
+        // The strip is 60px (6% of 1000), so new height should be ~940
+        assert!(
+            h <= 960 && h >= 900,
+            "Expected height around 940 after bottom crop, got {}",
+            h,
+        );
+        println!(
+            "  - Bottom page-number crop: 500x1000 -> {}x{}",
+            w, h
+        );
+    }
+
+    #[test]
+    fn test_crop_page_number_top_strip() {
+        use crate::comic;
+        use image::GenericImageView;
+        // 500x1000 image: white background, content from y=80..950,
+        // and a small page number at the top (y=15..35, x=220..260).
+        let img = image::DynamicImage::ImageLuma8(
+            image::GrayImage::from_fn(500, 1000, |x, y| {
+                if y >= 80 && y < 950 && x >= 20 && x < 480 {
+                    image::Luma([40])
+                } else if y >= 15 && y < 35 && x >= 220 && x < 260 {
+                    image::Luma([30])
+                } else {
+                    image::Luma([255])
+                }
+            }),
+        );
+
+        let cropped = comic::crop_page_numbers(&img);
+        let (w, h) = cropped.dimensions();
+        assert_eq!(w, 500, "Width should be unchanged");
+        assert!(
+            h < 1000,
+            "Page number strip at top should be cropped, but height is still {}",
+            h,
+        );
+        println!(
+            "  - Top page-number crop: 500x1000 -> {}x{}",
+            w, h
+        );
+    }
+
+    #[test]
+    fn test_crop_page_number_full_content_untouched() {
+        use crate::comic;
+        use image::GenericImageView;
+        // 500x1000 image: content fills the entire image (no blank strips at
+        // top or bottom that could be mistaken for a page number strip).
+        // Alternate dark and light rows to simulate varied comic content.
+        let img = image::DynamicImage::ImageLuma8(
+            image::GrayImage::from_fn(500, 1000, |x, y| {
+                // Dense content everywhere: alternating block pattern
+                let block = ((x / 20) + (y / 20)) % 3;
+                match block {
+                    0 => image::Luma([30]),
+                    1 => image::Luma([128]),
+                    _ => image::Luma([220]),
+                }
+            }),
+        );
+
+        let cropped = comic::crop_page_numbers(&img);
+        let (w, h) = cropped.dimensions();
+        assert_eq!(w, 500, "Full-content image width should be unchanged");
+        assert_eq!(h, 1000, "Full-content image height should be unchanged");
+        println!(
+            "  - Full-content image not cropped: {}x{}",
+            w, h
+        );
+    }
+
+    #[test]
+    fn test_crop_page_number_dark_background() {
+        use crate::comic;
+        use image::GenericImageView;
+        // 500x1000 image with dark/black background (common in manga).
+        // Content panel from y=60..920, small light page number at bottom.
+        let img = image::DynamicImage::ImageLuma8(
+            image::GrayImage::from_fn(500, 1000, |x, y| {
+                if y >= 60 && y < 920 && x >= 20 && x < 480 {
+                    // Content panel (lighter than background)
+                    image::Luma([200])
+                } else if y >= 960 && y < 980 && x >= 230 && x < 270 {
+                    // Small page number (white text on dark background)
+                    image::Luma([240])
+                } else {
+                    // Dark/black background
+                    image::Luma([5])
+                }
+            }),
+        );
+
+        let cropped = comic::crop_page_numbers(&img);
+        let (w, h) = cropped.dimensions();
+        assert_eq!(w, 500, "Width should be unchanged");
+        assert!(
+            h < 1000,
+            "Dark-background page number strip should be cropped, but height is still {}",
+            h,
+        );
+        println!(
+            "  - Dark-bg page-number crop: 500x1000 -> {}x{}",
+            w, h
+        );
+    }
+
+    #[test]
+    fn test_crop_page_number_wide_content_not_cropped() {
+        use crate::comic;
+        use image::GenericImageView;
+        // 500x1000 image: white background, content panel, and a wide text
+        // block at the bottom spanning >35% of width. This should NOT be
+        // cropped because it looks like real content (a footer, caption, etc.),
+        // not a small page number.
+        let img = image::DynamicImage::ImageLuma8(
+            image::GrayImage::from_fn(500, 1000, |x, y| {
+                if y >= 50 && y < 920 && x >= 20 && x < 480 {
+                    image::Luma([40])
+                } else if y >= 960 && y < 980 && x >= 50 && x < 350 {
+                    // Wide text block at bottom (60% of width)
+                    image::Luma([30])
+                } else {
+                    image::Luma([255])
+                }
+            }),
+        );
+
+        let cropped = comic::crop_page_numbers(&img);
+        let (w, h) = cropped.dimensions();
+        assert_eq!(w, 500, "Width should be unchanged");
+        assert_eq!(
+            h, 1000,
+            "Wide bottom content should NOT be cropped (not a page number), but height is {}",
+            h,
+        );
+        println!(
+            "  - Wide bottom content preserved: {}x{}",
+            w, h
+        );
+    }
+
+    #[test]
     fn test_enhance_expands_histogram() {
         use crate::comic;
         // Create a low-contrast image (pixel values 100..150)
@@ -6166,8 +6340,8 @@ mod tests {
         assert!(fnbr > 0 && (fnbr as u16) <= record_count);
         // Capability marker = 0x50 for KF8 (matches KCC/kindlegen)
         assert_eq!(read_u32_be(rec0, 16 + 112), 0x50);
-        // Extra record data flags = 1 (multibyte only, no TBS yet)
-        assert_eq!(read_u32_be(rec0, 16 + 224), 1);
+        // Extra record data flags = 3 (multibyte + TBS)
+        assert_eq!(read_u32_be(rec0, 16 + 224), 3);
         println!("  \u{2713} KF8-only MOBI header fields all correct");
     }
 

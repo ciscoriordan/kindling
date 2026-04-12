@@ -873,14 +873,12 @@ fn process_image_pipeline(
     let img = match options.crop {
         0 => img,
         // Mode 1: margin crop only
-        // Mode 2: margins + page numbers. The page-number detection
-        // algorithm (KCC uses a connected-component analysis on the
-        // bottom strip) is not yet ported. For now modes 1 and 2 both
-        // call crop_borders; a dedicated crop_page_numbers pass will
-        // be added later.
-        // TODO: implement page-number crop for mode 2 (see KCC's
-        // page_number_crop_alg.py / cropPageNumber).
-        _ => crop_borders(&img),
+        1 => crop_borders(&img),
+        // Mode 2 (default): margins + page numbers
+        _ => {
+            let cropped = crop_borders(&img);
+            crop_page_numbers(&cropped)
+        }
     };
 
     // Step 2: Detect and split double-page spreads
@@ -1141,6 +1139,167 @@ fn col_average(img: &GrayImage, x: u32) -> f64 {
     let h = img.height();
     let sum: f64 = (0..h).map(|y| img.get_pixel(x, y).0[0] as f64).sum();
     sum / h as f64
+}
+
+// ---------------------------------------------------------------------------
+// Page number cropping
+// ---------------------------------------------------------------------------
+
+/// Detect and crop page-number strips from the top and/or bottom of an image.
+///
+/// Page numbers in comics are typically a small number (e.g. "1", "23", "iv")
+/// sitting alone in a thin strip at the very top or bottom edge. This function
+/// examines strips of configurable height at each edge and crops them when:
+///
+///   - The strip is dominated by one background color (sampled from the corners).
+///   - A small cluster of non-background pixels exists (the page number itself),
+///     covering less than `MAX_INK_FRAC` of the strip area.
+///
+/// The function is intentionally conservative: false negatives (leaving a page
+/// number in place) are acceptable, false positives (cropping real content) are
+/// not. It is designed to run on an already margin-cropped image.
+pub fn crop_page_numbers(img: &DynamicImage) -> DynamicImage {
+    let gray = img.to_luma8();
+    let (w, h) = gray.dimensions();
+
+    // Images too small to sensibly analyse - return unchanged.
+    if w < 20 || h < 40 {
+        return img.clone();
+    }
+
+    // How much of the image height to inspect at each edge (top/bottom).
+    const STRIP_FRAC: f64 = 0.06; // 6%
+    // Maximum fraction of non-background ("ink") pixels in the strip for it to
+    // be considered a page-number strip. Real page numbers are tiny; panels or
+    // speech bubbles will have far more ink.
+    const MAX_INK_FRAC: f64 = 0.08;
+    // Minimum ink required so we don't crop a strip that is pure background
+    // (that case is already handled by crop_borders).
+    const MIN_INK_FRAC: f64 = 0.0005;
+    // Pixel-value tolerance: a pixel whose luma differs from the background
+    // by more than this is "ink".
+    const COLOR_TOL: u8 = 30;
+
+    let strip_h = ((h as f64 * STRIP_FRAC).round() as u32).max(3);
+
+    // --- Detect background color from corner samples ---
+    let bg = detect_strip_background(&gray, w, h);
+
+    // --- Bottom strip ---
+    let crop_bottom = if h > strip_h {
+        is_page_number_strip(&gray, w, h.saturating_sub(strip_h), h, bg, COLOR_TOL, MIN_INK_FRAC, MAX_INK_FRAC)
+    } else {
+        0
+    };
+
+    // --- Top strip ---
+    let crop_top = if h > strip_h {
+        is_page_number_strip(&gray, w, 0, strip_h, bg, COLOR_TOL, MIN_INK_FRAC, MAX_INK_FRAC)
+    } else {
+        0
+    };
+
+    // Safety: never remove more than 10% total from the height.
+    let max_total = (h as f64 * 0.10) as u32;
+    if crop_top + crop_bottom > max_total || crop_top + crop_bottom == 0 {
+        return img.clone();
+    }
+
+    let new_top = crop_top;
+    let new_bottom = h - crop_bottom;
+    if new_top >= new_bottom {
+        return img.clone();
+    }
+
+    img.crop_imm(0, new_top, w, new_bottom - new_top)
+}
+
+/// Sample the four corners and edges of a grayscale image to estimate the
+/// background luma value.
+fn detect_strip_background(gray: &GrayImage, w: u32, h: u32) -> u8 {
+    // Sample a few pixels from each corner and each edge midpoint
+    let samples = [
+        (0, 0),
+        (w - 1, 0),
+        (0, h - 1),
+        (w - 1, h - 1),
+        (w / 2, 0),
+        (w / 2, h - 1),
+        (0, h / 2),
+        (w - 1, h / 2),
+    ];
+    let sum: u32 = samples.iter().map(|&(x, y)| gray.get_pixel(x, y).0[0] as u32).sum();
+    (sum / samples.len() as u32) as u8
+}
+
+/// Analyse a horizontal strip and return the number of rows to crop (0 if the
+/// strip does not look like an isolated page number).
+///
+/// `y_start..y_end` defines the strip. The function counts "ink" pixels (those
+/// differing from `bg` by more than `tol`) and checks that:
+///   1. The ink fraction is between `min_ink` and `max_ink`.
+///   2. The ink is horizontally concentrated (not spread across the full width,
+///      which would indicate a panel border or text block).
+fn is_page_number_strip(
+    gray: &GrayImage,
+    w: u32,
+    y_start: u32,
+    y_end: u32,
+    bg: u8,
+    tol: u8,
+    min_ink: f64,
+    max_ink: f64,
+) -> u32 {
+    let strip_h = y_end - y_start;
+    let total_pixels = (w as u64) * (strip_h as u64);
+    if total_pixels == 0 {
+        return 0;
+    }
+
+    let mut ink_count: u64 = 0;
+    let mut ink_x_min: u32 = w;
+    let mut ink_x_max: u32 = 0;
+    let mut ink_y_min: u32 = y_end;
+    let mut ink_y_max: u32 = y_start;
+
+    for y in y_start..y_end {
+        for x in 0..w {
+            let v = gray.get_pixel(x, y).0[0];
+            let diff = if v > bg { v - bg } else { bg - v };
+            if diff > tol {
+                ink_count += 1;
+                if x < ink_x_min { ink_x_min = x; }
+                if x > ink_x_max { ink_x_max = x; }
+                if y < ink_y_min { ink_y_min = y; }
+                if y > ink_y_max { ink_y_max = y; }
+            }
+        }
+    }
+
+    let ink_frac = ink_count as f64 / total_pixels as f64;
+
+    // Must have *some* ink (otherwise it's just blank margin, not a page number).
+    if ink_frac < min_ink {
+        return 0;
+    }
+    // Too much ink - likely real content (panel, speech bubble, etc.).
+    if ink_frac > max_ink {
+        return 0;
+    }
+
+    // The ink cluster should be horizontally narrow relative to the page width.
+    // A page number like "123" occupies perhaps 5-15% of the width. A panel
+    // border or wide text block will span much more.
+    if ink_x_min >= ink_x_max {
+        return 0;
+    }
+    let ink_width_frac = (ink_x_max - ink_x_min) as f64 / w as f64;
+    if ink_width_frac > 0.35 {
+        return 0;
+    }
+
+    // Passed all checks - return the full strip height as the crop amount.
+    strip_h
 }
 
 // ---------------------------------------------------------------------------
