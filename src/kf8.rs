@@ -1356,4 +1356,100 @@ mod tests {
             assert_eq!(*r.last().unwrap(), 0x00);
         }
     }
+
+    #[test]
+    fn cncx_uses_inverted_vwi() {
+        // CNCX string lengths must use inverted VWI (high bit = last byte).
+        // Forward VWI causes Kindle to misparse fragment selector strings.
+        let mut b = crate::cncx::CncxBuilder::new();
+        b.add("P-//*[@aid='0']"); // 15-byte string
+        let recs = b.into_records();
+        assert_eq!(recs.len(), 1);
+        // First byte should be 0x8F (inverted VWI for 15: 0x0F | 0x80)
+        assert_eq!(recs[0][0], 0x8F,
+            "CNCX length prefix must be inverted VWI (0x8F for len 15), got 0x{:02X}",
+            recs[0][0]);
+    }
+
+    #[test]
+    fn ncx_indx_has_five_tags() {
+        // NCX INDX must have 5 tags (offset, length, label, depth, pos_fid)
+        // for Kindle firmware to render content. A 1-tag stub crashes the renderer.
+        let skels = vec![SkeletonEntry {
+            label: "SKEL0000000000".to_string(),
+            start_pos: 0,
+            length: 100,
+            chunk_count: 1,
+        }];
+        let (ncx_recs, ncx_cncx) = build_ncx_indx("Test", &skels, 500);
+
+        // Should produce primary + data records
+        assert_eq!(ncx_recs.len(), 2, "NCX should have primary + data");
+        // Should produce CNCX records
+        assert!(!ncx_cncx.is_empty(), "NCX should have CNCX for labels");
+
+        // Primary record: check TAGX has 5 tag definitions
+        let primary = &ncx_recs[0];
+        let tagx_off = u32::from_be_bytes(primary[180..184].try_into().unwrap()) as usize;
+        assert_eq!(&primary[tagx_off..tagx_off+4], b"TAGX");
+        let tagx_len = u32::from_be_bytes(primary[tagx_off+4..tagx_off+8].try_into().unwrap()) as usize;
+        // Count tags (4 bytes each, ending with sentinel [0,0,0,1])
+        let mut tag_count = 0;
+        let mut pos = tagx_off + 12;
+        while pos < tagx_off + tagx_len {
+            if primary[pos+3] == 1 { break; } // sentinel
+            tag_count += 1;
+            pos += 4;
+        }
+        assert_eq!(tag_count, 5, "NCX TAGX must define 5 tags, got {}", tag_count);
+
+        // Primary: num_cncx should be >= 1
+        let num_cncx = u32::from_be_bytes(primary[52..56].try_into().unwrap());
+        assert!(num_cncx >= 1, "NCX num_cncx must be >= 1, got {}", num_cncx);
+
+        // Primary: total entries = 1
+        let total = u32::from_be_bytes(primary[36..40].try_into().unwrap());
+        assert_eq!(total, 1, "NCX should have 1 entry for simple book");
+    }
+
+    #[test]
+    fn ncx_cncx_contains_title() {
+        let skels = vec![SkeletonEntry {
+            label: "SKEL0000000000".to_string(),
+            start_pos: 0,
+            length: 100,
+            chunk_count: 1,
+        }];
+        let (_, ncx_cncx) = build_ncx_indx("My Comic Title", &skels, 500);
+        assert_eq!(ncx_cncx.len(), 1);
+        // CNCX should contain the title with inverted VWI length prefix
+        let cncx = &ncx_cncx[0];
+        let title = b"My Comic Title";
+        // First byte: inverted VWI for 14 = 0x0E | 0x80 = 0x8E
+        assert_eq!(cncx[0], 0x8E,
+            "CNCX title length should be 0x8E (inv VWI for 14), got 0x{:02X}", cncx[0]);
+        assert_eq!(&cncx[1..1+title.len()], title);
+    }
+
+    #[test]
+    fn datp_is_32_bytes_with_content() {
+        let datp = build_datp();
+        assert_eq!(datp.len(), 32, "DATP must be 32 bytes (not 152-byte stub)");
+        assert_eq!(&datp[0..4], b"DATP");
+        // Must NOT be all zeros after header (crashes Kindle renderer)
+        let content = &datp[8..];
+        assert!(content.iter().any(|&b| b != 0),
+            "DATP content must not be all zeros");
+    }
+
+    #[test]
+    fn kf8_section_has_ncx_cncx_records() {
+        let parts = vec![make_comic_page("0", "p1.jpg")];
+        let section = build_kf8_section(
+            &parts, "", &std::collections::HashMap::new(),
+            &Vec::new(), true, false, "Test",
+        );
+        assert!(!section.ncx_cncx_records.is_empty(),
+            "KF8 section must include NCX CNCX records");
+    }
 }

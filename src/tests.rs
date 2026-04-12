@@ -6172,6 +6172,79 @@ mod tests {
     }
 
     // =======================================================================
+    // 24b. KF8 structural requirements (from Kindle hardware testing)
+    // =======================================================================
+
+    #[test]
+    fn test_kf8_record0_padded_to_8892() {
+        // Kindle rejects Record 0 smaller than ~8892 bytes.
+        let dir = TempDir::new("kf8_r0_pad");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_kf8_only_mobi_bytes(&opf, dir.path());
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        assert!(rec0.len() >= 8892,
+            "KF8 Record 0 must be >= 8892 bytes (padded), got {}", rec0.len());
+    }
+
+    #[test]
+    fn test_kf8_first_nonbook_skips_null_pad() {
+        // first_nonbook must be text_count+2 (skip NULL pad), not +1.
+        let dir = TempDir::new("kf8_fnb");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_kf8_only_mobi_bytes(&opf, dir.path());
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let text_count = u16::from_be_bytes(rec0[8..10].try_into().unwrap()) as u32;
+        let fnb = read_u32_be(rec0, 16 + 64);
+        assert_eq!(fnb, text_count + 2,
+            "first_nonbook should be text_count+2={}, got {}", text_count + 2, fnb);
+    }
+
+    #[test]
+    fn test_book_record0_padded_to_8892() {
+        let dir = TempDir::new("book_r0_pad");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        assert!(rec0.len() >= 8892,
+            "Book Record 0 must be >= 8892 bytes (padded), got {}", rec0.len());
+    }
+
+    #[test]
+    fn test_kf8_null_pad_is_2_bytes() {
+        let dir = TempDir::new("kf8_null");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_kf8_only_mobi_bytes(&opf, dir.path());
+        let (_, record_count, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let text_count = u16::from_be_bytes(rec0[8..10].try_into().unwrap()) as usize;
+        // NULL pad is at record text_count + 1
+        let null_rec = get_record(&data, &offsets, text_count + 1);
+        assert_eq!(null_rec.len(), 2, "NULL pad must be 2 bytes, got {}", null_rec.len());
+        assert_eq!(null_rec, &[0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_kf8_language_uses_lcid() {
+        // Language code must be Windows LCID (0x0409 for en), not primary ID (0x09).
+        let dir = TempDir::new("kf8_lcid");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_kf8_only_mobi_bytes(&opf, dir.path());
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let lang = read_u32_be(rec0, 16 + 76);
+        assert!(lang > 0xFF,
+            "Language should be Windows LCID (>0xFF), got 0x{:X}", lang);
+    }
+
+    // =======================================================================
     // 25. EXTH records - Dictionary
     // =======================================================================
 
