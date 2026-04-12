@@ -5029,21 +5029,23 @@ mod tests {
                 i, len
             );
 
-            // Last two bytes should be 0x81 (TBS) and 0x00 (multibyte indicator)
+            // Last byte is TBS (0x81), second-to-last is multibyte (0x00).
+            // libmobi / Kindle parse extras from the end backward,
+            // bit 1 = TBS first, then bit 0 = multibyte.
             assert_eq!(
-                rec[len - 2], 0x81,
-                "Text record {} trailing byte[-2] should be 0x81 (TBS), got 0x{:02X}",
-                i, rec[len - 2]
+                rec[len - 1], 0x81,
+                "Text record {} trailing byte[-1] should be 0x81 (TBS), got 0x{:02X}",
+                i, rec[len - 1]
             );
             assert_eq!(
-                rec[len - 1], 0x00,
-                "Text record {} trailing byte[-1] should be 0x00 (multibyte), got 0x{:02X}",
-                i, rec[len - 1]
+                rec[len - 2], 0x00,
+                "Text record {} trailing byte[-2] should be 0x00 (multibyte), got 0x{:02X}",
+                i, rec[len - 2]
             );
         }
 
         println!(
-            "  \u{2713} All {} text records end with [0x81, 0x00] trailing bytes",
+            "  \u{2713} All {} text records end with [0x00, 0x81] trailing bytes",
             text_record_count
         );
     }
@@ -5778,7 +5780,8 @@ mod tests {
         let (_, _, offsets) = parse_palmdb(&data);
         let rec0 = get_record(&data, &offsets, 0);
 
-        // Offsets 28-62 (relative to MOBI magic): unused indices, all 0xFFFFFFFF
+        // Inflections are flattened into the orth INDX (lemma v1.0.0 behaviour)
+        // so there is no separate infl INDX. Offsets 28..60 should all be 0xFFFFFFFF.
         for off in (28..=60).step_by(4) {
             let val = read_u32_be(rec0, 16 + off);
             assert_eq!(
@@ -5787,7 +5790,7 @@ mod tests {
                 off, val
             );
         }
-        println!("  \u{2713} Dict unused indices [28..62] all 0xFFFFFFFF");
+        println!("  \u{2713} Dict unused indices [28..60] all 0xFFFFFFFF");
     }
 
     #[test]
@@ -6153,8 +6156,9 @@ mod tests {
         assert!(fnbr > 0 && (fnbr as u16) <= record_count);
         // Capability marker = 0x4850
         assert_eq!(read_u32_be(rec0, 16 + 112), 0x4850);
-        // Extra record data flags = 3
-        assert_eq!(read_u32_be(rec0, 16 + 224), 3);
+        // Extra record data flags = 1 (bit 0 multibyte only; no TBS for KF8
+        // per Calibre writer8/mobi.py). The KF8 compressor omits TBS bytes.
+        assert_eq!(read_u32_be(rec0, 16 + 224), 1);
         println!("  \u{2713} KF8-only MOBI header fields all correct");
     }
 

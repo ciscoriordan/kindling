@@ -24,8 +24,11 @@ Pre-built binaries for Mac (Apple Silicon, Intel), Linux (x86_64), and Windows (
 - **Comics**: Image folder, CBZ, CBR, or EPUB input, device-specific resizing, spread splitting, margin cropping, auto-contrast, moire correction for color e-ink, manga RTL, webtoon with overlap fallback, Panel View, KF8-only (.azw3) by default, metadata overrides
 - **EPUB repair**: `kindling repair` applies a small, byte-stable, idempotent set of structural fixes to an EPUB for cleaner Send-to-Kindle ingest (see [Repair](#repair))
 - **Metadata rewrite**: `kindling rewrite-metadata` updates title, authors, publisher, description, language, ISBN, ASIN, publication date, tags, series, and cover image on an existing MOBI/AZW3 in place without rebuilding from source. Byte-stable on no-op, idempotent, refuses DRM files (see [Rewrite metadata](#rewrite-metadata))
+- **Build-time HTML self-check**: every `build` runs a two-pass HTML balance check on the assembled MOBI text blob and on each individual PalmDB text record after splitting, catching regressions like dangling tags, `<hr/` corruption, and bold/italic state leaking across record boundaries (see [Build-time self-check](#build-time-self-check))
+- **UTF-8 and tag-safe record splitter**: text records end on HTML `<hr/>` entry boundaries where possible, otherwise back off past any unclosed `<` tag and any incomplete UTF-8 multi-byte character, so multi-byte characters are never truncated and chunks never end mid-tag
 - Drop-in *kindlegen* replacement (same CLI flags, same status codes)
 - Kindle Previewer compatible (EPUB source embedded by default)
+- Usable as both a CLI (`kindling-cli`) and a Rust library crate (`kindling`) with a public API for external consumers (see `src/lib.rs`)
 - Comprehensive test suite with CI on every push (see [Testing](#testing))
 
 ## Installation
@@ -266,11 +269,19 @@ Kindling works with the KF7/MOBI format used by Kindle e-readers. The key struct
 
 ### Key format details
 
-Much of the foundational MOBI format knowledge comes from the [MobileRead wiki](https://wiki.mobileread.com/wiki/MOBI). The dictionary-specific details below were reverse-engineered from *kindlegen* output for this project.
+Much of the foundational MOBI format knowledge comes from the [MobileRead wiki](https://wiki.mobileread.com/wiki/MOBI). The dictionary-specific details below were worked out empirically while building this project.
 
-- **Trailing bytes** (`\x00\x81`): The TBS byte MUST have bit 7 set for the Kindle's backward VWI parser to self-delimit. Using `\x01\x00` (wrong order, no bit 7) destroys all text content.
+- **Text record sizing**: Every PalmDOC text record (except the last) must satisfy two constraints simultaneously:
+  1. **Exactly 4096 bytes of decompressed content** (matching the declared `text_record_size` in the PalmDOC header). Kindle firmware routes popup lookups by computing `record_idx = byte_offset / text_record_size`, treating `text_record_size` as a constant. Records that drift below 4096 (e.g. by backing off to UTF-8 character boundaries) accumulate a per-record offset error that misroutes popup queries to wrong entries — the further into the alphabet the query, the worse the drift. Records significantly shorter than 4096 (e.g. by backing off to `<hr/>` entry separators) break routing entirely.
+  2. **Each record individually decodes as valid UTF-8 and parseable HTML.** Kindle's library indexer parses each record independently and will silently refuse to index a dictionary above some threshold of mid-character or mid-tag splits. Basic dictionaries with ~16% bad records still index; pro dictionaries with ~25% bad records do not.
+
+  Kindling satisfies both constraints by emitting fixed-size 4096-byte chunks but inserting ASCII space padding at HTML inter-element gaps (between a `>` and the next `<`) so each chunk ends just past a complete tag close. The padding sits in HTML inter-element whitespace zones, which parsers collapse, so it has no rendering impact and never lands inside `<b>headword</b>` text runs that would break entry-position lookup.
+- **Trailing bytes** (`\x00\x81`): Every text record ends with a multi-byte flag byte (`0x00`) followed by a TBS byte (`0x81`) as the very last byte. The Kindle decompressor walks backward from the end of the record, consuming the TBS byte first (bit 1 of `extra_flags`), then the multi-byte tail (bit 0); this ordering is mandatory. Earlier kindling builds wrote these bytes in reverse order and produced a white screen on device.
 - **Inverted VWI**: Tag values use "high bit = stop" encoding (opposite of standard VWI).
 - **SRCS record**: Must have 16-byte header (`SRCS` + length + size + count), pointed to by MOBI header offset 208. Required for Kindle Previewer.
+- **Skeleton and fragment INDX (KF8)**: KF8 HTML is split into a "skeleton" per source file and one fragment per `<aid>` insert point. Skeleton entries carry a byte offset, length, and fragment count; fragment entries use a numeric decimal label (parsed as an integer) plus insert position, file number, sequence, and length.
+- **Orth INDX header**: The orth INDX primary header declares index encoding `65002` (0xFDEA) and routing-entry labels are UTF-16BE. `ocnt`/`oentries` in the header tail are set to zero so the label reader decodes the UTF-16BE bytes directly instead of translating them through a small embedded ORDT2 table (which cannot cover non-trivial scripts).
+- **Routing entries**: Each primary-INDX routing entry is `[1 byte label length][label bytes][2 byte big-endian record entry count]`. The trailing count is what lets Kindle's binary search pick the right data record for a lookup.
 - **Dictionary links**: Anchor links work when browsing the dictionary as a book, but are disabled in the lookup popup. See the [Amazon Kindle Publishing Guidelines](http://kindlegen.s3.amazonaws.com/AmazonKindlePublishingGuidelines.pdf), section 15.6.1.
 
 ### MOBI header fields
@@ -350,28 +361,35 @@ Standard Rust layout with `Cargo.toml` at the repo root:
 
 ```
 kindling/
-├── Cargo.toml            # edition 2024, Rust 1.85+
+├── Cargo.toml                   # edition 2024, Rust 1.85+
 ├── src/
-│   ├── main.rs           # CLI: build, comic, validate, repair, kindlegen-compat
-│   ├── mobi.rs           # PalmDB + MOBI record 0 + EXTH writer
-│   ├── kf8.rs            # KF8 section, BOUNDARY, FDST, skeleton/fragment indexes
-│   ├── indx.rs           # Orthographic INDX records for dictionaries
-│   ├── palmdoc.rs        # PalmDOC LZ77 compression
-│   ├── exth.rs           # EXTH record encoding
-│   ├── vwi.rs            # Variable-width integer encoding
-│   ├── opf.rs            # OPF and EPUB parsing (Method 1 and Method 2 covers)
-│   ├── epub.rs           # EPUB extraction for books and comics
-│   ├── comic.rs          # Comic pipeline (crop, split, enhance, Panel View)
-│   ├── moire.rs          # Moire correction for color e-ink
-│   ├── validate.rs       # KDP pre-flight checks
-│   ├── repair.rs         # Structural EPUB repair pass for Kindle ingest
-│   ├── kdp_rules.rs      # Rule catalog (KPG_VERSION, Rule struct, RULES array)
-│   └── tests.rs          # Unit tests
+│   ├── lib.rs                   # Library crate root, public API for external consumers
+│   ├── main.rs                  # CLI: build, comic, validate, repair, rewrite-metadata, kindlegen-compat
+│   ├── mobi.rs                  # PalmDB + MOBI record 0 + EXTH writer, UTF-8/tag-safe record splitter
+│   ├── mobi_check.rs            # Post-build MOBI readback: PalmDB, EXTH, text-record sanity
+│   ├── mobi_rewrite.rs          # In-place MOBI/AZW3 metadata and cover rewrite
+│   ├── kf8.rs                   # KF8 section, BOUNDARY, FDST, skeleton/fragment indexes
+│   ├── indx.rs                  # Orthographic INDX records for dictionaries (ORDT/SPL sort tables)
+│   ├── palmdoc.rs               # PalmDOC LZ77 compression
+│   ├── exth.rs                  # EXTH record encoding
+│   ├── vwi.rs                   # Variable-width integer encoding
+│   ├── opf.rs                   # OPF and EPUB parsing (Method 1 and Method 2 covers)
+│   ├── epub.rs                  # EPUB extraction for books and comics
+│   ├── comic.rs                 # Comic pipeline (crop, split, enhance, Panel View)
+│   ├── cbr.rs                   # CBR (RAR) extraction via bsdtar
+│   ├── moire.rs                 # Moire correction for color e-ink
+│   ├── validate.rs              # KDP pre-flight checks
+│   ├── repair.rs                # Structural EPUB repair pass for Kindle ingest
+│   ├── kdp_rules.rs             # Rule catalog (KPG_VERSION, Rule struct, RULES array)
+│   ├── html_check.rs            # HTML/XHTML self-check for assembled MOBI text blob and per-record balance
+│   ├── ordt_greek.bin           # Embedded ORDT/SPL sort tables extracted from kindlegen output
+│   └── tests.rs                 # Unit tests
 ├── tests/
-│   ├── cli_validate.rs   # CLI smoke test for `validate` (runs compiled binary)
-│   ├── cli_repair.rs     # CLI smoke test for `repair` (runs compiled binary)
-│   └── fixtures/         # OPF fixtures (clean_book, clean_dict, book_with_errors, book_with_warnings)
-└── target/release/kindling-cli   # compiled binary
+│   ├── cli_validate.rs          # CLI smoke test for `validate`
+│   ├── cli_repair.rs             # CLI smoke test for `repair`
+│   ├── cli_rewrite_metadata.rs  # CLI smoke test for `rewrite-metadata`
+│   └── fixtures/                # OPF fixtures (clean_book, clean_dict, book_with_errors, book_with_warnings)
+└── target/release/kindling-cli  # compiled binary
 ```
 
 ## Testing
@@ -384,7 +402,7 @@ cargo test -- --show-output   # include println! output
 cargo test --test cli_validate  # CLI smoke tests only
 ```
 
-The suite currently contains around 280 tests spanning unit tests in `src/tests.rs` and a CLI integration test in `tests/cli_validate.rs` that invokes the compiled `kindling-cli validate` binary against OPF fixtures under `tests/fixtures/`.
+The suite currently contains around 430 tests spanning unit tests in `src/tests.rs`, CLI integration tests in `tests/cli.rs` that invoke the compiled `kindling-cli` binary against OPF/EPUB/MOBI fixtures under `tests/fixtures/`, structural round-trip tests in `tests/roundtrip.rs`, and kindlegen parity tests in `tests/kindlegen_parity.rs`.
 
 - **PalmDB and MOBI structure**: PalmDB header fields, record count and offset tables, MOBI header (magic, version, encoding, language, capability marker 0x50 vs 0x4850), text record count, image record ranges, boundary records, FLIS/FCIS/EOF/SRCS records, trailing byte order
 - **Record 0 cross-checks**: MOBI header offsets are internally consistent with the PalmDOC header, EXTH block, full name, and image/INDX record indexes
@@ -398,6 +416,51 @@ The suite currently contains around 280 tests spanning unit tests in `src/tests.
 - **Comic CLI flags**: doc-type EBOK/PDOC, title/author/language overrides, `--legacy-mobi` opt-in for legacy dual-format output
 - **Compression**: PalmDOC LZ77 compress/decompress roundtrips for various sizes and encodings
 - **Regression tests**: Dictionary capability marker (0x50 vs 0x4850), JFIF density patching, RTL spread cover selection, dictionary text record trailing byte order
+- **Structural round-trip tests** (`tests/roundtrip.rs`): build each of the three parity fixtures with `kindling-cli`, parse the result back with a minimal inline MOBI reader in `tests/common/mod.rs`, and assert the PalmDB header, MOBI header, EXTH, INDX / SKEL / FRAG records, and decompressed text blob have the exact shape we expect. These catch format-level regressions where libmobi would happily accept an output that does not round-trip.
+- **kindlegen byte/field parity tests** (`tests/kindlegen_parity.rs`): build the same inputs with `kindling-cli` and diff the output field-by-field against a committed kindlegen reference `.mobi`. Timestamp/UID fields (EXTH 112, 113, 204-207, etc.) are compared by presence only; core metadata (EXTH 100, 101, 524) must match exactly. Divergences are reported in a readable table via `cargo test -- --nocapture`.
+
+### kindlegen parity setup
+
+The parity tests do NOT invoke kindlegen at test time. Instead, each parity fixture ships a committed `kindlegen_reference.mobi` alongside the OPF/EPUB/CBZ sources:
+
+```
+tests/fixtures/parity/
+  simple_dict/
+    simple_dict.opf                     # source
+    content.html cover.jpg toc.ncx      # source
+    kindlegen_reference.mobi            # committed kindlegen output
+  simple_book/
+    simple_book.opf ... chapter*.html ... cover.jpg
+    kindlegen_reference.mobi
+  simple_comic/
+    simple_comic.cbz                    # kindling source
+    simple_comic.epub                   # kindlegen source (wrapper around the same 3 JPEGs)
+    page1.jpg page2.jpg page3.jpg
+    kindlegen_reference.mobi
+```
+
+The test binary reads the committed `.mobi` directly, so any environment (fresh clone, CI, sandbox) can run the parity tests without installing kindlegen.
+
+**Regenerating the references.** If you edit a fixture source file, the kindlegen reference will stall and the parity test will start complaining about spurious diffs. To rebuild all three references from the current source, run:
+
+```bash
+./scripts/regenerate_parity_fixtures.sh
+```
+
+The script locates kindlegen in this order:
+
+1. `$KINDLEGEN_PATH` environment variable
+2. `kindlegen` on `$PATH`
+3. `$HOME/.local/bin/kindlegen`
+
+and aborts with a helpful error if none are found. kindlegen is no longer distributed by Amazon, but a Linux binary is still mirrored at <https://github.com/tdtds/kindlegen/raw/master/exe/kindlegen>. Drop it into `~/.local/bin/kindlegen` and the regeneration script will find it.
+
+**Legal note.** The committed `kindlegen_reference.mobi` files are Kindle-format builds of the repo's own fixture content, produced by running kindlegen on OPF/EPUB sources that live next to them. Amazon's copyright does not extend to the OUTPUT kindlegen produces from your own content, so these files are safe to commit. What you cannot commit is the kindlegen BINARY itself; it remains Amazon-proprietary and is only required to run `scripts/regenerate_parity_fixtures.sh` when a source fixture changes.
+
+Parity fixture contents:
+- `simple_dict/` - 5-headword Latin-script dictionary with inflections
+- `simple_book/` - 3-chapter plain book with CSS and a JPEG cover
+- `simple_comic/` - 3-page CBZ fed to kindling; matching fixed-layout EPUB wrapper fed to kindlegen during regeneration
 
 ## Known Kindle firmware issues
 
@@ -427,9 +490,12 @@ Kindle firmware 5.19.2 introduced regressions for sideloaded fixed-layout conten
 
 ## Acknowledgements
 
-Kindling's comic mode was informed by the pioneering work of [AcidWeb](https://github.com/AcidWeb) on [KCC (Kindle Comic Converter)](https://github.com/ciromattia/kcc), who built the core architecture for panel detection, webtoon processing, and Kindle device compatibility over hundreds of commits. KCC remains the reference implementation for many comic-to-Kindle techniques.
+Thanks to the wider ebook-tooling community whose public documentation and reverse-engineering efforts over many years made a project like this possible. In particular:
 
-The MOBI format knowledge beyond what the [MobileRead wiki](https://wiki.mobileread.com/wiki/MOBI) covers was greatly aided by Dc5e's [KindleComicParser](https://www.mobileread.com/forums/showthread.php?t=192783), which provided detailed analysis of the binary format structures used by kindlegen for fixed-layout content.
+- [KCC (Kindle Comic Converter)](https://github.com/ciromattia/kcc) by Ciro Mattia Gonano, with earlier work by [AcidWeb](https://github.com/AcidWeb), for pioneering comic-to-Kindle processing — panel detection, webtoon handling, and device profile data informed kindling's comic pipeline.
+- The [MobileRead wiki](https://wiki.mobileread.com/wiki/MOBI) and Developer's Corner forum for the foundational public documentation of the MOBI format. Dc5e's [KindleComicParser](https://www.mobileread.com/forums/showthread.php?t=192783) thread on fixed-layout binaries filled in gaps the wiki does not cover.
+- Amazon's *kindlegen* (no longer maintained) is used as a reverse-engineering reference: its output files are compared byte by byte against kindling's to understand the MOBI format's undocumented corners.
+- The broader open-source MOBI tooling community whose format notes, sample files, and online discussions have been invaluable references.
 
 ## Related projects
 

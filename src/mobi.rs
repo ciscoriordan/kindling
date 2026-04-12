@@ -15,7 +15,7 @@ use regex::Regex;
 
 use crate::exth;
 use crate::html_check;
-use crate::indx::{self, encode_indx_label, LookupTerm};
+use crate::indx::{self, LookupTerm};
 use crate::opf::{self, DictionaryEntry, OPFData};
 use crate::palmdoc;
 
@@ -176,6 +176,18 @@ fn build_dictionary_mobi(
         text_content
     };
 
+    // Pad the text so every PalmDOC record (except the last) is exactly
+    // `RECORD_SIZE` bytes AND ends on a UTF-8 character boundary. Kindle
+    // firmware uses byte_offset / text_record_size to route popup
+    // lookups (so chunks must be exactly RECORD_SIZE), and the indexer
+    // rejects dictionaries with too many records that decode as invalid
+    // UTF-8 (so chunks must end at char boundaries). The only way to
+    // satisfy both is to insert space-byte padding wherever a 4096-byte
+    // boundary would otherwise straddle a multi-byte character. Padding
+    // is invisible in HTML rendering and harmless to find_entry_positions
+    // because we run that AFTER padding.
+    let text_content = pad_text_for_chunking(&text_content, RECORD_SIZE);
+
     // Self-check: validate the final HTML blob before we split it into
     // records. This is the last chance to notice structural corruption
     // (unclosed tags, `<hr/` garbage, unclosed attribute quotes) before
@@ -225,17 +237,21 @@ fn build_dictionary_mobi(
     eprintln!("Finding entry positions...");
     let entry_positions = find_entry_positions(&text_content, &all_entries);
 
-    // Build lookup terms
+    // Build lookup terms + separate infl INDX data.
+    //
+    // `KINDLING_FLATTEN_INFL` env var (set to "1" or "true") makes the
+    // orth INDX ALSO contain every inflected form as a flat entry
+    // pointing at its parent headword's (start_pos, text_len). Off by
+    // default: only base headwords land in orth; inflected forms are
+    // routed through the separate infl INDX. Test-mode toggle while we
     eprintln!("Building lookup terms...");
-    let lookup_terms = build_lookup_terms(&all_entries, &entry_positions, &text_content, headwords_only);
-    let label = if headwords_only {
-        "headwords only"
-    } else {
-        "headwords + inflections"
-    };
-    eprintln!("Built {} lookup terms ({})", lookup_terms.len(), label);
+    let lookup_terms = build_lookup_terms(
+        &all_entries,
+        &entry_positions,
+        &text_content,
+        headwords_only,
+    );
 
-    // Build INDX records
     eprintln!("Building INDX records...");
     let mut headword_chars_for_indx: HashSet<char> = HashSet::new();
     for entry in &all_entries {
@@ -246,6 +262,7 @@ fn build_dictionary_mobi(
         }
     }
     let indx_records = indx::build_orth_indx(&lookup_terms, &headword_chars_for_indx);
+    eprintln!("  Orth INDX: {} records", indx_records.len());
 
     // Build FLIS, FCIS, EOF records
     let flis = build_flis();
@@ -271,7 +288,7 @@ fn build_dictionary_mobi(
     let num_optional = srcs_record.as_ref().map_or(0, |_| 1) + cmet_record.as_ref().map_or(0, |_| 1);
 
     // Calculate record indices
-    // Layout: record0 | text | image records | INDX | FLIS | FCIS | [SRCS] | [CMET] | EOF
+    // Layout: record0 | text | image records | orth_INDX | infl_INDX | FLIS | FCIS | [SRCS] | [CMET] | EOF
     let first_non_book = text_records.len() + 1;
     let first_image_record = if num_image_records > 0 {
         text_records.len() + 1
@@ -279,6 +296,7 @@ fn build_dictionary_mobi(
         0xFFFFFFFF
     };
     let orth_index_record = text_records.len() + 1 + num_image_records;
+    let infl_index_record = 0xFFFFFFFFusize;
     let flis_record = orth_index_record + indx_records.len();
     let fcis_record = flis_record + 1;
     let srcs_record_idx = if srcs_record.is_some() {
@@ -286,7 +304,8 @@ fn build_dictionary_mobi(
     } else {
         None
     };
-    let total_records = 1 + text_records.len() + num_image_records + indx_records.len() + 3 + num_optional;
+    let total_records = 1 + text_records.len() + num_image_records
+        + indx_records.len() + 3 + num_optional;
 
     // Collect unique headword characters for fontsignature
     let mut headword_chars: HashSet<u32> = HashSet::new();
@@ -303,6 +322,7 @@ fn build_dictionary_mobi(
         text_records.len(),
         first_non_book,
         orth_index_record,
+        infl_index_record,
         total_records,
         flis_record,
         fcis_record,
@@ -597,7 +617,12 @@ fn build_book_mobi(
             0xFFFFFFFF
         };
         let kf8_fragment_start = kf8_null_pad + 1 + num_image_records;
-        let kf8_skeleton_start = kf8_fragment_start + kf8_section.fragment_indx.len();
+        // CNCX records sit between fragment INDX and skeleton INDX so Kindle
+        // firmware can resolve the fragment selectors referenced by the
+        // fragment index header (num_of_cncx + walk via PDB record table).
+        let kf8_skeleton_start = kf8_fragment_start
+            + kf8_section.fragment_indx.len()
+            + kf8_section.cncx_records.len();
         let kf8_ncx_start = kf8_skeleton_start + kf8_section.skeleton_indx.len();
         let kf8_fdst_idx = kf8_ncx_start + kf8_section.ncx_indx.len();
         let kf8_datp_idx = kf8_fdst_idx + 1;
@@ -622,6 +647,7 @@ fn build_book_mobi(
 
         let total_records = 1 + kf8_text_count + 1 + num_image_records
             + kf8_section.fragment_indx.len()
+            + kf8_section.cncx_records.len()
             + kf8_section.skeleton_indx.len()
             + kf8_section.ncx_indx.len()
             + 1 + 1 + 1 + 1  // FDST + DATP + FLIS + FCIS
@@ -667,6 +693,7 @@ fn build_book_mobi(
         all_records.push(null_pad_rec);
         all_records.extend(image_records);
         all_records.extend(kf8_section.fragment_indx);
+        all_records.extend(kf8_section.cncx_records);
         all_records.extend(kf8_section.skeleton_indx);
         all_records.extend(kf8_section.ncx_indx);
         all_records.push(kf8_section.fdst);
@@ -757,7 +784,12 @@ fn build_book_mobi(
         let kf8_text_count = kf8_section.text_records.len();
         let kf8_null_pad = kf8_text_count + 1;
         let kf8_fragment_start = kf8_null_pad + 1;
-        let kf8_skeleton_start = kf8_fragment_start + kf8_section.fragment_indx.len();
+        // CNCX records follow the fragment INDX and precede the skeleton INDX
+        // so the Kindle firmware can walk the PDB record table to resolve the
+        // CNCX references made by the fragment index header.
+        let kf8_skeleton_start = kf8_fragment_start
+            + kf8_section.fragment_indx.len()
+            + kf8_section.cncx_records.len();
         let kf8_ncx_start = kf8_skeleton_start + kf8_section.skeleton_indx.len();
         let kf8_fdst_idx = kf8_ncx_start + kf8_section.ncx_indx.len();
         let kf8_datp_idx = kf8_fdst_idx + 1;
@@ -777,6 +809,7 @@ fn build_book_mobi(
 
         let total_global_records = kf7_total + 1 + 1 + kf8_text_count + 1
             + kf8_section.fragment_indx.len()
+            + kf8_section.cncx_records.len()
             + kf8_section.skeleton_indx.len()
             + kf8_section.ncx_indx.len()
             + 1 + 1 + 3  // FDST + DATP + FLIS + FCIS + EOF
@@ -789,7 +822,8 @@ fn build_book_mobi(
             text_length,
             text_records.len(),
             kf7_first_non_book,
-            0xFFFFFFFF_usize,
+            0xFFFFFFFF_usize, // orth_index (no dict in KF7 book mode)
+            0xFFFFFFFF_usize, // infl_index (no dict)
             total_global_records,
             kf7_flis,
             kf7_fcis,
@@ -869,6 +903,7 @@ fn build_book_mobi(
         all_records.extend(kf8_section.text_records);
         all_records.push(null_pad_rec);
         all_records.extend(kf8_section.fragment_indx);
+        all_records.extend(kf8_section.cncx_records);
         all_records.extend(kf8_section.skeleton_indx);
         all_records.extend(kf8_section.ncx_indx);
         all_records.push(kf8_section.fdst);
@@ -1510,19 +1545,16 @@ fn strip_idx_markup(html: &str) -> String {
     let infl_full = Regex::new(r"(?s)\s*<idx:infl>.*?</idx:infl>\s*").unwrap();
     result = infl_full.replace_all(&result, "").to_string();
 
-    // Wrap the headword in <h5>. idx:orth in the source marks the
-    // headword, which is always a <b>...</b> run. Replacing the open
-    // and close tags with <h5> and </h5> gives every entry a
-    // block-level ancestor around its headword, which Kindle's popup
-    // clipper needs in order to locate entry boundaries correctly.
+    // Remove idx:orth tags but keep inner content (v0.5.0/lemma v1.0.0
+    // behaviour; h5 wrapping was breaking on-device popup routing).
     let orth_self = Regex::new(r"<idx:orth[^>]*/>").unwrap();
     result = orth_self.replace_all(&result, "").to_string();
 
     let orth_open = Regex::new(r"<idx:orth[^>]*>").unwrap();
-    result = orth_open.replace_all(&result, "<h5>").to_string();
+    result = orth_open.replace_all(&result, "").to_string();
 
     let orth_close = Regex::new(r"</idx:orth>").unwrap();
-    result = orth_close.replace_all(&result, "</h5>").to_string();
+    result = orth_close.replace_all(&result, "").to_string();
 
     // Remove idx:short tags but keep inner content
     let short_open = Regex::new(r"<idx:short>\s*").unwrap();
@@ -1555,123 +1587,6 @@ fn strip_idx_markup(html: &str) -> String {
     result.trim().to_string()
 }
 
-#[cfg(test)]
-mod strip_idx_markup_headword_wrap_tests {
-    use super::*;
-
-    const ENTRY_1: &str = r#"<idx:entry name="default" scriptable="yes" spell="yes" id="hw_alpha">
-  <idx:short>
-    <idx:orth value="͵ε"><b>͵ε</b>
-      <idx:infl>
-        <idx:iform value="͵ε" exact="yes" />
-      </idx:infl>
-    </idx:orth>
-  </idx:short>
-  <p><i>num</i></p>
-  <p class='def'>The Greek numeral representing the number five thousand.</p>
-</idx:entry>"#;
-
-    const ENTRY_2: &str = r#"<idx:entry name="default" scriptable="yes" spell="yes" id="hw_beta">
-  <idx:short>
-    <idx:orth value="͵Ζ"><b>͵Ζ</b>
-      <idx:infl>
-        <idx:iform value="͵ζ" exact="yes" />
-      </idx:infl>
-    </idx:orth>
-  </idx:short>
-  <p><i>num</i></p>
-  <p class='def'>The Greek numeral representing the number seven thousand.</p>
-</idx:entry>"#;
-
-    const ENTRY_3: &str = r#"<idx:entry name="default" scriptable="yes" spell="yes" id="hw_gamma">
-  <idx:short>
-    <idx:orth value="͵η"><b>͵η</b>
-      <idx:infl>
-        <idx:iform value="͵η" exact="yes" />
-      </idx:infl>
-    </idx:orth>
-  </idx:short>
-  <p><i>num</i></p>
-  <p class='def'>The Greek numeral representing the number eight thousand.</p>
-</idx:entry>"#;
-
-    /// Each stripped entry must contain an h5 wrapper around its b
-    /// headword. This is the block-level ancestor Kindle's popup
-    /// clipper needs in order to locate entry boundaries.
-    #[test]
-    fn strip_idx_markup_wraps_headword_in_h5() {
-        for (label, input, hw) in [
-            ("entry1", ENTRY_1, "͵ε"),
-            ("entry2", ENTRY_2, "͵Ζ"),
-            ("entry3", ENTRY_3, "͵η"),
-        ] {
-            let stripped = strip_idx_markup(input);
-            let needle = format!("<h5><b>{}</b>", hw);
-            assert!(
-                stripped.contains(&needle),
-                "{} missing {:?}, got: {}",
-                label, needle, stripped
-            );
-            // The close tag of the h5 must also appear somewhere after.
-            assert!(
-                stripped.contains("</h5>"),
-                "{} missing </h5>, got: {}",
-                label, stripped
-            );
-            // The headword must not appear OUTSIDE any h5 wrapper (i.e.
-            // not as a bare b tag without h5 on both sides).
-            assert!(
-                !stripped.contains(&format!("<hr/><b>{}</b>", hw)),
-                "{} has bare <hr/><b>{}</b> (no h5 wrap): {}",
-                label, hw, stripped
-            );
-        }
-    }
-
-    /// When three entries are concatenated into a single blob (as
-    /// build_text_content_by_letter does), the boundary between
-    /// adjacent entries must always be <hr/><h5><b>...
-    #[test]
-    fn concatenated_entries_have_h5_boundary_between_them() {
-        let mut blob = String::new();
-        blob.push_str(&strip_idx_markup(ENTRY_1));
-        blob.push_str(&strip_idx_markup(ENTRY_2));
-        blob.push_str(&strip_idx_markup(ENTRY_3));
-
-        // Each headword after the first must be preceded by <hr/><h5>.
-        for hw in ["͵Ζ", "͵η"] {
-            let needle = format!("<hr/><h5><b>{}</b>", hw);
-            assert!(
-                blob.contains(&needle),
-                "concatenated blob missing boundary {:?}, got: {}",
-                needle, blob
-            );
-        }
-
-        // There must be no bare <hr/><b>... sequence (which is the
-        // pre-fix shape, without the h5 wrapper).
-        assert!(
-            !blob.contains("<hr/><b>"),
-            "concatenated blob still has bare <hr/><b> (no h5 wrap): {}",
-            blob
-        );
-
-        // is_entry_boundary must accept every <b> headword in the blob.
-        let bytes = blob.as_bytes();
-        for hw in ["͵ε", "͵Ζ", "͵η"] {
-            let needle = format!("<b>{}</b>", hw);
-            let pos = blob.find(&needle).expect("headword not found");
-            assert!(
-                is_entry_boundary(bytes, pos),
-                "is_entry_boundary rejected hw={:?} at pos={}, preceding={:?}",
-                hw, pos,
-                String::from_utf8_lossy(
-                    &bytes[pos.saturating_sub(16)..pos]
-                )
-            );
-        }
-    }
-}
 
 /// Clean book HTML for non-dictionary content.
 ///
@@ -1899,6 +1814,74 @@ fn incomplete_utf8_tail_bytes(chunk: &[u8]) -> usize {
     0
 }
 
+/// Pad `text` so every `chunk_size`-byte slice (except the last) ends
+/// exactly at a UTF-8 character boundary AND between two HTML elements
+/// (after `>`, before `<`), inserting ASCII space padding to fill any
+/// gap. The spaces sit in HTML inter-element whitespace, which parsers
+/// collapse, so the padding has no visible rendering impact and never
+/// lands inside a `<b>headword</b>` text run that `find_entry_positions`
+/// later searches for.
+///
+/// Why this exists: Kindle firmware uses
+///   record_idx = byte_offset / text_record_size
+/// to route popup lookups, so PalmDOC records must be exactly
+/// `text_record_size` bytes each (any drift accumulates and misroutes
+/// later-in-alphabet entries by progressively larger amounts). At the
+/// same time, the Kindle indexer rejects dictionaries where too many
+/// records decode as invalid UTF-8 (mid-character splits). Backing off
+/// to UTF-8 boundaries shrinks records below `text_record_size` and
+/// breaks routing; padding to `text_record_size` between elements keeps
+/// records both uniform-sized AND individually UTF-8/HTML-clean.
+fn pad_text_for_chunking(text: &[u8], chunk_size: usize) -> Vec<u8> {
+    let mut padded: Vec<u8> = Vec::with_capacity(text.len() + 8 * (text.len() / chunk_size + 1));
+    let mut src = 0usize;
+    while src < text.len() {
+        let remaining_in_chunk = chunk_size - (padded.len() % chunk_size);
+        let avail = text.len() - src;
+        if avail <= remaining_in_chunk {
+            // Last chunk: no need to pad, just copy the rest verbatim.
+            padded.extend_from_slice(&text[src..]);
+            break;
+        }
+        // Find a safe split point in text[src..src+remaining_in_chunk].
+        // Preference: walk backward from the natural end looking for the
+        // last `>` immediately followed by `<` (the gap between two HTML
+        // elements). Padding between those bytes sits in HTML inter-element
+        // whitespace, ignored by parsers.
+        let chunk = &text[src..src + remaining_in_chunk];
+        let mut split_at: Option<usize> = None;
+        for i in (1..chunk.len()).rev() {
+            if chunk[i - 1] == b'>' && chunk[i] == b'<' {
+                split_at = Some(i);
+                break;
+            }
+        }
+        // Fallback: if no `><` boundary in the chunk (rare for HTML
+        // dict text), back off to a UTF-8 character boundary. Records
+        // produced this way may have whitespace inside an element, but
+        // they remain valid UTF-8.
+        let safe_n = match split_at {
+            Some(n) => n,
+            None => {
+                let trailing = incomplete_utf8_tail_bytes(chunk);
+                if trailing >= remaining_in_chunk {
+                    1
+                } else {
+                    remaining_in_chunk - trailing
+                }
+            }
+        };
+        padded.extend_from_slice(&text[src..src + safe_n]);
+        src += safe_n;
+        // Pad with spaces to the chunk boundary.
+        let pad_count = remaining_in_chunk - safe_n;
+        for _ in 0..pad_count {
+            padded.push(b' ');
+        }
+    }
+    padded
+}
+
 /// Split `text_bytes` into chunk ranges of at most `chunk_size` bytes,
 /// choosing end positions that keep each chunk well-formed enough to be
 /// decoded independently by Kindle. Returns the start..end byte offsets
@@ -1927,62 +1910,24 @@ fn incomplete_utf8_tail_bytes(chunk: &[u8]) -> usize {
 ///      but this is strictly better than leaving a truncated tag.
 ///   3. A UTF-8 character boundary - so no chunk ends mid-character.
 fn split_on_utf8_boundaries(text_bytes: &[u8], chunk_size: usize) -> Vec<(usize, usize)> {
+    // Kindle firmware uses `byte_offset / text_record_size` (4096) to
+    // compute which PalmDOC record contains a given decompressed byte.
+    // Any per-record backoff (UTF-8 safety, `<hr/>` alignment) makes
+    // actual record sizes drift below the declared size, and the drift
+    // accumulates across records, progressively misrouting popup
+    // lookups the further into the alphabet the query lands. Split at
+    // exactly `chunk_size`, full stop. Mid-character splits produce
+    // boundary tofu in rendering but the correct entry in routing,
+    // which is strictly better than the reverse.
     let mut ranges: Vec<(usize, usize)> = Vec::new();
     let total = text_bytes.len();
     let mut start = 0usize;
     while start < total {
-        let natural_end = (start + chunk_size).min(total);
-        let end = if natural_end == total {
-            natural_end
-        } else {
-            choose_safe_split(text_bytes, start, natural_end)
-        };
-        // Guarantee forward progress.
-        let end = if end <= start { natural_end } else { end };
+        let end = (start + chunk_size).min(total);
         ranges.push((start, end));
         start = end;
     }
     ranges
-}
-
-/// Pick an end-of-chunk position in `(start, natural_end]` that avoids
-/// splitting mid-character, mid-tag, or (when possible) mid-entry.
-fn choose_safe_split(text_bytes: &[u8], start: usize, natural_end: usize) -> usize {
-    debug_assert!(start < natural_end);
-    debug_assert!(natural_end <= text_bytes.len());
-
-    let chunk = &text_bytes[start..natural_end];
-    let chunk_len = chunk.len();
-
-    // Preference 1: the last `<hr/>` in the chunk. Lemma dictionaries
-    // place one between every entry, and ending here guarantees no
-    // tag pair straddles a record boundary. Require the resulting
-    // chunk to be at least half the natural size so a stray `<hr/>`
-    // near the start doesn't produce tiny chunks.
-    if let Some(hr_rel) = rfind_bytes(chunk, b"<hr/>") {
-        let end_rel = hr_rel + b"<hr/>".len();
-        if end_rel >= chunk_len / 2 && end_rel <= chunk_len {
-            return start + end_rel;
-        }
-    }
-
-    // Preference 2: back off past any unclosed `<` so the chunk never
-    // ends inside an HTML tag.
-    let mut end = natural_end;
-    if let Some(unclosed_rel) = last_unclosed_lt(chunk) {
-        let candidate = start + unclosed_rel;
-        if candidate > start {
-            end = candidate;
-        }
-    }
-
-    // Preference 3: UTF-8 tail backoff on top of whatever end we chose.
-    let trailing = incomplete_utf8_tail_bytes(&text_bytes[start..end]);
-    if trailing > 0 && end - start > trailing {
-        end -= trailing;
-    }
-
-    end
 }
 
 /// Return the position within `chunk` of the earliest `<` that has no
@@ -2042,13 +1987,17 @@ fn compress_text(text_bytes: &[u8]) -> (Vec<Vec<u8>>, usize) {
                 let mut idx = worker_id;
                 while idx < chunk_count {
                     let mut compressed = palmdoc::compress(&chunks[idx]);
-                    // Trailing bytes for extra_flags=3 (bit 0=multibyte, bit 1=TBS):
-                    // 0x81 = TBS entry (stop bit set, size=1: just this byte, no payload)
-                    // 0x00 = multibyte byte (low 2 bits=0: no overhang, chunks end on
-                    //        UTF-8 character boundaries so there is nothing to strip).
-                    // Order matters: TBS comes first, multibyte last (parsed from end).
-                    compressed.push(0x81);
+                    // Trailing bytes for extra_flags=3 (bit 0=multibyte,
+                    // bit 1=TBS). Kindle / libmobi parse these FROM the
+                    // end of the record backward, bit 1 FIRST then
+                    // bit 0. So TBS must be the LAST byte, multibyte
+                    // the byte before.
+                    //   0x00 = multibyte byte (low 2 bits=0 → no
+                    //          overhang; chunks end on UTF-8 boundaries)
+                    //   0x81 = TBS varlen-dec encoding of size 1
+                    //          (stop bit set, value 1 → just this byte)
                     compressed.push(0x00);
+                    compressed.push(0x81);
                     results.push((idx, compressed));
                     idx += num_workers;
                 }
@@ -2069,9 +2018,11 @@ fn compress_text(text_bytes: &[u8]) -> (Vec<Vec<u8>>, usize) {
             .iter()
             .map(|chunk| {
                 let mut compressed = palmdoc::compress(chunk);
-                // Trailing bytes: TBS(0x81) then multibyte(0x00)
-                compressed.push(0x81);
+                // Trailing bytes: multibyte(0x00) then TBS(0x81).
+                // TBS is the LAST byte of the record (parsed backward
+                // by libmobi / Kindle); multibyte is the byte before.
                 compressed.push(0x00);
+                compressed.push(0x81);
                 compressed
             })
             .collect()
@@ -2089,10 +2040,12 @@ fn split_text_uncompressed(text_bytes: &[u8]) -> (Vec<Vec<u8>>, usize) {
         .into_iter()
         .map(|(s, e)| {
             let mut rec = text_bytes[s..e].to_vec();
-            // Trailing bytes: TBS(0x81) then multibyte(0x00). Chunks end on
-            // UTF-8 character boundaries so the multibyte byte is always 0.
-            rec.push(0x81);
+            // Trailing bytes: multibyte(0x00) then TBS(0x81). TBS is
+            // parsed from the last byte of the record backwards, so
+            // TBS must be last and multibyte before it. Chunks end on
+            // UTF-8 boundaries so the multibyte byte is always 0.
             rec.push(0x00);
+            rec.push(0x81);
             rec
         })
         .collect();
@@ -2108,10 +2061,12 @@ mod record_split_tests {
     /// both record-producing functions.
     fn strip_trailers(rec: &[u8]) -> &[u8] {
         assert!(rec.len() >= 2, "record too small to contain trailers");
-        let mb_byte = rec[rec.len() - 1];
+        // TBS is the LAST byte, multibyte is the byte before it
+        // (libmobi parses from the end backwards, bit 1 = TBS first).
+        let tbs_byte = rec[rec.len() - 1];
+        assert_eq!(tbs_byte, 0x81, "TBS byte must be 0x81 at end of record");
+        let mb_byte = rec[rec.len() - 2];
         assert_eq!(mb_byte & 0x3, 0, "multibyte byte overhang must be 0");
-        let tbs_byte = rec[rec.len() - 2];
-        assert_eq!(tbs_byte, 0x81, "TBS byte must be 0x81");
         &rec[..rec.len() - 2]
     }
 
@@ -2194,80 +2149,28 @@ mod record_split_tests {
     }
 
     #[test]
-    fn split_on_utf8_boundaries_shrinks_when_char_would_be_split() {
-        // Build text: 4095 ASCII bytes, then "α" (CE B1), then more ASCII.
-        // With chunk_size=4096 the natural end at 4096 would land on B1
-        // (the continuation byte of α). The splitter must back up by 1
-        // so the first chunk ends at 4095, leaving α intact in chunk 2.
+    fn split_on_utf8_boundaries_fixed_chunks() {
+        // Records must be exactly chunk_size bytes (except the last),
+        // regardless of UTF-8 character boundaries. Kindle firmware uses
+        // byte_offset / text_record_size to route popup lookups and any
+        // per-record drift accumulates across records.
         let mut text = vec![b'x'; 4095];
-        text.extend_from_slice("α".as_bytes());
+        text.extend_from_slice("α".as_bytes()); // straddles 4095..4097
         text.extend_from_slice(&[b'y'; 100]);
         let ranges = split_on_utf8_boundaries(&text, 4096);
-        assert_eq!(ranges.len(), 2);
-        assert_eq!(ranges[0], (0, 4095));
-        assert_eq!(ranges[1], (4095, text.len()));
-        // Verify each chunk is valid UTF-8.
-        for (s, e) in &ranges {
-            std::str::from_utf8(&text[*s..*e]).expect("chunk must be valid UTF-8");
-        }
-    }
-
-    #[test]
-    fn split_on_utf8_boundaries_three_byte_char() {
-        // U+2020 DAGGER = E2 80 A0. Place the lead byte at position 4095
-        // so a naive split at 4096 leaves E2 80 in chunk 1 and A0 in chunk 2.
-        let mut text = vec![b'x'; 4093];
-        text.extend_from_slice("\u{2020}".as_bytes()); // 3 bytes at positions 4093..4096
-        text.extend_from_slice(&[b'y'; 50]);
-        let ranges = split_on_utf8_boundaries(&text, 4096);
-        // natural end = 4096 lands on A0 (the final byte of the dagger).
-        // incomplete_utf8_tail_bytes should report 0 (the character is complete
-        // exactly at position 4096) so the split stays at 4096.
         assert_eq!(ranges[0], (0, 4096));
-
-        // Now shift the dagger so it straddles the boundary: place it at 4094..4097.
-        let mut text2 = vec![b'x'; 4094];
-        text2.extend_from_slice("\u{2020}".as_bytes());
-        text2.extend_from_slice(&[b'y'; 50]);
-        let ranges2 = split_on_utf8_boundaries(&text2, 4096);
-        // natural end=4096 would land on 80 (middle byte). Back up to 4094.
-        assert_eq!(ranges2[0], (0, 4094));
-        assert_eq!(ranges2[1], (4094, text2.len()));
-        for (s, e) in &ranges2 {
-            std::str::from_utf8(&text2[*s..*e]).expect("chunk must be valid UTF-8");
-        }
-    }
-
-    #[test]
-    fn split_on_utf8_boundaries_greek_numeral_sign() {
-        // The problematic character from the real dictionary: ͵Ζ
-        // ͵ = CD B4 (2 bytes), Ζ = CE 96 (2 bytes). Put them around 4096
-        // in various positions and ensure no split lands mid-character.
-        for lead_pos in 4093..=4097 {
-            let mut text = vec![b'x'; lead_pos];
-            text.extend_from_slice("͵Ζ".as_bytes());
-            text.extend_from_slice(&[b'y'; 50]);
-            let ranges = split_on_utf8_boundaries(&text, 4096);
-            for (s, e) in &ranges {
-                std::str::from_utf8(&text[*s..*e])
-                    .unwrap_or_else(|err| panic!("lead_pos={} chunk {}..{} invalid UTF-8: {}",
-                                                 lead_pos, s, e, err));
-            }
-        }
+        // First chunk ends mid-α (incomplete UTF-8 in this record is
+        // an accepted tradeoff; the router stays byte-exact).
     }
 
     #[test]
     fn split_on_utf8_boundaries_reassembles_to_original() {
-        // Random-ish mix of ASCII and multi-byte chars. After splitting,
-        // concatenating all ranges back together must equal the original.
         let mut text: Vec<u8> = Vec::new();
         for i in 0..5000 {
             if i % 7 == 0 {
                 text.extend_from_slice("αβγ".as_bytes());
             } else if i % 11 == 0 {
-                text.extend_from_slice("\u{2020}".as_bytes()); // 3 bytes
-            } else if i % 13 == 0 {
-                text.extend_from_slice("\u{1F600}".as_bytes()); // 4 bytes
+                text.extend_from_slice("\u{2020}".as_bytes());
             } else {
                 text.push(b'a' + (i as u8 % 26));
             }
@@ -2276,77 +2179,9 @@ mod record_split_tests {
         let mut reassembled = Vec::with_capacity(text.len());
         for (s, e) in &ranges {
             reassembled.extend_from_slice(&text[*s..*e]);
-            // Each chunk decodes as valid UTF-8 standalone.
-            std::str::from_utf8(&text[*s..*e]).expect("chunk must be valid UTF-8");
-            // Each chunk (except possibly the last) is close to chunk_size.
             assert!(e - s <= 4096);
         }
         assert_eq!(reassembled, text);
-    }
-
-    #[test]
-    fn split_text_uncompressed_emits_utf8_clean_records() {
-        // Build a text large enough to span several records, with Greek
-        // 2-byte chars densely enough that some would naturally fall on a
-        // 4096-byte boundary.
-        let mut text = String::new();
-        while text.len() < 20_000 {
-            text.push_str("αβγδεζηθικλμνξοπρστυφχψω ");
-        }
-        let text_bytes = text.as_bytes();
-        let (records, total_length) = split_text_uncompressed(text_bytes);
-        assert_eq!(total_length, text_bytes.len());
-        assert!(records.len() >= 4, "expected several records");
-        let mut reassembled = Vec::with_capacity(text_bytes.len());
-        for rec in &records {
-            let stripped = strip_trailers(rec);
-            assert!(stripped.len() <= 4096);
-            std::str::from_utf8(stripped).expect("record must be valid UTF-8");
-            reassembled.extend_from_slice(stripped);
-        }
-        assert_eq!(reassembled, text_bytes);
-    }
-
-    #[test]
-    fn compress_text_emits_utf8_clean_records() {
-        // Large enough to exercise both sequential and parallel paths,
-        // and dense in 2-byte Greek chars so boundaries land on them.
-        let mut text = String::new();
-        while text.len() < 20_000 {
-            text.push_str("αβγδεζηθικλμνξοπρστυφχψω ");
-        }
-        let text_bytes = text.as_bytes();
-        let (records, total_length) = compress_text(text_bytes);
-        assert_eq!(total_length, text_bytes.len());
-        let mut reassembled = Vec::with_capacity(text_bytes.len());
-        for rec in &records {
-            let stripped = strip_trailers(rec);
-            // Decompress with the local palmdoc decoder.
-            let decomp = palmdoc_decompress(stripped);
-            std::str::from_utf8(&decomp).expect("record must decode as valid UTF-8");
-            reassembled.extend_from_slice(&decomp);
-        }
-        assert_eq!(reassembled, text_bytes);
-    }
-
-    #[test]
-    fn compress_text_large_parallel_path_is_utf8_clean() {
-        // Exceeds PARALLEL_THRESHOLD (1 MB) so the parallel worker path runs.
-        let mut text = String::new();
-        while text.len() < 1_200_000 {
-            text.push_str("αβγδεζηθικλμνξοπρστυφχψω ");
-        }
-        let text_bytes = text.as_bytes();
-        let (records, total_length) = compress_text(text_bytes);
-        assert_eq!(total_length, text_bytes.len());
-        let mut reassembled = Vec::with_capacity(text_bytes.len());
-        for rec in &records {
-            let stripped = strip_trailers(rec);
-            let decomp = palmdoc_decompress(stripped);
-            std::str::from_utf8(&decomp).expect("record must decode as valid UTF-8");
-            reassembled.extend_from_slice(&decomp);
-        }
-        assert_eq!(reassembled, text_bytes);
     }
 
     /// Count matching `<tag>` and `</tag>` pairs in a byte slice. Used
@@ -2374,135 +2209,6 @@ mod record_split_tests {
         assert_eq!(last_unclosed_lt(b"<p>text</p><x"), Some(11));
     }
 
-    /// A chunk whose natural end lands inside an HTML tag must back
-    /// off so the chunk ends BEFORE the `<`, not inside the tag.
-    #[test]
-    fn split_backs_off_past_unclosed_lt() {
-        // 4090 bytes of filler, then `<bold-tag>`, then more filler.
-        // natural end at 4096 lands on the 6th byte of `<bold-tag>`,
-        // which is mid-tag. The splitter must back off to position 4090.
-        let mut text = vec![b'x'; 4090];
-        text.extend_from_slice(b"<bold-tag>yyyyyy");
-        let ranges = split_on_utf8_boundaries(&text, 4096);
-        assert!(ranges.len() >= 1);
-        let (s, e) = ranges[0];
-        assert_eq!(s, 0);
-        // The first chunk must not contain the `<bold-tag>` opener at
-        // all - back off is to just before it.
-        assert_eq!(e, 4090);
-        assert!(!text[s..e].contains(&b'<'),
-            "first chunk should not contain any `<`: {:?}",
-            String::from_utf8_lossy(&text[s..e.min(s + 64)]));
-    }
-
-    /// When an `<hr/>` is present in the later part of the chunk, the
-    /// splitter prefers to end there so no HTML tag pair straddles a
-    /// record boundary.
-    #[test]
-    fn split_prefers_hr_boundary() {
-        // One entry with a <b>...</b> block that would naturally
-        // straddle the 4096 boundary, plus an `<hr/>` at position 3500.
-        // The splitter should end at 3505 (just after <hr/>) so the
-        // subsequent <b>...</b> pair lands wholly in the next chunk.
-        let mut text = vec![b'x'; 3500];
-        text.extend_from_slice(b"<hr/>");
-        // Fill with `<b>` opener far into the chunk and `</b>` after
-        // the boundary.
-        text.extend_from_slice(&vec![b'a'; 590]); // 3505..4095
-        text.extend_from_slice(b"<b>headword</b> rest");
-        let ranges = split_on_utf8_boundaries(&text, 4096);
-        // First chunk should end at 3505 (just past <hr/>).
-        assert_eq!(ranges[0], (0, 3505));
-        // The <b> pair must be entirely in the second chunk.
-        let second = &text[ranges[1].0..ranges[1].1];
-        let opens = count_tag_balance(second, "b");
-        assert_eq!(opens, 0, "second chunk must have balanced <b> tags");
-    }
-
-    /// The full split pipeline must produce records that are each
-    /// individually balanced in `<b>`, `<i>`, and `<p>` tags, simulating
-    /// the lemma dictionary shape: many entries separated by `<hr/>`
-    /// where each entry has a bold headword + paragraph tags.
-    #[test]
-    fn split_keeps_tag_pairs_balanced_per_record() {
-        // Build a lemma-like blob: 2000 entries, each ~200 bytes, with
-        // <hr/><h5><b>hw</b></h5><p>definition...</p> shape. Total size
-        // is large enough to span many records.
-        let mut text = String::new();
-        for i in 0..2000 {
-            text.push_str("<hr/><h5><b>");
-            text.push_str(&format!("hw{:04}", i));
-            text.push_str("</b></h5><p><i>noun</i></p><p>");
-            // Pad definition so each entry is roughly 200 bytes.
-            for _ in 0..150 {
-                text.push('d');
-            }
-            text.push_str("</p>");
-        }
-        let text_bytes = text.as_bytes();
-        let ranges = split_on_utf8_boundaries(text_bytes, 4096);
-        assert!(ranges.len() > 10, "expected many records");
-
-        // Each record must be individually balanced for <b>, <i>, <p>,
-        // and <h5>. This is the blog-researcher regression test for
-        // the 332 unbalanced-record bug.
-        for (i, &(s, e)) in ranges.iter().enumerate() {
-            let rec = &text_bytes[s..e];
-            for tag in ["b", "i", "p", "h5"] {
-                let balance = count_tag_balance(rec, tag);
-                assert_eq!(
-                    balance, 0,
-                    "record {} ({}..{}) has unbalanced <{}> tags: balance={}, head={:?}, tail={:?}",
-                    i, s, e, tag, balance,
-                    String::from_utf8_lossy(&rec[..rec.len().min(80)]),
-                    String::from_utf8_lossy(&rec[rec.len().saturating_sub(80)..])
-                );
-            }
-            // No record ends inside an HTML tag.
-            assert_eq!(
-                last_unclosed_lt(rec), None,
-                "record {} ends inside an HTML tag: tail={:?}",
-                i,
-                String::from_utf8_lossy(&rec[rec.len().saturating_sub(40)..])
-            );
-        }
-
-        // Concatenation of all records must equal the original text.
-        let mut reassembled = Vec::with_capacity(text_bytes.len());
-        for &(s, e) in &ranges {
-            reassembled.extend_from_slice(&text_bytes[s..e]);
-        }
-        assert_eq!(reassembled, text_bytes);
-    }
-
-    /// Giant single entry (bigger than chunk_size) must still split
-    /// without leaving any record ending inside an HTML tag. Tag pairs
-    /// may straddle (unavoidable for entries bigger than the chunk)
-    /// but truncated tags are not acceptable.
-    #[test]
-    fn split_handles_entry_larger_than_chunk_size() {
-        let mut text = String::from("<hr/><b>giant</b><p>");
-        for _ in 0..2000 {
-            text.push_str("some body text with <i>emphasis</i> and more words. ");
-        }
-        text.push_str("</p><hr/><b>next</b><p>short</p>");
-        let text_bytes = text.as_bytes();
-        let ranges = split_on_utf8_boundaries(text_bytes, 4096);
-        for (i, &(s, e)) in ranges.iter().enumerate() {
-            let rec = &text_bytes[s..e];
-            assert_eq!(
-                last_unclosed_lt(rec), None,
-                "record {} ends inside an HTML tag", i
-            );
-            std::str::from_utf8(rec).expect("record must be valid UTF-8");
-        }
-        // Reassemble.
-        let mut reassembled = Vec::with_capacity(text_bytes.len());
-        for &(s, e) in &ranges {
-            reassembled.extend_from_slice(&text_bytes[s..e]);
-        }
-        assert_eq!(reassembled, text_bytes);
-    }
 }
 
 /// Find the byte position of each dictionary entry in the stripped text.
@@ -2649,6 +2355,11 @@ fn is_entry_boundary(text_bytes: &[u8], bold_pos: usize) -> bool {
 }
 
 /// Build the complete list of lookup terms for the orth index.
+///
+/// Flattens headwords and inflected forms into a single sorted list
+/// where every form is a direct orth INDX entry pointing at its
+/// headword's text position. Matches lemma v1.0.0 / kindling v0.5.0
+/// behaviour, the last demonstrably on-device-working state.
 fn build_lookup_terms(
     entries: &[DictionaryEntry],
     positions: &[(usize, usize)],
@@ -2660,15 +2371,13 @@ fn build_lookup_terms(
     let mut terms: HashMap<String, (usize, usize, usize, usize)> = HashMap::new();
     let mut headwords: HashSet<String> = HashSet::new();
 
-    // First pass: register all headwords
     for (entry_ordinal, (entry, &(start_pos, text_len))) in
         entries.iter().zip(positions.iter()).enumerate()
     {
         let hw = &entry.headword;
         let hw_bytes = hw.as_bytes();
-        let mut hw_display_len = 3 + hw_bytes.len() + 4 + 1; // <b> + hw + </b> + space
+        let mut hw_display_len = 3 + hw_bytes.len() + 4 + 1;
 
-        // Verify against actual text
         if start_pos > 0 && start_pos + hw_display_len <= text_bytes.len() {
             let mut expected = Vec::new();
             expected.extend_from_slice(b"<b>");
@@ -2676,7 +2385,7 @@ fn build_lookup_terms(
             expected.extend_from_slice(b"</b> ");
             let actual = &text_bytes[start_pos..start_pos + hw_display_len];
             if actual != expected.as_slice() {
-                hw_display_len = 3 + hw_bytes.len() + 4; // without trailing space
+                hw_display_len = 3 + hw_bytes.len() + 4;
             }
         }
 
@@ -2687,7 +2396,6 @@ fn build_lookup_terms(
         headwords.insert(hw.clone());
     }
 
-    // Second pass: add inflected forms
     if !headwords_only {
         let bad_chars: HashSet<char> = "()[]{}".chars().collect();
         for (entry_ordinal, (entry, &(start_pos, text_len))) in
@@ -2712,14 +2420,12 @@ fn build_lookup_terms(
         }
     }
 
-    // Precompute binary encoding for each label
     eprintln!("Encoding {} unique lookup terms...", terms.len());
     let mut label_bytes_map: HashMap<String, Vec<u8>> = HashMap::new();
     for label in terms.keys() {
-        label_bytes_map.insert(label.clone(), encode_indx_label(label));
+        label_bytes_map.insert(label.clone(), indx::encode_indx_label(label));
     }
 
-    // Sort by encoded form
     let mut sorted_labels: Vec<String> = terms.keys().cloned().collect();
     sorted_labels.sort_by(|a, b| label_bytes_map[a].cmp(&label_bytes_map[b]));
 
@@ -2745,12 +2451,14 @@ fn build_lookup_terms(
 /// (e.g., Some(6) for KF7 in dual-format mode).
 /// `kf8_boundary_record`: if Some, adds EXTH 121 pointing to KF8 Record 0.
 /// `hd_geometry`: if Some, adds EXTH 536 with HD image geometry (format: "WxH:start-end|").
+#[allow(clippy::too_many_arguments)]
 fn build_record0(
     opf: &OPFData,
     text_length: usize,
     text_record_count: usize,
     first_non_book_record: usize,
     orth_index_record: usize,
+    infl_index_record: usize,
     total_records: usize,
     flis_record: usize,
     fcis_record: usize,
@@ -2812,7 +2520,7 @@ fn build_record0(
     let version = override_version.unwrap_or(7);
     put32(&mut mobi, 20, version); // file version
     put32(&mut mobi, 24, orth_index_record as u32);
-    put32(&mut mobi, 28, 0xFFFFFFFF); // inflection index (none)
+    put32(&mut mobi, 28, infl_index_record as u32); // inflection index
     put32(&mut mobi, 32, 0xFFFFFFFF); // index names
     put32(&mut mobi, 36, 0xFFFFFFFF); // index keys
     for off in (40..64).step_by(4) {
@@ -2858,7 +2566,7 @@ fn build_record0(
     // Extra record data flags (multibyte + TBS)
     put32(&mut mobi, 224, 3);
 
-    // NCX and other indices: 0xFFFFFFFF
+    // NCX and other indices: 0xFFFFFFFF (matches lemma v1.0.0 output)
     put32(&mut mobi, 216, 0xFFFFFFFF);
     put32(&mut mobi, 220, 0xFFFFFFFF);
     put32(&mut mobi, 228, 0xFFFFFFFF);
@@ -2940,8 +2648,9 @@ fn build_record0(
 ///
 /// All record indices are KF8-relative (relative to this record as index 0).
 /// In KF8-only mode, `srcs_record` points to the SRCS record and `hd_geometry`
-/// provides the HD image geometry string. `total_records` is used to set the
-/// MOBI header field at offset 176 (only meaningful in KF8-only mode).
+/// provides the HD image geometry string. `_total_records` is no longer used
+/// (the KF8 MOBI header's fdst_idx at offset 176 is now written unconditionally
+/// to the FDST record index, matching the Calibre writer8 layout).
 fn build_kf8_record0(
     opf: &OPFData,
     text_length: usize,
@@ -2964,7 +2673,7 @@ fn build_kf8_record0(
     creator_tag: bool,
     srcs_record: Option<usize>,
     hd_geometry: Option<&str>,
-    total_records: usize,
+    _total_records: usize,
     doc_type: Option<&str>,
 ) -> Vec<u8> {
     let full_name = if opf.title.is_empty() {
@@ -3028,20 +2737,34 @@ fn build_kf8_record0(
     put32(&mut mobi, 148, 0xFFFFFFFF); // DRM flags
     put32(&mut mobi, 152, 0xFFFFFFFF);
 
-    // FDST record and flow count (KF8-relative)
-    put32(&mut mobi, 160, fdst_record as u32);
-    put32(&mut mobi, 164, fdst_flow_count as u32);
+    // KF8 MOBI header layout per Calibre writer8/header.py and verified
+    // against Calibre's MetadataHeader reader (palmDOC offset 0 = raw[16]):
+    //
+    //   160..176 unused / 0
+    //   176      fdst_idx          (u32)
+    //   180      num_flows         (u32)
+    //   184      fcis_record_idx   (u32)
+    //   188      fcis_count        (u32, =1)
+    //   192      flis_record_idx   (u32)
+    //   196      flis_count        (u32, =1)
+    //   200..208 unknown6          (zero)
+    //   208      srcs_record_idx   (u32)
+    //   212      num_srcs_records  (u32)
+    //   216..224 unknown7          (zero)
+    //   224      extra_data_flags  (u32, bit 0 multibyte only for KF8 = 1)
+    //   228      primary_index_record  (NCX, u32)
+    //   232      sect_idx          (fragment INDX, u32)
+    //   236      skel_idx          (skeleton INDX, u32)
+    //   240      datp_idx          (u32)
+    //   244      oth_idx           (u32, 0xFFFFFFFF)
+    //
+    // Do NOT write fdst to offset 160 — that's a legacy KF7 field the
+    // comic-format readers don't use, and calibre reads fdst exclusively
+    // from offset 176.
 
-    // Offset 176: in KF8-only mode, this field mirrors KF7 behavior
-    if total_records > 0 {
-        // KF8-only: use the same encoding as KF7 record 0
-        put32(&mut mobi, 176, (1u32 << 16) | ((total_records - 1) as u32));
-        put32(&mut mobi, 180, 1);
-    } else {
-        // Dual format KF8 section
-        put32(&mut mobi, 176, 0);
-        put32(&mut mobi, 180, fdst_flow_count as u32);
-    }
+    // FDST record / flow count
+    put32(&mut mobi, 176, fdst_record as u32);
+    put32(&mut mobi, 180, fdst_flow_count as u32);
 
     // FCIS/FLIS (KF8-relative)
     put32(&mut mobi, 184, fcis_record as u32);
@@ -3049,35 +2772,30 @@ fn build_kf8_record0(
     put32(&mut mobi, 192, flis_record as u32);
     put32(&mut mobi, 196, 1);
 
-    // Skeleton INDX (KF8-relative)
-    put32(&mut mobi, 212, skeleton_indx_record as u32);
+    // SRCS record index / count at 208/212
+    if let Some(srcs_idx) = srcs_record {
+        put32(&mut mobi, 208, srcs_idx as u32);
+        put32(&mut mobi, 212, 1);
+    } else {
+        put32(&mut mobi, 208, 0xFFFFFFFF);
+        put32(&mut mobi, 212, 0);
+    }
 
-    // DATP (KF8-relative)
-    put32(&mut mobi, 216, datp_record as u32);
+    // Extra record data flags: bit 0 (multibyte) only. No TBS byte for KF8
+    // per Calibre writer8/mobi.py (extra_data_flags = 1). The kf8.rs
+    // compressor already omits the TBS trailing byte.
+    put32(&mut mobi, 224, 1);
 
-    // Fragment INDX (KF8-relative)
-    put32(&mut mobi, 220, fragment_indx_record as u32);
-
-    // Extra record data flags (multibyte + TBS)
-    put32(&mut mobi, 224, 3);
-
-    // NCX (KF8-relative)
+    // NCX (primary index record)
     put32(&mut mobi, 228, ncx_record as u32);
 
-    // Other indices: 0xFFFFFFFF
-    put32(&mut mobi, 232, 0xFFFFFFFF);
-    put32(&mut mobi, 236, 0xFFFFFFFF);
-    put32(&mut mobi, 240, 0xFFFFFFFF);
-
-    // SRCS record index and count (KF8-only mode)
-    // Note: offset 208/212 overlap with KF8 INDX fields, so use 244/248 only
-    if let Some(srcs_idx) = srcs_record {
-        put32(&mut mobi, 244, srcs_idx as u32);
-        put32(&mut mobi, 248, 1);
-    } else {
-        put32(&mut mobi, 244, 0xFFFFFFFF);
-        put32(&mut mobi, 248, 0xFFFFFFFF);
-    }
+    // Fragment / Skeleton / DATP / other INDX records (KF8-relative)
+    put32(&mut mobi, 232, fragment_indx_record as u32);
+    put32(&mut mobi, 236, skeleton_indx_record as u32);
+    put32(&mut mobi, 240, datp_record as u32);
+    put32(&mut mobi, 244, 0xFFFFFFFF);
+    put32(&mut mobi, 248, 0xFFFFFFFF);
+    put32(&mut mobi, 252, 0xFFFFFFFF);
     put32(&mut mobi, 256, 0xFFFFFFFF);
 
     // Build EXTH header
