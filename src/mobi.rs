@@ -1930,22 +1930,6 @@ fn split_on_utf8_boundaries(text_bytes: &[u8], chunk_size: usize) -> Vec<(usize,
     ranges
 }
 
-/// Return the position within `chunk` of the earliest `<` that has no
-/// matching `>` before the end of `chunk`, or `None` if every `<` is
-/// closed. A chunk ending inside a tag (with the matching `>` missing)
-/// is the bug we want to detect and back off from.
-fn last_unclosed_lt(chunk: &[u8]) -> Option<usize> {
-    let mut open_lt: Option<usize> = None;
-    for (i, &b) in chunk.iter().enumerate() {
-        if b == b'<' && open_lt.is_none() {
-            open_lt = Some(i);
-        } else if b == b'>' {
-            open_lt = None;
-        }
-    }
-    open_lt
-}
-
 /// Compress text into PalmDOC records with trailing bytes.
 ///
 /// Uses std::thread for parallel compression on large inputs (>1 MB)
@@ -2193,20 +2177,6 @@ mod record_split_tests {
         let opens = haystack.matches(&open).count() as i32;
         let closes = haystack.matches(&close).count() as i32;
         opens - closes
-    }
-
-    /// last_unclosed_lt returns None when every `<` is matched by a `>`,
-    /// and the position of the earliest unclosed `<` otherwise.
-    #[test]
-    fn last_unclosed_lt_behaviour() {
-        assert_eq!(last_unclosed_lt(b"plain text"), None);
-        assert_eq!(last_unclosed_lt(b"<b>hello</b>"), None);
-        assert_eq!(last_unclosed_lt(b"<b>hello</b><i"), Some(12));
-        assert_eq!(last_unclosed_lt(b"<b>hello"), None); // <b> is complete
-        assert_eq!(last_unclosed_lt(b"<b>hello<"), Some(8));
-        assert_eq!(last_unclosed_lt(b"foo<bar"), Some(3));
-        // After a `>` closes a tag, we look for the next `<`.
-        assert_eq!(last_unclosed_lt(b"<p>text</p><x"), Some(11));
     }
 
 }
