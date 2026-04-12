@@ -4,3 +4,7 @@ target/
 *.epub
 .claude/
 decompiled_*/
+
+# Parity test fixtures must ship even though they are .mobi/.epub.
+!tests/fixtures/parity/**/*.mobi
+!tests/fixtures/parity/**/*.epub
