@@ -19,6 +19,7 @@ pub mod validate;
 
 // Internal implementation modules, visible inside the crate only.
 pub(crate) mod cbr;
+pub(crate) mod cncx;
 pub(crate) mod exth;
 pub(crate) mod html_check;
 pub(crate) mod indx;

@@ -360,6 +360,11 @@ pub fn build_book_exth(
         records.push(exth_record(202, &thumb.to_be_bytes()));
     }
 
+    // EXTH 203 (undocumented u32=0). kindlegen emits this on every
+    // record it writes; semantics unknown but likely a library-
+    // integrity check flag. Cheap to match so include it.
+    records.push(exth_record(203, &0u32.to_be_bytes()));
+
     // Fixed-layout metadata
     if let Some(fl) = fixed_layout {
         if fl.is_fixed_layout {
@@ -522,6 +527,10 @@ pub fn build_exth(
         records.push(exth_record(201, &offset.to_be_bytes()));
         records.push(exth_record(202, &offset.to_be_bytes()));
     }
+
+    // EXTH 203 (undocumented u32=0). kindlegen emits this on every
+    // record; semantics unknown but likely a library-integrity flag.
+    records.push(exth_record(203, &0u32.to_be_bytes()));
 
     // Dictionary in-memory flag
     records.push(exth_record(547, b"InMemory"));
