@@ -2751,7 +2751,7 @@ fn build_kf8_record0(
     //   208      srcs_record_idx   (u32)
     //   212      num_srcs_records  (u32)
     //   216..224 unknown7          (zero)
-    //   224      extra_data_flags  (u32, bit 0 multibyte only for KF8 = 1)
+    //   224      extra_data_flags  (u32, bits 0+1 = multibyte + TBS = 3)
     //   228      primary_index_record  (NCX, u32)
     //   232      sect_idx          (fragment INDX, u32)
     //   236      skel_idx          (skeleton INDX, u32)
@@ -2784,9 +2784,9 @@ fn build_kf8_record0(
     put32(&mut mobi, 216, 0xFFFFFFFF);
     put32(&mut mobi, 220, 0xFFFFFFFF);
 
-    // Extra record data flags: multibyte only, no TBS.
-    // KCC uses 3 (with TBS navigation data) but our TBS stubs crash the renderer.
-    put32(&mut mobi, 224, 1);
+    // Extra record data flags: multibyte + TBS (matches KCC/kindlegen).
+    // TBS data is appended to each KF8 text record by append_kf8_tbs().
+    put32(&mut mobi, 224, 3);
 
     // NCX (primary index record)
     put32(&mut mobi, 228, ncx_record as u32);

@@ -584,20 +584,55 @@ fn build_image_path_lookup(
     path_to_recindex
 }
 
+/// Append KF8 TBS (Trailing Byte Sequence) bytes to a text record.
+///
+/// TBS tells the Kindle firmware which NCX entries overlap with a given
+/// text record. The format (from the end of the record):
+///   - Last byte = size | 0x80 (total TBS size including this byte)
+///   - Preceding bytes = type/data encoded values
+///
+/// For the simple case (1 NCX entry covering the whole book):
+///   - First text record (index 0): `[0x82, 0x80, 0x83]`
+///     type byte 0x82 = type 2 ("NCX boundary starts here"),
+///     value byte 0x80 = inverted VWI for 0 (NCX entry 0),
+///     size byte 0x83 = 3 | 0x80 (3 bytes total)
+///   - Subsequent records: `[0x81]`
+///     size byte 0x81 = 1 | 0x80 (1 byte = empty TBS, no new NCX entries)
+fn append_kf8_tbs(record: &mut Vec<u8>, record_index: usize) {
+    if record_index == 0 {
+        // First text record: type 2 = NCX entry starts here, value 0 = NCX index 0.
+        // 0x82 = type byte (high nibble 0x8 = flags, low nibble 0x2 = type 2)
+        // 0x80 = inverted VWI encoding of 0 (stop bit set, value 0)
+        // 0x83 = size byte (3 | 0x80)
+        record.extend_from_slice(&[0x82, 0x80, 0x83]);
+    } else {
+        // Subsequent records: empty TBS (no new NCX boundaries).
+        // 0x81 = size byte (1 | 0x80)
+        record.push(0x81);
+    }
+}
+
 /// Compress KF8 text into PalmDOC records with KF8 trailing bytes.
 ///
-/// KF8 records use `extra_flags = 1` (bit 0 = multibyte only), so only
-/// the 1-byte multibyte trailer is appended — no TBS byte.
+/// KF8 records use `extra_flags = 3` (bit 0 = multibyte, bit 1 = TBS).
+/// Trailing bytes are appended in order: multibyte(0x00) then TBS.
+/// The firmware strips them from the end backward: TBS first (bit 1),
+/// then multibyte (bit 0).
 fn compress_text_kf8(text_bytes: &[u8]) -> (Vec<Vec<u8>>, usize) {
     let total_length = text_bytes.len();
     let chunk_size = RECORD_SIZE;
 
     let records: Vec<Vec<u8>> = text_bytes
         .chunks(chunk_size)
-        .map(|chunk| {
+        .enumerate()
+        .map(|(i, chunk)| {
             let mut compressed = palmdoc::compress(chunk);
-            // KF8 trailer: multibyte only (no TBS). extra_data_flags=1.
-            compressed.push(0x00);
+            // Trailing bytes for extra_flags=3 (bit 0=multibyte,
+            // bit 1=TBS). Kindle / libmobi parse these FROM the
+            // end of the record backward, bit 1 FIRST then bit 0.
+            // So TBS must be the LAST bytes, multibyte the byte before.
+            compressed.push(0x00); // multibyte (no overhang)
+            append_kf8_tbs(&mut compressed, i);
             compressed
         })
         .collect();
@@ -612,10 +647,13 @@ fn split_text_uncompressed_kf8(text_bytes: &[u8]) -> (Vec<Vec<u8>>, usize) {
 
     let records: Vec<Vec<u8>> = text_bytes
         .chunks(chunk_size)
-        .map(|chunk| {
+        .enumerate()
+        .map(|(i, chunk)| {
             let mut rec = chunk.to_vec();
-            // KF8 trailer: multibyte only (no TBS). extra_data_flags=1.
-            rec.push(0x00);
+            // Trailing bytes for extra_flags=3 (bit 0=multibyte,
+            // bit 1=TBS). Same layout as compressed path.
+            rec.push(0x00); // multibyte (no overhang)
+            append_kf8_tbs(&mut rec, i);
             rec
         })
         .collect();
@@ -1300,13 +1338,22 @@ mod tests {
     }
 
     #[test]
-    fn kf8_trailer_multibyte_only() {
+    fn kf8_trailer_has_tbs() {
         let text = b"<html><body>hello</body></html>";
         let (records, _) = compress_text_kf8(text);
         assert_eq!(records.len(), 1);
-        // Trailer: multibyte(0x00) only. No TBS until proper TBS generation.
-        let last = records[0].last().copied().unwrap();
-        assert_eq!(last, 0x00, "trailer must be the 0x00 multibyte byte");
+        // Trailing bytes: multibyte(0x00) then TBS.
+        // For record 0 (first text record): TBS = [0x82, 0x80, 0x83]
+        // (type 2, NCX entry 0, size 3). Total trailing = 4 bytes.
+        let rec = &records[0];
+        let len = rec.len();
+        assert!(len >= 4, "record too short for trailing bytes");
+        // TBS is at the end: [0x82, 0x80, 0x83]
+        assert_eq!(rec[len - 1], 0x83, "TBS size byte should be 0x83");
+        assert_eq!(rec[len - 2], 0x80, "TBS value byte should be 0x80");
+        assert_eq!(rec[len - 3], 0x82, "TBS type byte should be 0x82");
+        // Multibyte byte is before TBS
+        assert_eq!(rec[len - 4], 0x00, "multibyte byte should be 0x00");
     }
 
     #[test]
@@ -1351,9 +1398,16 @@ mod tests {
             u32::from_be_bytes(section.fragment_indx[0][52..56].try_into().unwrap()),
             1
         );
-        // Text records end with multibyte(0x00) only.
-        for r in &section.text_records {
-            assert_eq!(*r.last().unwrap(), 0x00);
+        // Text records end with TBS trailing bytes.
+        // First record: TBS = [0x82, 0x80, 0x83] (size byte 0x83).
+        // Subsequent records: TBS = [0x81] (size byte 0x81).
+        for (i, r) in section.text_records.iter().enumerate() {
+            let last = *r.last().unwrap();
+            if i == 0 {
+                assert_eq!(last, 0x83, "first text record TBS size byte should be 0x83");
+            } else {
+                assert_eq!(last, 0x81, "subsequent text record TBS size byte should be 0x81");
+            }
         }
     }
 
