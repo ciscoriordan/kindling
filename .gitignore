@@ -2,3 +2,5 @@ target/
 .DS_Store
 *.mobi
 *.epub
+.claude/
+decompiled_*/
