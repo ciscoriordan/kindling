@@ -61,15 +61,26 @@ pub fn kindling_build(opf: &Path, out: &Path) {
 }
 
 /// Runs `kindling-cli comic <input> -o <out>` (no --no-validate; the comic
-/// path has no validation step).
+/// path has no validation step). Default mode — kindling's "better than
+/// kindlegen" output.
 pub fn kindling_comic(input: &Path, out: &Path) {
-    let status = Command::new(kindling_bin())
-        .arg("comic")
-        .arg(input)
-        .arg("-o")
-        .arg(out)
-        .output()
-        .expect("failed to spawn kindling-cli comic");
+    kindling_comic_inner(input, out, false);
+}
+
+/// Runs `kindling-cli comic --kindlegen-parity <input> -o <out>`. Used by
+/// the parity-diff tests that want byte-for-byte kindlegen-equivalent
+/// output to compare against the committed kindlegen reference.
+pub fn kindling_comic_parity(input: &Path, out: &Path) {
+    kindling_comic_inner(input, out, true);
+}
+
+fn kindling_comic_inner(input: &Path, out: &Path, parity: bool) {
+    let mut cmd = Command::new(kindling_bin());
+    cmd.arg("comic").arg(input).arg("-o").arg(out);
+    if parity {
+        cmd.arg("--kindlegen-parity");
+    }
+    let status = cmd.output().expect("failed to spawn kindling-cli comic");
     if !status.status.success() {
         panic!(
             "kindling-cli comic {} failed: {:?}\n--stdout--\n{}\n--stderr--\n{}",
@@ -784,18 +795,540 @@ pub fn test_encode_ordt2_labels(labels: &[&str]) -> Option<(Vec<u32>, Vec<Vec<u8
 }
 
 // ---------------------------------------------------------------------------
+// Forward varlen reader (libmobi mobi_buffer_get_varlen, src/buffer.c:299)
+// ---------------------------------------------------------------------------
+//
+// Used by INDX entry parsing to read tag values out of an entry's
+// payload. Each byte carries 7 data bits; the byte with bit 7 SET
+// terminates the value (the "inverted VWI" convention kindling's writer
+// uses, mirroring kindlegen). Returns (value, bytes_consumed). libmobi
+// caps at 4 bytes; we do the same.
+fn read_forward_varlen(buf: &[u8], pos: usize) -> Option<(u32, usize)> {
+    let mut val: u32 = 0;
+    let mut consumed = 0usize;
+    while consumed < 4 && pos + consumed < buf.len() {
+        let byte = buf[pos + consumed];
+        consumed += 1;
+        val = (val << 7) | (byte & 0x7F) as u32;
+        if byte & 0x80 != 0 {
+            return Some((val, consumed));
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// INDX TAGX + entry parsing (libmobi src/index.c)
+// ---------------------------------------------------------------------------
+//
+// Ported just enough to walk SKEL and FRAG primary+data INDX records and
+// pull per-entry tag values. Reference functions in libmobi:
+//   mobi_parse_indx        (src/index.c:512)
+//   mobi_parse_tagx        (src/index.c:135)
+//   mobi_parse_idxt        (src/index.c:188)
+//   mobi_parse_index_entry (src/index.c:340)
+//
+// Limitations vs libmobi:
+//   - Assumes control_byte_count == 1 (kindling and kindlegen both write
+//     a single control byte for SKEL/FRAG/NCX).
+//   - No ORDT decoding for labels (SKEL/FRAG/NCX labels are decimal
+//     ASCII strings or short identifiers, never go through ORDT).
+//   - Returns raw label bytes; the caller decides how to interpret them
+//     (decimal-string-to-int for FRAG insert positions, etc).
+
+#[derive(Debug, Clone, Copy)]
+pub struct TagxTag {
+    pub tag: u8,
+    pub values_per_entry: u8,
+    pub bitmask: u8,
+    /// 0 = normal tag definition; 1 = end-of-control-byte sentinel.
+    pub control_byte: u8,
+}
+
+#[derive(Debug, Clone)]
+pub struct IndxEntryTag {
+    pub tag_id: u8,
+    pub values: Vec<u32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct IndxEntry {
+    pub label: Vec<u8>,
+    pub tags: Vec<IndxEntryTag>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParsedIndx {
+    pub tagx: Vec<TagxTag>,
+    pub control_byte_count: usize,
+    pub total_entries: u32,
+    pub entries: Vec<IndxEntry>,
+}
+
+impl IndxEntry {
+    /// Get the `value_idx`-th value of `tag_id` for this entry, like
+    /// libmobi's `mobi_get_indxentry_tagvalue` (where INDX_TAG_*_LENGTH
+    /// is `(tag, 1)` and INDX_TAG_*_POSITION is `(tag, 0)`).
+    pub fn tag_value(&self, tag_id: u8, value_idx: usize) -> Option<u32> {
+        let t = self.tags.iter().find(|t| t.tag_id == tag_id)?;
+        t.values.get(value_idx).copied()
+    }
+}
+
+/// Parse a SKEL/FRAG/NCX-style INDX (primary record + N data records).
+///
+/// `primary_idx` is the PalmDB record index of the primary INDX record.
+/// The data records are assumed to follow consecutively (record indices
+/// `primary_idx+1`, `primary_idx+2`, ...). The number of data records
+/// is read from the primary header at offset 24.
+pub fn parse_indx(parsed: &ParsedMobi, primary_idx: usize) -> Result<ParsedIndx, String> {
+    if primary_idx >= parsed.palmdb.num_records {
+        return Err(format!("primary_idx {primary_idx} out of bounds"));
+    }
+    let primary = parsed.palmdb.record(&parsed.raw, primary_idx);
+    if primary.len() < 192 || &primary[0..4] != b"INDX" {
+        return Err(format!(
+            "record {primary_idx} is not an INDX primary (got magic {:?})",
+            &primary[..4.min(primary.len())]
+        ));
+    }
+    let num_data_records = u32_be(primary, 24) as usize;
+    let total_entries = u32_be(primary, 36);
+    let tagx_offset = u32_be(primary, 180) as usize;
+    if tagx_offset + 12 > primary.len() || &primary[tagx_offset..tagx_offset + 4] != b"TAGX" {
+        return Err(format!(
+            "INDX primary {primary_idx}: TAGX magic missing at offset {tagx_offset}"
+        ));
+    }
+    let tagx_total = u32_be(primary, tagx_offset + 4) as usize;
+    let control_byte_count = u32_be(primary, tagx_offset + 8) as usize;
+    if tagx_total < 12 || tagx_offset + tagx_total > primary.len() {
+        return Err(format!(
+            "INDX primary {primary_idx}: TAGX length {tagx_total} out of range"
+        ));
+    }
+    let tagx_data_len = (tagx_total - 12) / 4;
+    let mut tagx = Vec::with_capacity(tagx_data_len);
+    for i in 0..tagx_data_len {
+        let off = tagx_offset + 12 + i * 4;
+        tagx.push(TagxTag {
+            tag: primary[off],
+            values_per_entry: primary[off + 1],
+            bitmask: primary[off + 2],
+            control_byte: primary[off + 3],
+        });
+    }
+    // Strip the (0,0,0,1) sentinel that marks the end of the table.
+    if let Some(last) = tagx.last() {
+        if last.tag == 0
+            && last.values_per_entry == 0
+            && last.bitmask == 0
+            && last.control_byte == 1
+        {
+            tagx.pop();
+        }
+    }
+
+    let mut entries = Vec::with_capacity(total_entries as usize);
+    for di in 0..num_data_records {
+        let rec_idx = primary_idx + 1 + di;
+        if rec_idx >= parsed.palmdb.num_records {
+            return Err(format!(
+                "INDX data record {rec_idx} (primary {primary_idx} + {di}) out of bounds"
+            ));
+        }
+        let rec = parsed.palmdb.record(&parsed.raw, rec_idx);
+        parse_indx_data_record(rec, &tagx, control_byte_count, &mut entries)
+            .map_err(|e| format!("INDX data record {rec_idx}: {e}"))?;
+    }
+
+    Ok(ParsedIndx {
+        tagx,
+        control_byte_count,
+        total_entries,
+        entries,
+    })
+}
+
+fn parse_indx_data_record(
+    rec: &[u8],
+    tagx: &[TagxTag],
+    control_byte_count: usize,
+    out: &mut Vec<IndxEntry>,
+) -> Result<(), String> {
+    if rec.len() < 28 || &rec[0..4] != b"INDX" {
+        return Err(format!(
+            "not an INDX data record (got {:?})",
+            &rec[..4.min(rec.len())]
+        ));
+    }
+    let idxt_off = u32_be(rec, 20) as usize;
+    let entries_count = u32_be(rec, 24) as usize;
+    if idxt_off + 4 + 2 * entries_count > rec.len() {
+        return Err(format!(
+            "IDXT footer overflow: idxt_off={idxt_off}, count={entries_count}, rec_len={}",
+            rec.len()
+        ));
+    }
+    if &rec[idxt_off..idxt_off + 4] != b"IDXT" {
+        return Err(format!("IDXT magic missing at offset {idxt_off}"));
+    }
+    let mut offsets: Vec<usize> = Vec::with_capacity(entries_count + 1);
+    for i in 0..entries_count {
+        offsets.push(u16_be(rec, idxt_off + 4 + i * 2) as usize);
+    }
+    // Sentinel: end of last entry == start of IDXT magic.
+    offsets.push(idxt_off);
+
+    for i in 0..entries_count {
+        let entry_start = offsets[i];
+        let entry_end = offsets[i + 1];
+        if entry_end <= entry_start || entry_end > rec.len() {
+            return Err(format!(
+                "entry {i}: offset window [{entry_start}..{entry_end}] invalid (rec_len={})",
+                rec.len()
+            ));
+        }
+        let entry = parse_indx_entry(&rec[entry_start..entry_end], tagx, control_byte_count)
+            .map_err(|e| format!("entry {i}: {e}"))?;
+        out.push(entry);
+    }
+    Ok(())
+}
+
+fn parse_indx_entry(
+    entry: &[u8],
+    tagx: &[TagxTag],
+    control_byte_count: usize,
+) -> Result<IndxEntry, String> {
+    if entry.is_empty() {
+        return Err("empty entry".to_string());
+    }
+    let label_len = entry[0] as usize;
+    if 1 + label_len + control_byte_count > entry.len() {
+        return Err(format!(
+            "entry truncated: label_len={label_len}, control_byte_count={control_byte_count}, entry_len={}",
+            entry.len()
+        ));
+    }
+    let label = entry[1..1 + label_len].to_vec();
+    let mut cursor = 1 + label_len;
+    let control_bytes = entry[cursor..cursor + control_byte_count].to_vec();
+    cursor += control_byte_count;
+    let mut control_idx = 0usize;
+
+    // First pass: walk TAGX, build a per-tag (value_count, value_bytes)
+    // ptagx list the way libmobi mobi_parse_index_entry does.
+    struct PtagxRow {
+        tag: u8,
+        values_per_entry: u8,
+        // Some(n) => the entry stores n*values_per_entry varlens.
+        // None    => the entry stores `value_bytes` worth of varlens
+        //            (read until consumed).
+        value_count: Option<u32>,
+        value_bytes: Option<u32>,
+    }
+    let mut ptagx: Vec<PtagxRow> = Vec::with_capacity(tagx.len());
+    for t in tagx {
+        if t.control_byte == 1 {
+            control_idx += 1;
+            continue;
+        }
+        if control_idx >= control_bytes.len() {
+            break;
+        }
+        let cb = control_bytes[control_idx];
+        let masked = cb & t.bitmask;
+        if masked == 0 {
+            continue;
+        }
+        if masked == t.bitmask {
+            // All mask bits set.
+            if t.bitmask.count_ones() > 1 {
+                // Multi-bit mask "all set" => read value_bytes from the entry.
+                let (vbytes, n) = read_forward_varlen(entry, cursor)
+                    .ok_or_else(|| format!("varlen read failed at {cursor} (tag={})", t.tag))?;
+                cursor += n;
+                ptagx.push(PtagxRow {
+                    tag: t.tag,
+                    values_per_entry: t.values_per_entry,
+                    value_count: None,
+                    value_bytes: Some(vbytes),
+                });
+            } else {
+                ptagx.push(PtagxRow {
+                    tag: t.tag,
+                    values_per_entry: t.values_per_entry,
+                    value_count: Some(1),
+                    value_bytes: None,
+                });
+            }
+        } else {
+            // Some bits set: shift mask down to recover the count.
+            let mut shifted = masked;
+            let mut mask = t.bitmask;
+            while mask & 1 == 0 {
+                mask >>= 1;
+                shifted >>= 1;
+            }
+            ptagx.push(PtagxRow {
+                tag: t.tag,
+                values_per_entry: t.values_per_entry,
+                value_count: Some(shifted as u32),
+                value_bytes: None,
+            });
+        }
+    }
+
+    // Second pass: actually read the varlen values from `cursor` onward.
+    let mut tags: Vec<IndxEntryTag> = Vec::with_capacity(ptagx.len());
+    for row in &ptagx {
+        let mut values: Vec<u32> = Vec::new();
+        if let Some(vc) = row.value_count {
+            let total = vc as usize * row.values_per_entry as usize;
+            for _ in 0..total {
+                let (v, n) = read_forward_varlen(entry, cursor).ok_or_else(|| {
+                    format!("varlen read failed mid-tag {} at {cursor}", row.tag)
+                })?;
+                cursor += n;
+                values.push(v);
+            }
+        } else {
+            let target = row.value_bytes.unwrap_or(0) as usize;
+            let mut consumed = 0usize;
+            while consumed < target {
+                let (v, n) = read_forward_varlen(entry, cursor).ok_or_else(|| {
+                    format!("varlen-bytes read failed mid-tag {} at {cursor}", row.tag)
+                })?;
+                cursor += n;
+                consumed += n;
+                values.push(v);
+            }
+        }
+        tags.push(IndxEntryTag {
+            tag_id: row.tag,
+            values,
+        });
+    }
+    Ok(IndxEntry { label, tags })
+}
+
+// ---------------------------------------------------------------------------
+// FDST parsing
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy)]
+pub struct FdstFlow {
+    pub start: u32,
+    pub end: u32,
+}
+
+/// Parse the FDST record. Layout: `FDST` magic + u32 entry-table offset
+/// (kindling and kindlegen both write 12) + u32 flow_count + flow_count
+/// * (u32 start, u32 end). See kindling::kf8::build_fdst.
+pub fn parse_fdst(rec: &[u8]) -> Result<Vec<FdstFlow>, String> {
+    if rec.len() < 12 || &rec[0..4] != b"FDST" {
+        return Err(format!(
+            "not an FDST record (got {:?})",
+            &rec[..4.min(rec.len())]
+        ));
+    }
+    let entries_off = u32_be(rec, 4) as usize;
+    let flow_count = u32_be(rec, 8) as usize;
+    if entries_off + flow_count * 8 > rec.len() {
+        return Err(format!(
+            "FDST truncated: entries_off={entries_off}, flow_count={flow_count}, rec_len={}",
+            rec.len()
+        ));
+    }
+    let mut flows = Vec::with_capacity(flow_count);
+    for i in 0..flow_count {
+        let off = entries_off + i * 8;
+        flows.push(FdstFlow {
+            start: u32_be(rec, off),
+            end: u32_be(rec, off + 4),
+        });
+    }
+    Ok(flows)
+}
+
+// ---------------------------------------------------------------------------
 // KF8 skeleton/fragment reconstruction
 // ---------------------------------------------------------------------------
 //
-// TODO: port libmobi `mobi_reconstruct_parts` (src/parse_rawml.c:784)
-// here when a test actually needs the reassembled per-file HTML. The
-// current roundtrip + parity tests only check the raw text blob, the
-// skeleton/fragment INDX records' presence, and the orth index, none of
-// which need the reconstructed fragments. When a test DOES need them
-// (e.g. verifying comic per-page HTML matches an expected template),
-// copy the skel INDX tag 6/7 walk, fragment INDX tag 2/3/4/6 walk, and
-// the splicing loop from parse_rawml.c. Tags are defined in libmobi
-// src/index.h under `INDX_TAG_SKEL_*` and `INDX_TAG_FRAG_*`.
+// Port of libmobi `mobi_reconstruct_parts` (src/parse_rawml.c:784).
+// Walks the SKEL and FRAG indexes, splices fragment bytes into skeleton
+// shells at the byte offsets encoded in the FRAG entry labels, and
+// returns one Vec<u8> per skeleton (one HTML file per spine entry).
+//
+// Tag layout (kindling::kf8 writer / Calibre writer8/index.py):
+//   SKEL: tag 1 = chunk_count            (vpe=1, mask=3)
+//         tag 6 = (start_pos, length)    (vpe=2, mask=12)
+//   FRAG: tag 2 = aid_cncx_offset        (vpe=1, mask=1)
+//         tag 3 = file_number            (vpe=1, mask=2)
+//         tag 4 = sequence_number        (vpe=1, mask=4)
+//         tag 6 = (frag_position, frag_length)  (vpe=2, mask=8)
+//
+// The FRAG entry's LABEL is a decimal ASCII string giving the GLOBAL
+// byte offset in the reconstructed flow at which to splice the
+// fragment. Within each skeleton, fragments are stored sequentially in
+// the rawml flow immediately after the skeleton bytes, in the order
+// they will be spliced (libmobi consumes them via mobi_buffer_getpointer
+// after a single setpos at skel_position).
+pub fn reconstruct_kf8_parts(
+    flow0: &[u8],
+    skel: &ParsedIndx,
+    frag: &ParsedIndx,
+) -> Result<Vec<Vec<u8>>, String> {
+    let mut parts: Vec<Vec<u8>> = Vec::with_capacity(skel.entries.len());
+    let mut buf_pos: usize = 0;
+    let mut frag_idx: usize = 0;
+    let mut curr_position: usize = 0;
+    let total_frags = frag.entries.len();
+    for (i, sk) in skel.entries.iter().enumerate() {
+        let chunk_count = sk
+            .tag_value(1, 0)
+            .ok_or_else(|| format!("SKEL entry {i}: missing tag 1 (chunk_count)"))?;
+        let skel_pos = sk
+            .tag_value(6, 0)
+            .ok_or_else(|| format!("SKEL entry {i}: missing tag 6 idx 0 (position)"))?
+            as usize;
+        let mut skel_len = sk
+            .tag_value(6, 1)
+            .ok_or_else(|| format!("SKEL entry {i}: missing tag 6 idx 1 (length)"))?
+            as usize;
+        if skel_pos + skel_len > flow0.len() {
+            return Err(format!(
+                "SKEL entry {i}: skeleton bytes [{skel_pos}..{}) overflow flow0 ({} bytes)",
+                skel_pos + skel_len,
+                flow0.len()
+            ));
+        }
+        let mut assembled = flow0[skel_pos..skel_pos + skel_len].to_vec();
+        // libmobi: mobi_buffer_setpos(buf, skel_position); then read
+        // skel_length, then for each fragment read frag_length more.
+        buf_pos = skel_pos + skel_len;
+
+        for f in 0..chunk_count as usize {
+            if frag_idx >= total_frags {
+                return Err(format!(
+                    "SKEL entry {i} fragment {f}: out of FRAG entries ({frag_idx}/{total_frags})"
+                ));
+            }
+            let fe = &frag.entries[frag_idx];
+            let label_str = std::str::from_utf8(&fe.label)
+                .map_err(|e| format!("FRAG entry {frag_idx}: label not UTF-8: {e}"))?;
+            let global_insert: usize = label_str.trim().parse().map_err(|e| {
+                format!("FRAG entry {frag_idx}: label {label_str:?} not decimal: {e}")
+            })?;
+            if global_insert < curr_position {
+                return Err(format!(
+                    "FRAG entry {frag_idx}: insert position {global_insert} < part start {curr_position}"
+                ));
+            }
+            let file_number = fe
+                .tag_value(3, 0)
+                .ok_or_else(|| format!("FRAG entry {frag_idx}: missing tag 3 (file_number)"))?;
+            if file_number as usize != i {
+                return Err(format!(
+                    "FRAG entry {frag_idx}: file_number={file_number} but expected SKEL idx {i}"
+                ));
+            }
+            let frag_len = fe
+                .tag_value(6, 1)
+                .ok_or_else(|| format!("FRAG entry {frag_idx}: missing tag 6 idx 1 (length)"))?
+                as usize;
+
+            // libmobi clamps over-the-end inserts to current grown skel_len.
+            let mut local_insert = global_insert - curr_position;
+            if local_insert > skel_len {
+                local_insert = skel_len;
+            }
+            if buf_pos + frag_len > flow0.len() {
+                return Err(format!(
+                    "FRAG entry {frag_idx}: fragment bytes [{buf_pos}..{}) overflow flow0 ({} bytes)",
+                    buf_pos + frag_len,
+                    flow0.len()
+                ));
+            }
+            let frag_bytes = flow0[buf_pos..buf_pos + frag_len].to_vec();
+            buf_pos += frag_len;
+
+            assembled.splice(local_insert..local_insert, frag_bytes.iter().copied());
+            skel_len += frag_len;
+            frag_idx += 1;
+        }
+
+        parts.push(assembled);
+        curr_position += skel_len;
+    }
+    if frag_idx != total_frags {
+        return Err(format!(
+            "consumed {frag_idx} of {total_frags} FRAG entries; some fragments unattached"
+        ));
+    }
+    let _ = buf_pos;
+    Ok(parts)
+}
+
+/// Convenience: extract decompressed text from the KF8 section, parse
+/// the FDST + SKEL + FRAG indexes, and run reconstruct_kf8_parts. Used
+/// by parity tests that want to compare reassembled per-page HTML
+/// across two MOBI files.
+///
+/// Two layout quirks this helper hides:
+///   1. The KF8-section MOBI header writes SKEL/FRAG/FDST/etc record
+///      indices RELATIVE TO the KF8 boundary, not as absolute PalmDB
+///      indices. For dual KF7+KF8 files we add `kf8.record_idx`. For
+///      KF8-only files `record_idx == 0` so this is a no-op.
+///   2. Comic-style KF8 builds emit only one flow (HTML) and may omit
+///      the FDST record entirely. When the FDST pointer doesn't land on
+///      a real FDST magic we treat the whole decompressed text as flow 0.
+pub fn reconstruct_parts_from_mobi(parsed: &ParsedMobi) -> Result<Vec<Vec<u8>>, String> {
+    let kf8 = parsed.kf8_or_kf7();
+    let section_base = kf8.record_idx;
+    let text = extract_text_blob(parsed, kf8);
+
+    // Resolve flow 0. If FDST is present and valid, slice it; otherwise
+    // fall back to the entire decompressed text (1-flow comic case).
+    let fdst_raw = kf8.header.fdst_index;
+    let mut flow0_owned: Vec<u8> = text.clone();
+    if fdst_raw != 0xFFFFFFFF {
+        let fdst_abs = section_base + fdst_raw as usize;
+        if fdst_abs < parsed.palmdb.num_records {
+            let rec = parsed.palmdb.record(&parsed.raw, fdst_abs);
+            if rec.len() >= 4 && &rec[..4] == b"FDST" {
+                let flows = parse_fdst(rec)?;
+                if let Some(f0) = flows.first() {
+                    let start = f0.start as usize;
+                    let end = f0.end as usize;
+                    if end <= text.len() && start <= end {
+                        flow0_owned = text[start..end].to_vec();
+                    } else {
+                        return Err(format!(
+                            "FDST flow 0 [{start}..{end}) out of range for text ({} bytes)",
+                            text.len()
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    let skel_raw = kf8.header.skeleton_index;
+    let frag_raw = kf8.header.fragment_index;
+    if skel_raw == 0xFFFFFFFF || frag_raw == 0xFFFFFFFF {
+        return Err(format!(
+            "missing skeleton/fragment index in KF8: skel={skel_raw} frag={frag_raw}"
+        ));
+    }
+    let skel_abs = section_base + skel_raw as usize;
+    let frag_abs = section_base + frag_raw as usize;
+    let skel = parse_indx(parsed, skel_abs)?;
+    let frag = parse_indx(parsed, frag_abs)?;
+
+    reconstruct_kf8_parts(&flow0_owned, &skel, &frag)
+}
 
 // ---------------------------------------------------------------------------
 // Tests for the ported ORDT2 decode path

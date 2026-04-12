@@ -195,6 +195,22 @@ fn kindling_comic_parsed(fixture: &str, src_name: &str, ext: &str) -> ParsedMobi
     parse_mobi_file(&raw).unwrap_or_else(|e| panic!("parse {}: {e}", out.display()))
 }
 
+/// Like `kindling_comic_parsed` but passes `--kindlegen-parity` so the
+/// KF8 output shape matches kindlegen byte-for-byte (flat HTML, no
+/// DOCTYPE/meta, image/jpg mime, img tags unaided, AID stride of 1M).
+fn kindling_comic_parsed_parity(fixture: &str, src_name: &str, ext: &str) -> ParsedMobi {
+    let input = parity_fixture(fixture).join(src_name);
+    let tmp = std::env::temp_dir()
+        .join("kindling_parity_flag")
+        .join(fixture);
+    let _ = fs::remove_dir_all(&tmp);
+    fs::create_dir_all(&tmp).unwrap();
+    let out = tmp.join(format!("out.{ext}"));
+    kindling_comic_parity(&input, &out);
+    let raw = fs::read(&out).unwrap();
+    parse_mobi_file(&raw).unwrap_or_else(|e| panic!("parse {}: {e}", out.display()))
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -346,4 +362,135 @@ fn parity_simple_comic() {
             diff.into_error("parity_simple_comic: diffs against kindlegen reference:")
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// KF8 reconstruction sanity + per-page HTML parity
+// ---------------------------------------------------------------------------
+//
+// These tests use the libmobi-ported `reconstruct_kf8_parts` to reassemble
+// per-page HTML out of the SKEL/FRAG indexes and the rawml flow 0, then
+// diff kindling against the kindlegen reference. This is the diagnostic
+// path for the Vader Down "Unable to Open Item" bug — the fixture is
+// simple_comic, but the splice/skeleton structure exercised here is
+// exactly the path Vader Down's KF8 build is failing on.
+
+/// Sanity-check the parser: reconstruction must succeed on a known-good
+/// kindlegen comic and produce one HTML part per spine entry.
+#[test]
+fn reconstruct_kindlegen_simple_comic() {
+    let kindlegen = load_reference("simple_comic");
+    let parts = reconstruct_parts_from_mobi(&kindlegen)
+        .expect("reconstruct must succeed on kindlegen reference");
+    assert!(!parts.is_empty(), "no parts reconstructed from kindlegen");
+    eprintln!(
+        "kindlegen simple_comic: reconstructed {} parts",
+        parts.len()
+    );
+    for (i, p) in parts.iter().enumerate() {
+        let preview = preview_part(p);
+        eprintln!("  part[{i}] {} bytes: {preview}", p.len());
+        assert!(!p.is_empty(), "kindlegen part {i} is empty");
+        assert!(
+            looks_like_html(p),
+            "kindlegen part {i} doesn't look like HTML: {preview}"
+        );
+    }
+}
+
+/// Diff kindling's reconstructed per-page HTML against the kindlegen
+/// reference for simple_comic, with `--kindlegen-parity` enabled so
+/// kindling's KF8 output is byte-equivalent to kindlegen (flat HTML,
+/// no DOCTYPE/meta, image/jpg mime, img tags unaided, AID stride of
+/// 1_000_000 per spine page). Without the parity flag, kindling emits
+/// its "better than kindlegen" pretty-printed output which is not
+/// expected to match.
+///
+/// The test is `#[ignore]`'d because one unavoidable delta remains for
+/// the simple_comic fixture: the per-page images are 400x600 in the
+/// source, but kindling's image pipeline resizes them up to the
+/// 1072x1448 device profile before JPEG-encoding. The `width="N"
+/// height="M"` attributes reflect the real JPEG bytes in the rawml,
+/// so kindling honestly emits 1072/1448 vs kindlegen's 400/600. For
+/// real-world comics (Vader Down) the source images are already at or
+/// above the device profile, so this delta disappears.
+///
+/// Run with:
+///   cargo test --test kindlegen_parity \
+///     reconstruct_simple_comic_kindling_vs_kindlegen \
+///     -- --ignored --nocapture
+#[test]
+#[ignore]
+fn reconstruct_simple_comic_kindling_vs_kindlegen() {
+    let kindlegen = load_reference("simple_comic");
+    let kindling = kindling_comic_parsed_parity("simple_comic", "simple_comic.cbz", "azw3");
+
+    let g_parts = match reconstruct_parts_from_mobi(&kindlegen) {
+        Ok(p) => p,
+        Err(e) => panic!("kindlegen reconstruct failed: {e}"),
+    };
+    let k_parts = match reconstruct_parts_from_mobi(&kindling) {
+        Ok(p) => p,
+        Err(e) => panic!("kindling reconstruct failed (this alone is a finding): {e}"),
+    };
+
+    eprintln!(
+        "reconstruct_simple_comic_kindling_vs_kindlegen: kindling={} parts, kindlegen={} parts",
+        k_parts.len(),
+        g_parts.len()
+    );
+
+    let mut diff_lines: Vec<String> = Vec::new();
+
+    if k_parts.len() != g_parts.len() {
+        diff_lines.push(format!(
+            "part count differs: kindling={} kindlegen={}",
+            k_parts.len(),
+            g_parts.len()
+        ));
+    }
+
+    let common = k_parts.len().min(g_parts.len());
+    for i in 0..common {
+        let k = &k_parts[i];
+        let g = &g_parts[i];
+        if k != g {
+            diff_lines.push(format!(
+                "--- part[{i}] kindling ({} bytes) ---",
+                k.len()
+            ));
+            diff_lines.push(String::from_utf8_lossy(k).into_owned());
+            diff_lines.push(format!(
+                "--- part[{i}] kindlegen ({} bytes) ---",
+                g.len()
+            ));
+            diff_lines.push(String::from_utf8_lossy(g).into_owned());
+        }
+    }
+
+    if !diff_lines.is_empty() {
+        eprintln!("\nper-page HTML diff (kindling vs kindlegen simple_comic):\n");
+        for line in &diff_lines {
+            eprintln!("{line}");
+        }
+        panic!(
+            "kindling per-page HTML differs from kindlegen reference (see stderr; \
+             run with `cargo test reconstruct_simple_comic_kindling_vs_kindlegen -- --nocapture`)"
+        );
+    }
+}
+
+fn preview_part(p: &[u8]) -> String {
+    let n = p.len().min(120);
+    String::from_utf8_lossy(&p[..n])
+        .replace('\n', "⏎")
+        .replace('\r', "")
+}
+
+fn looks_like_html(p: &[u8]) -> bool {
+    // First non-whitespace byte should be `<` (XML decl, doctype, or tag).
+    p.iter()
+        .find(|b| !b.is_ascii_whitespace())
+        .map(|b| *b == b'<')
+        .unwrap_or(false)
 }
