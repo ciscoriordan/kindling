@@ -802,12 +802,101 @@ pub fn check_mobi_file(
         }
     }
 
+    // Structural record magic sanity. Walks every PalmDB record once and
+    // flags any INDX/FCIS/FLIS/FDST record whose header is obviously
+    // malformed. These are P1 warnings because a subtle breakage here will
+    // generally show up as "Unable to Open Item" on-device rather than as
+    // missing metadata, and we'd rather ship + diagnose than hard-fail
+    // backward-compatible builds.
+    check_structural_records(&data, &palmdb, &mut report);
+
     // Sanity: text record count is at least 1 on non-empty content.
     if kf7.text_record_count == 0 {
         report.warn("KF7 text record count is 0".to_string());
     }
 
     Ok(report)
+}
+
+/// Walk every PalmDB record and verify INDX/FCIS/FLIS/FDST records have the
+/// right magic + minimum header size. Returns only warnings (P1) because a
+/// single garbled index record still lets the rest of the metadata checks
+/// complete meaningfully.
+fn check_structural_records(data: &[u8], palmdb: &PalmDb, report: &mut CheckReport) {
+    let mut indx_count = 0usize;
+    let mut saw_fcis = false;
+    let mut saw_flis = false;
+    let mut saw_fdst = false;
+
+    for i in 0..palmdb.num_records {
+        let Some(rec) = palmdb.record(data, i) else { continue };
+        if rec.len() < 4 {
+            continue;
+        }
+        match &rec[..4] {
+            b"INDX" => {
+                indx_count += 1;
+                if rec.len() < 192 {
+                    report.warn(format!(
+                        "INDX record {} is {} bytes (header must be >= 192)",
+                        i,
+                        rec.len()
+                    ));
+                    continue;
+                }
+                let header_len = read_u32_be(rec, 4).unwrap_or(0) as usize;
+                if header_len < 192 || header_len > rec.len() {
+                    report.warn(format!(
+                        "INDX record {} declares header length {}, record is {} bytes",
+                        i,
+                        header_len,
+                        rec.len()
+                    ));
+                }
+                let idxt_off = read_u32_be(rec, 20).unwrap_or(0) as usize;
+                if idxt_off != 0 && idxt_off + 4 <= rec.len() && &rec[idxt_off..idxt_off + 4] != b"IDXT" {
+                    report.warn(format!(
+                        "INDX record {}: IDXT offset {} does not point at IDXT magic",
+                        i, idxt_off
+                    ));
+                }
+            }
+            b"FCIS" => {
+                saw_fcis = true;
+                if rec.len() < 36 {
+                    report.warn(format!("FCIS record {} is only {} bytes", i, rec.len()));
+                }
+            }
+            b"FLIS" => {
+                saw_flis = true;
+                if rec.len() < 36 {
+                    report.warn(format!("FLIS record {} is only {} bytes", i, rec.len()));
+                }
+            }
+            b"FDST" => {
+                saw_fdst = true;
+                if rec.len() < 12 {
+                    report.warn(format!("FDST record {} is only {} bytes", i, rec.len()));
+                    continue;
+                }
+                let section_count = read_u32_be(rec, 8).unwrap_or(0) as usize;
+                let expected_len = 12 + section_count * 8;
+                if rec.len() < expected_len {
+                    report.warn(format!(
+                        "FDST record {} declares {} sections (needs {} bytes) but record is {} bytes",
+                        i, section_count, expected_len, rec.len()
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // We don't assert FCIS/FLIS/FDST presence here: dictionaries don't need
+    // FDST, and legacy KF7-only books may omit FCIS/FLIS entirely. The MOBI
+    // header fields point at them when they exist, which is where hard
+    // requirements should be enforced if we need them.
+    let _ = (indx_count, saw_fcis, saw_flis, saw_fdst);
 }
 
 /// Print a one-line summary of the report to stderr and return Ok if no P0
