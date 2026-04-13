@@ -6418,6 +6418,237 @@ mod tests {
             "Language should be Windows LCID (>0xFF), got 0x{:X}", lang);
     }
 
+    // -----------------------------------------------------------------------
+    // Helper: fixed-layout book fixture (for EXTH 503 / comic tests)
+    // -----------------------------------------------------------------------
+
+    /// Create a minimal fixed-layout book OPF + HTML in a temp dir.
+    /// Includes `<meta name="fixed-layout" content="true"/>` so the OPF
+    /// parser sets `is_fixed_layout = true`. Always includes an image.
+    fn create_fixed_layout_book_fixture(
+        dir: &Path,
+        image_data: &[u8],
+    ) -> PathBuf {
+        let html = r#"<html><head><title>Test Comic</title></head><body><div><img src="page.jpg"/></div></body></html>"#;
+        fs::write(dir.join("content.html"), html).unwrap();
+        fs::write(dir.join("page.jpg"), image_data).unwrap();
+
+        let opf = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf">
+  <metadata>
+    <dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">Test Comic</dc:title>
+    <dc:language xmlns:dc="http://purl.org/dc/elements/1.1/">en</dc:language>
+    <dc:creator xmlns:dc="http://purl.org/dc/elements/1.1/">Author</dc:creator>
+    <meta name="cover" content="img1"/>
+    <meta name="fixed-layout" content="true"/>
+    <meta name="original-resolution" content="1072x1448"/>
+  </metadata>
+  <manifest>
+    <item id="content" href="content.html" media-type="application/xhtml+xml"/>
+    <item id="img1" href="page.jpg" media-type="image/jpeg"/>
+  </manifest>
+  <spine>
+    <itemref idref="content"/>
+  </spine>
+</package>"#;
+        let opf_path = dir.join("content.opf");
+        fs::write(&opf_path, opf).unwrap();
+        opf_path
+    }
+
+    // -----------------------------------------------------------------------
+    // 24b (continued). KF8 structural regressions (Kindle hardware testing)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_exth_503_not_emitted_for_fixed_layout() {
+        // EXTH 503 (updated_title) breaks Kindle fixed-layout navigation:
+        // toolbar and go-home disappear. KCC/kindlegen also omit it for comics.
+        let dir = TempDir::new("exth503_fl");
+        let jpeg = make_test_jpeg();
+        let opf = create_fixed_layout_book_fixture(dir.path(), &jpeg);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let exth = parse_exth_records(rec0);
+
+        assert!(
+            !exth.contains_key(&503),
+            "Fixed-layout book must NOT have EXTH 503 (updated_title) - it breaks Kindle navigation"
+        );
+        // Sanity: should still have EXTH 122 = "true" (fixed-layout flag)
+        let exth122 = exth.get(&122).expect("Fixed-layout book should have EXTH 122");
+        assert_eq!(std::str::from_utf8(&exth122[0]).unwrap(), "true");
+    }
+
+    #[test]
+    fn test_exth_503_emitted_for_reflowable_book() {
+        // Reflowable books must have EXTH 503 (updated_title).
+        let dir = TempDir::new("exth503_reflow");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let exth = parse_exth_records(rec0);
+
+        assert!(
+            exth.contains_key(&503),
+            "Reflowable book must have EXTH 503 (updated_title)"
+        );
+        let title = std::str::from_utf8(&exth.get(&503).unwrap()[0]).unwrap();
+        assert_eq!(title, "Test Book", "EXTH 503 should contain the book title");
+    }
+
+    #[test]
+    fn test_kf8_record_order_fdst_flis_fcis_datp_eof() {
+        // Wrong order (DATP before FLIS/FCIS) crashes Kindle.
+        // After the NCX INDX+CNCX records, the order must be:
+        // FDST, FLIS, FCIS, DATP, EOF.
+        let dir = TempDir::new("kf8_rec_order");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_kf8_only_mobi_bytes(&opf, dir.path());
+        let (_, record_count, offsets) = parse_palmdb(&data);
+
+        // Walk all records and collect the magic-identified structural records.
+        // Stop after the first EOF since an HD container may follow with its
+        // own EOF marker.
+        let mut found_sequence: Vec<&str> = Vec::new();
+        for i in 0..record_count as usize {
+            let rec = get_record(&data, &offsets, i);
+            if rec.len() >= 4 {
+                if &rec[0..4] == b"FDST" {
+                    found_sequence.push("FDST");
+                } else if &rec[0..4] == b"FLIS" {
+                    found_sequence.push("FLIS");
+                } else if &rec[0..4] == b"FCIS" {
+                    found_sequence.push("FCIS");
+                } else if &rec[0..4] == b"DATP" {
+                    found_sequence.push("DATP");
+                } else if rec[0..4] == [0xE9, 0x8E, 0x0D, 0x0A] {
+                    found_sequence.push("EOF");
+                    break; // stop at first EOF (HD container has its own)
+                }
+            }
+        }
+        assert_eq!(
+            found_sequence,
+            vec!["FDST", "FLIS", "FCIS", "DATP", "EOF"],
+            "KF8 record order must be FDST, FLIS, FCIS, DATP, EOF - got {:?}",
+            found_sequence
+        );
+    }
+
+    #[test]
+    fn test_kf7_fdst_composite_uses_flis_minus_1() {
+        // KF7 Record 0 at MOBI offset 176 (record byte 192) holds
+        // a composite: high 16 bits = flow count (1), low 16 bits =
+        // flis_record - 1 (NOT total_records - 1).
+        let dir = TempDir::new("kf7_fdst_comp");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, record_count, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // Read the composite at MOBI offset 176 = record byte 192
+        let composite = read_u32_be(rec0, 16 + 176);
+        let high = composite >> 16;
+        let low = composite & 0xFFFF;
+
+        // High 16 bits should be 1 (KF7 flow count)
+        assert_eq!(high, 1, "FDST composite high word should be 1 (flow count), got {}", high);
+
+        // Find the FLIS record by scanning for its magic bytes
+        let mut flis_idx: Option<usize> = None;
+        for i in 0..record_count as usize {
+            let rec = get_record(&data, &offsets, i);
+            if rec.len() >= 4 && &rec[0..4] == b"FLIS" {
+                flis_idx = Some(i);
+                break;
+            }
+        }
+        let flis_record = flis_idx.expect("Should find FLIS record in KF7 section");
+
+        // Low 16 bits should be flis_record - 1
+        assert_eq!(
+            low, (flis_record - 1) as u32,
+            "FDST composite low word should be flis_record-1={}, got {}",
+            flis_record - 1, low
+        );
+    }
+
+    #[test]
+    fn test_kf8_fcis_entry_count_matches_flow_count() {
+        // FCIS entry_count (at offset 12) should match the FDST flow count.
+        // For a book with HTML+CSS, flow_count=2 and entry_count should be >= 2.
+        // The old value of 1 was wrong.
+        let dir = TempDir::new("kf8_fcis_flows");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_kf8_only_mobi_bytes(&opf, dir.path());
+        let (_, record_count, offsets) = parse_palmdb(&data);
+
+        // Find the FCIS record
+        let mut fcis_rec: Option<&[u8]> = None;
+        for i in 0..record_count as usize {
+            let rec = get_record(&data, &offsets, i);
+            if rec.len() >= 4 && &rec[0..4] == b"FCIS" {
+                fcis_rec = Some(rec);
+                break;
+            }
+        }
+        let fcis = fcis_rec.expect("Should find FCIS record");
+
+        // Entry count is at offset 12 in the FCIS record (u32 BE)
+        let entry_count = read_u32_be(fcis, 12);
+        assert!(
+            entry_count >= 2,
+            "FCIS entry_count should be >= 2 for a book with HTML+CSS flows, got {}",
+            entry_count
+        );
+    }
+
+    #[test]
+    fn test_kf8_first_image_equals_fdst_idx_in_dual_format() {
+        // In dual-format books, the KF8 Record 0's first_image field
+        // (MOBI offset 92, record byte 108) must equal the fdst_record field
+        // (MOBI offset 176, record byte 192).
+        let dir = TempDir::new("kf8_fimg_fdst");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _record_count, offsets) = parse_palmdb(&data);
+
+        // Find KF8 Record 0: EXTH 121 stores the global index of the
+        // KF8 Record 0 directly (not the BOUNDARY record).
+        let kf7_rec0 = get_record(&data, &offsets, 0);
+        let exth = parse_exth_records(kf7_rec0);
+        let boundary_entries = exth.get(&121).expect("Dual-format should have EXTH 121");
+        let kf8_rec0_idx = u32::from_be_bytes(
+            boundary_entries[0][0..4].try_into().unwrap()
+        ) as usize;
+
+        // Verify the BOUNDARY record immediately precedes KF8 Record 0
+        let boundary_rec = get_record(&data, &offsets, kf8_rec0_idx - 1);
+        assert_eq!(&boundary_rec[0..8], b"BOUNDARY", "Expected BOUNDARY record before KF8 Record 0");
+
+        let kf8_rec0 = get_record(&data, &offsets, kf8_rec0_idx);
+        assert_eq!(&kf8_rec0[16..20], b"MOBI", "KF8 Record 0 should have MOBI magic");
+
+        // first_image at MOBI offset 92 = record byte 16 + 92 = 108
+        let first_image = read_u32_be(kf8_rec0, 16 + 92);
+        // fdst_record at MOBI offset 176 = record byte 16 + 176 = 192
+        let fdst_record = read_u32_be(kf8_rec0, 16 + 176);
+
+        assert_eq!(
+            first_image, fdst_record,
+            "KF8 first_image ({}) must equal fdst_record ({}) in dual-format",
+            first_image, fdst_record
+        );
+    }
+
     // =======================================================================
     // 25. EXTH records - Dictionary
     // =======================================================================

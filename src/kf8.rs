@@ -1506,4 +1506,45 @@ mod tests {
         assert!(!section.ncx_cncx_records.is_empty(),
             "KF8 section must include NCX CNCX records");
     }
+
+    #[test]
+    fn kindle_embed_uses_image_jpg_not_jpeg() {
+        // Kindle firmware doesn't recognize image/jpeg in kindle:embed URLs.
+        // Must be image/jpg (non-standard but required by Kindle).
+        let mut href_to_recindex = std::collections::HashMap::new();
+        href_to_recindex.insert("p1.jpg".to_string(), 1usize);
+        href_to_recindex.insert("p2.jpg".to_string(), 2usize);
+
+        let parts = vec![
+            make_comic_page("0", "p1.jpg"),
+            make_comic_page("0", "p2.jpg"),
+        ];
+        let spine_items: Vec<(String, String)> = Vec::new();
+
+        let section = build_kf8_section(
+            &parts,
+            "body{margin:0}",
+            &href_to_recindex,
+            &spine_items,
+            true,  // no_compress for readable output
+            false, // kindlegen_parity off (test normal mode)
+            "Test Book",
+        );
+
+        // Decompress text (no_compress=true so text is uncompressed, but
+        // we still need to strip the trailing bytes). Just check html_bytes
+        // which is the uncompressed HTML flow snapshot.
+        let html = std::str::from_utf8(&section.html_bytes)
+            .expect("KF8 HTML should be valid UTF-8");
+
+        // All kindle:embed references should use image/jpg
+        assert!(
+            html.contains("image/jpg"),
+            "KF8 HTML must contain 'image/jpg' kindle:embed references"
+        );
+        assert!(
+            !html.contains("image/jpeg"),
+            "KF8 HTML must NOT contain 'image/jpeg' - Kindle firmware rejects it"
+        );
+    }
 }
