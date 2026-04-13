@@ -74,7 +74,8 @@ fn assert_palmdb_shape(parsed: &ParsedMobi, ctx: &str) {
 }
 
 fn assert_required_exth(section: &MobiSection, ctx: &str, need_501: bool) {
-    for rtype in [100u32, 503, 524] {
+    // EXTH 503 intentionally omitted - breaks Kindle fixed-layout navigation.
+    for rtype in [100u32, 524] {
         assert!(
             section.exth_first(rtype).is_some(),
             "{ctx}: missing required EXTH {rtype}. Present: {:?}",

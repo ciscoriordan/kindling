@@ -267,13 +267,10 @@ pub fn build_book_exth(
         records.push(exth_record(100, author.as_bytes()));
     }
 
-    // Updated title (503). Kindle sideloading indexers (and the Documents
-    // shelf on modern firmware) look here for the display title; a missing
-    // 503 is why the Vader Down comic never showed up in the library even
-    // though its .sdr sidecar was created.
-    if !title.is_empty() {
-        records.push(exth_record(503, title.as_bytes()));
-    }
+    // EXTH 503 (updated_title) is NOT emitted for KF8 sections.
+    // It breaks Kindle fixed-layout navigation (toolbar/go-home disappear).
+    // KCC/kindlegen don't emit it either. The KF8 Record 0 full_name
+    // provides the library title instead.
 
     // Description/summary (103) - maps to ComicInfo.xml <Summary>
     if let Some(desc) = description {
@@ -475,11 +472,8 @@ pub fn build_exth(
         records.push(exth_record(100, author.as_bytes()));
     }
 
-    // Updated title (503). Parallel to build_book_exth, modern Kindle
-    // firmwares read this for display/indexing.
-    if !title.is_empty() {
-        records.push(exth_record(503, title.as_bytes()));
-    }
+    // EXTH 503 NOT emitted for KF8 - breaks fixed-layout navigation.
+    // KF8 Record 0 full_name provides the library title.
 
     // EXTH 542 - content-dependent 4-byte hash
     let title_bytes = if title.is_empty() {

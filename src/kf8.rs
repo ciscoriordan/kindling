@@ -142,10 +142,11 @@ pub fn build_kf8_section(
     combined_text.extend_from_slice(css_bytes);
 
     // Step 3: Compress text into records.
+    let num_skeletons = skeleton_entries.len();
     let (text_records, text_length) = if no_compress {
-        split_text_uncompressed_kf8(&combined_text)
+        split_text_uncompressed_kf8(&combined_text, num_skeletons)
     } else {
-        compress_text_kf8(&combined_text)
+        compress_text_kf8(&combined_text, num_skeletons)
     };
 
     // Step 4: FDST record.
@@ -598,16 +599,19 @@ fn build_image_path_lookup(
 ///     size byte 0x83 = 3 | 0x80 (3 bytes total)
 ///   - Subsequent records: `[0x81]`
 ///     size byte 0x81 = 1 | 0x80 (1 byte = empty TBS, no new NCX entries)
-fn append_kf8_tbs(record: &mut Vec<u8>, record_index: usize) {
+fn append_kf8_tbs(record: &mut Vec<u8>, record_index: usize, num_skeletons: usize) {
     if record_index == 0 {
-        // First text record: type 2 = NCX entry starts here, value 0 = NCX index 0.
-        // 0x82 = type byte (high nibble 0x8 = flags, low nibble 0x2 = type 2)
-        // 0x80 = inverted VWI encoding of 0 (stop bit set, value 0)
-        // 0x83 = size byte (3 | 0x80)
-        record.extend_from_slice(&[0x82, 0x80, 0x83]);
+        // First text record: type 2 = NCX entry starts here.
+        // Value encodes fragment/skeleton info. KCC uses (2*num_skeletons - 1)
+        // for a comic with N pages: 3 pages → value 5, matching kindlegen.
+        let value = if num_skeletons > 0 { (2 * num_skeletons - 1) as u32 } else { 0 };
+        let value_bytes = encode_vwi_inv(value);
+        let tbs_size = 1 + value_bytes.len() + 1; // type + value + size
+        record.push(0x82); // type 2
+        record.extend_from_slice(&value_bytes);
+        record.push((tbs_size as u8) | 0x80); // size byte
     } else {
         // Subsequent records: empty TBS (no new NCX boundaries).
-        // 0x81 = size byte (1 | 0x80)
         record.push(0x81);
     }
 }
@@ -618,7 +622,7 @@ fn append_kf8_tbs(record: &mut Vec<u8>, record_index: usize) {
 /// Trailing bytes are appended in order: multibyte(0x00) then TBS.
 /// The firmware strips them from the end backward: TBS first (bit 1),
 /// then multibyte (bit 0).
-fn compress_text_kf8(text_bytes: &[u8]) -> (Vec<Vec<u8>>, usize) {
+fn compress_text_kf8(text_bytes: &[u8], num_skeletons: usize) -> (Vec<Vec<u8>>, usize) {
     let total_length = text_bytes.len();
     let chunk_size = RECORD_SIZE;
 
@@ -627,12 +631,8 @@ fn compress_text_kf8(text_bytes: &[u8]) -> (Vec<Vec<u8>>, usize) {
         .enumerate()
         .map(|(i, chunk)| {
             let mut compressed = palmdoc::compress(chunk);
-            // Trailing bytes for extra_flags=3 (bit 0=multibyte,
-            // bit 1=TBS). Kindle / libmobi parse these FROM the
-            // end of the record backward, bit 1 FIRST then bit 0.
-            // So TBS must be the LAST bytes, multibyte the byte before.
             compressed.push(0x00); // multibyte (no overhang)
-            append_kf8_tbs(&mut compressed, i);
+            append_kf8_tbs(&mut compressed, i, num_skeletons);
             compressed
         })
         .collect();
@@ -641,7 +641,7 @@ fn compress_text_kf8(text_bytes: &[u8]) -> (Vec<Vec<u8>>, usize) {
 }
 
 /// Split KF8 text into uncompressed records (debug path).
-fn split_text_uncompressed_kf8(text_bytes: &[u8]) -> (Vec<Vec<u8>>, usize) {
+fn split_text_uncompressed_kf8(text_bytes: &[u8], num_skeletons: usize) -> (Vec<Vec<u8>>, usize) {
     let total_length = text_bytes.len();
     let chunk_size = RECORD_SIZE;
 
@@ -653,7 +653,7 @@ fn split_text_uncompressed_kf8(text_bytes: &[u8]) -> (Vec<Vec<u8>>, usize) {
             // Trailing bytes for extra_flags=3 (bit 0=multibyte,
             // bit 1=TBS). Same layout as compressed path.
             rec.push(0x00); // multibyte (no overhang)
-            append_kf8_tbs(&mut rec, i);
+            append_kf8_tbs(&mut rec, i, num_skeletons);
             rec
         })
         .collect();
@@ -1340,7 +1340,7 @@ mod tests {
     #[test]
     fn kf8_trailer_has_tbs() {
         let text = b"<html><body>hello</body></html>";
-        let (records, _) = compress_text_kf8(text);
+        let (records, _) = compress_text_kf8(text, 1);
         assert_eq!(records.len(), 1);
         // Trailing bytes: multibyte(0x00) then TBS.
         // For record 0 (first text record): TBS = [0x82, 0x80, 0x83]
@@ -1348,9 +1348,9 @@ mod tests {
         let rec = &records[0];
         let len = rec.len();
         assert!(len >= 4, "record too short for trailing bytes");
-        // TBS is at the end: [0x82, 0x80, 0x83]
+        // TBS for 1 skeleton: [0x82, 0x81, 0x83] (type 2, value=2*1-1=1, size 3)
         assert_eq!(rec[len - 1], 0x83, "TBS size byte should be 0x83");
-        assert_eq!(rec[len - 2], 0x80, "TBS value byte should be 0x80");
+        assert_eq!(rec[len - 2], 0x81, "TBS value byte should be 0x81 (inv VWI for 1)");
         assert_eq!(rec[len - 3], 0x82, "TBS type byte should be 0x82");
         // Multibyte byte is before TBS
         assert_eq!(rec[len - 4], 0x00, "multibyte byte should be 0x00");

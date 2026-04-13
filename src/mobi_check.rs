@@ -354,9 +354,10 @@ fn check_exth_metadata(
                 section_label, e
             )),
         },
-        _ => report.fail(format!(
-            "{}: EXTH 503 (updated_title) missing or empty. Kindle \
-             indexer uses this for the library display title.",
+        _ => report.warn(format!(
+            "{}: EXTH 503 (updated_title) missing. KF8 Record 0 \
+             full_name provides the library title instead. \
+             (KCC/kindlegen also omit EXTH 503.)",
             section_label
         )),
     }
@@ -1084,11 +1085,12 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(report.has_errors(), "expected P0 failure for missing EXTH 503");
+        // Missing EXTH 503 is now a warning, not a P0 error
+        // (KCC/kindlegen omit it; it breaks fixed-layout navigation)
         assert!(
-            report.p0_errors.iter().any(|e| e.contains("EXTH 503")),
-            "error should mention EXTH 503, got {:?}",
-            report.p0_errors
+            report.warnings.iter().any(|w| w.contains("EXTH 503")),
+            "should warn about missing EXTH 503, got warnings: {:?}",
+            report.warnings
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
