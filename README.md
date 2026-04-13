@@ -123,7 +123,7 @@ Converts image folders, CBZ files, CBR files, and EPUB files to Kindle-optimized
 
 | Library field | MOBI source | Notes |
 |---|---|---|
-| **Title** | KF8 Record 0 full_name | Kindling does NOT emit EXTH 503 (updated_title) - it breaks Kindle fixed-layout navigation (toolbar/go-home disappear). KCC/kindlegen also omit it. For dual-format `.mobi`, Kindle reads from KF8 Record 0, not KF7. |
+| **Title** | EXTH 503 (books/dicts) or KF8 Record 0 full_name (comics) | EXTH 503 is emitted for reflowable books and dictionaries. For fixed-layout comics, EXTH 503 is omitted - it breaks Kindle navigation (toolbar/go-home disappear). KCC/kindlegen also omit it for comics. For dual-format `.mobi`, Kindle reads full_name from KF8 Record 0, not KF7. |
 | **Author** | EXTH 100 | Set via `--author` flag or ComicInfo.xml `<Writer>`/`<Penciller>`. Defaults to "kindling". |
 | **Cover** | EXTH 201 (cover image offset in image pool) + EXTH 129 (KF8 cover URI) | Cover offset is 0-based index within image records starting at `first_image`. |
 | **Document type** | EXTH 501 | `PDOC` = Documents shelf (default), `EBOK` = Books shelf. Set via `--doc-type ebok`. |

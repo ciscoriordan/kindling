@@ -267,10 +267,12 @@ pub fn build_book_exth(
         records.push(exth_record(100, author.as_bytes()));
     }
 
-    // EXTH 503 (updated_title) is NOT emitted for KF8 sections.
-    // It breaks Kindle fixed-layout navigation (toolbar/go-home disappear).
-    // KCC/kindlegen don't emit it either. The KF8 Record 0 full_name
-    // provides the library title instead.
+    // EXTH 503 (updated_title): emit for reflowable books, skip for
+    // fixed-layout comics. EXTH 503 breaks Kindle fixed-layout navigation
+    // (toolbar/go-home disappear). KCC/kindlegen also omit it for comics.
+    if fixed_layout.is_none() && !title.is_empty() {
+        records.push(exth_record(503, title.as_bytes()));
+    }
 
     // Description/summary (103) - maps to ComicInfo.xml <Summary>
     if let Some(desc) = description {
@@ -472,8 +474,10 @@ pub fn build_exth(
         records.push(exth_record(100, author.as_bytes()));
     }
 
-    // EXTH 503 NOT emitted for KF8 - breaks fixed-layout navigation.
-    // KF8 Record 0 full_name provides the library title.
+    // Updated title (503). Dictionaries are always reflowable, so safe to emit.
+    if !title.is_empty() {
+        records.push(exth_record(503, title.as_bytes()));
+    }
 
     // EXTH 542 - content-dependent 4-byte hash
     let title_bytes = if title.is_empty() {
