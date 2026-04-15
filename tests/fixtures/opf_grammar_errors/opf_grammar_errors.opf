@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<package version="3.0"
+         xmlns="http://www.idpf.org/2007/opf"
+         unique-identifier="BookId"
+         prefix="goodone: http://example.com/one bad-no-colon http://example.com/two epub: http://bad.example reptile: not-a-uri dup: http://example.com/dup dup: http://example.com/dup2">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
+    <dc:title>OPF Grammar Errors Fixture</dc:title>
+    <dc:language>en</dc:language>
+    <dc:creator>Kindling Test Suite</dc:creator>
+    <dc:identifier id="BookId">kindling-opf-grammar-errors-fixture</dc:identifier>
+    <meta name="cover" content="cover-img"/>
+  </metadata>
+  <manifest>
+    <item id="cover-img" href="cover.jpg" media-type="image/jpeg" properties="cover-image"/>
+    <item id="bad-cover-on-css" href="styles.css" media-type="text/css" properties="cover-image"/>
+    <item id="bad-syntax" href="content_bad_syntax.xhtml" media-type="application/xhtml+xml" properties="1bad"/>
+    <item id="unknown-prop" href="content_unknown.xhtml" media-type="application/xhtml+xml" properties="futuristic"/>
+    <item id="undeclared-prefix" href="content_undeclared.xhtml" media-type="application/xhtml+xml" properties="zzz:thing"/>
+    <item id="declared-mathml" href="content_no_math.xhtml" media-type="application/xhtml+xml" properties="mathml"/>
+    <item id="has-script" href="content_has_script.xhtml" media-type="application/xhtml+xml"/>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="bad-syntax"/>
+    <itemref idref="unknown-prop"/>
+    <itemref idref="undeclared-prefix"/>
+    <itemref idref="declared-mathml"/>
+    <itemref idref="has-script"/>
+  </spine>
+</package>

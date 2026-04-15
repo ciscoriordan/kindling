@@ -14,7 +14,7 @@ pub mod navigation;
 pub mod parse_encoding;
 pub mod fixed_layout;
 pub mod manifest_spine;
-// PHASE2-MOD: D
+pub mod opf_grammar;
 // PHASE2-MOD: E
 pub mod cross_refs;
 // PHASE2-MOD: G
@@ -43,7 +43,7 @@ pub static CHECKS: &[&dyn Check] = &[
     &dict::DictChecks,
     &fixed_layout::FixedLayoutChecks,
     &manifest_spine::ManifestSpineChecks,
-    // PHASE2-CHECK: D
+    &opf_grammar::OpfGrammarChecks,
     // PHASE2-CHECK: E
     &cross_refs::CrossRefsChecks,
     // PHASE2-CHECK: G

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <title>Has Script Without Property</title>
+  </head>
+  <body>
+    <p>This file contains an inline script but the manifest item does not declare
+    properties="scripted", so R8.6 fires.</p>
+    <script type="text/javascript">
+      var x = 1;
+    </script>
+  </body>
+</html>

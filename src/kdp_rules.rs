@@ -768,7 +768,114 @@ pub const RULES: &[Rule] = &[
                       The package file must not be listed in its own manifest.",
         profile_mask: ALL_PROFILES,
     },
-    // PHASE2-RULE: D
+    // ---- Section 8: OPF prefix attribute and manifest property grammar ----
+    Rule {
+        id: "R8.1",
+        section: "8",
+        level: Severity::Error,
+        title: "Malformed package prefix attribute (OPF_004)",
+        pdf_page: 14,
+        description: "OPF_004: The <package prefix=\"...\"> attribute must follow the \
+                      syntax `prefix: url [whitespace prefix: url]*`. Fires only when \
+                      package_version is 3.0.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R8.2",
+        section: "8",
+        level: Severity::Error,
+        title: "Duplicate prefix in package prefix attribute (OPF_005)",
+        pdf_page: 14,
+        description: "OPF_005: Each prefix name may only appear once in the package \
+                      prefix attribute. Fires only when package_version is 3.0.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R8.3",
+        section: "8",
+        level: Severity::Error,
+        title: "Reserved prefix rebound to non-standard URI (OPF_006)",
+        pdf_page: 14,
+        description: "OPF_006: A reserved prefix (dcterms, epub, marc, media, onix, opf, \
+                      rendition, schema, xsd) may not be rebound to a non-standard URI in \
+                      the package prefix attribute. Fires only when package_version is 3.0.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R8.4",
+        section: "8",
+        level: Severity::Error,
+        title: "Prefix maps to a malformed URI (OPF_007)",
+        pdf_page: 14,
+        description: "OPF_007: A prefix declared in the package prefix attribute must map \
+                      to a syntactically valid URI. Fires only when package_version is 3.0.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R8.5",
+        section: "8",
+        level: Severity::Error,
+        title: "Manifest item property invalid for media-type (OPF_012)",
+        pdf_page: 14,
+        description: "OPF_012: A manifest item's properties=\"...\" value is not permitted \
+                      for its media-type (e.g., nav on non-xhtml, cover-image on non-image, \
+                      mathml on non-xhtml). Fires only when package_version is 3.0.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R8.6",
+        section: "8",
+        level: Severity::Warning,
+        title: "Spine XHTML uses a feature without declaring the property (OPF_014)",
+        pdf_page: 14,
+        description: "OPF_014: A spine XHTML contains MathML, SVG, scripts, or remote \
+                      resources but the manifest item does not declare the matching \
+                      property (mathml, svg, scripted, remote-resources). Fires only when \
+                      package_version is 3.0.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R8.7",
+        section: "8",
+        level: Severity::Warning,
+        title: "Manifest declares a property the content does not use (OPF_015)",
+        pdf_page: 14,
+        description: "OPF_015: A manifest item declares one of the feature properties \
+                      (mathml, svg, scripted, remote-resources) but the content does not \
+                      actually use that feature. Fires only when package_version is 3.0.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R8.8",
+        section: "8",
+        level: Severity::Error,
+        title: "Property value is syntactically malformed (OPF_026)",
+        pdf_page: 14,
+        description: "OPF_026: A property value in a manifest item's properties attribute \
+                      is syntactically malformed. Fires only when package_version is 3.0.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R8.9",
+        section: "8",
+        level: Severity::Warning,
+        title: "Unknown property without a declared prefix (OPF_027)",
+        pdf_page: 14,
+        description: "OPF_027: A property name is not in the known EPUB property set and \
+                      has no declared prefix. Fires only when package_version is 3.0.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R8.10",
+        section: "8",
+        level: Severity::Error,
+        title: "Property uses an undeclared prefix (OPF_028)",
+        pdf_page: 14,
+        description: "OPF_028: A property uses a prefix that is not in the default prefixes \
+                      and was never declared in the package prefix attribute. Fires only \
+                      when package_version is 3.0.",
+        profile_mask: ALL_PROFILES,
+    },
     // PHASE2-RULE: E
     // ---- Section 9: Cross-references and dead links (epubcheck RSC_*/OPF_091/OPF_098) ----
     Rule {
