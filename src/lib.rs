@@ -8,17 +8,20 @@
 // Public API
 pub mod comic;
 pub mod epub;
+pub mod extracted;
 pub mod kdp_rules;
 pub mod mobi;
 pub mod mobi_check;
 pub mod mobi_dump;
 pub mod mobi_rewrite;
 pub mod opf;
+pub mod profile;
 pub mod repair;
 pub mod validate;
 
 // Internal implementation modules, visible inside the crate only.
 pub(crate) mod cbr;
+pub(crate) mod checks;
 pub(crate) mod cncx;
 pub(crate) mod exth;
 pub(crate) mod html_check;
@@ -33,17 +36,9 @@ mod tests;
 
 use std::path::Path;
 
-/// Run the KDP validator as a pre-flight step inside `do_build` and friends.
-///
-/// When `no_validate` is true, prints a skip notice and returns `Ok(())`.
-/// Otherwise runs `validate_opf`, prints each finding, and prints the summary
-/// line. Returns `Err(error_count)` if the report contains any errors (caller
-/// should abort the build); `Ok(())` otherwise. Warnings never abort but a
-/// "validation passed with N warnings" notice is printed.
-///
-/// Unlike `do_validate` in the CLI binary, this function does NOT call
-/// `process::exit` on error so the caller can clean up temp directories before
-/// aborting.
+use crate::extracted::ExtractedEpub;
+
+/// Pre-flight KDP validation used by `do_build`. Returns `Err(error_count)`.
 pub fn run_preflight_validation(opf_path: &Path, no_validate: bool) -> Result<(), usize> {
     if no_validate {
         println!("Skipping KDP validation (--no-validate)");
@@ -56,11 +51,9 @@ pub fn run_preflight_validation(opf_path: &Path, no_validate: bool) -> Result<()
         kdp_rules::KPG_VERSION
     );
 
-    let report = match validate::validate_opf(opf_path) {
-        Ok(r) => r,
+    let epub = match ExtractedEpub::from_opf_path(opf_path) {
+        Ok(e) => e,
         Err(e) => {
-            // Can't parse the OPF at all: print a warning and continue; the
-            // build itself will produce a clearer error below.
             eprintln!(
                 "Warning: could not parse OPF for pre-flight validation ({}): {}",
                 opf_path.display(),
@@ -69,6 +62,7 @@ pub fn run_preflight_validation(opf_path: &Path, no_validate: bool) -> Result<()
             return Ok(());
         }
     };
+    let report = validate::validate(&epub);
 
     for finding in &report.findings {
         println!("{}", finding);

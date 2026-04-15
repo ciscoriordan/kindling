@@ -534,6 +534,7 @@ fn do_build(
     let mut opf_snapshot: Option<(String, String, bool)> = None;
 
     let result = if is_epub {
+        // TODO(phase 0.1): share ExtractedEpub with validator
         // Extract EPUB to temp dir, find OPF, build, clean up
         let (temp_dir, opf_path) = match epub::extract_epub(input) {
             Ok(result) => result,
@@ -946,13 +947,14 @@ fn do_validate(opf_path: &PathBuf, strict: bool) {
         kdp_rules::KPG_VERSION
     );
 
-    let report = match validate::validate_opf(opf_path) {
-        Ok(r) => r,
+    let epub = match kindling::extracted::ExtractedEpub::from_opf_path(opf_path) {
+        Ok(e) => e,
         Err(e) => {
             eprintln!("Error: could not parse OPF {}: {}", opf_path.display(), e);
             process::exit(2);
         }
     };
+    let report = validate::validate(&epub);
 
     for finding in &report.findings {
         println!("{}", finding);
