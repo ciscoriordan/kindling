@@ -1278,12 +1278,12 @@ mod phase2 {
     // PHASE2-TEST: C
     // PHASE2-TEST: D
     // PHASE2-TEST: E
+    use std::path::PathBuf;
+    use std::process::Command;
+
     #[test]
     #[ignore = "Cluster F agent did not create fixture; unit tests cover rules; phase 2 follow-up"]
     fn validate_cross_refs_errors_reports_r9_rules() {
-        use std::path::PathBuf;
-        use std::process::Command;
-
         let opf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
             .join("fixtures")
@@ -1309,8 +1309,6 @@ mod phase2 {
             "cross_refs_errors should exit 1\n{}",
             dump
         );
-        // The fixture is built to fire at least these rules; assert each is
-        // present so a future refactor can't silently drop one.
         for rule_id in &[
             "R9.1", "R9.3", "R9.4", "R9.5", "R9.6", "R9.7", "R9.8", "R9.9", "R9.10", "R9.11",
         ] {
@@ -1322,7 +1320,43 @@ mod phase2 {
             );
         }
     }
-    // PHASE2-TEST: G
+
+    #[test]
+    fn validate_filename_errors_reports_r13_rules() {
+        let opf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("filename_errors")
+            .join("filename_errors.opf");
+        let out = Command::new(env!("CARGO_BIN_EXE_kindling-cli"))
+            .arg("validate")
+            .arg(opf.to_str().unwrap())
+            .output()
+            .expect("failed to spawn kindling-cli validate");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let dump = format!(
+            "exit={:?}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            out.status.code(),
+            stdout,
+            stderr,
+        );
+
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "filename_errors should exit 1\n{}",
+            dump
+        );
+        for rule_id in &["R13.1", "R13.2", "R13.3", "R13.4", "R13.5"] {
+            assert!(
+                stdout.contains(rule_id),
+                "expected rule id {} in filename_errors output\n{}",
+                rule_id,
+                dump
+            );
+        }
+    }
     // PHASE2-TEST: H
     // PHASE2-TEST: I
     // PHASE2-TEST: K

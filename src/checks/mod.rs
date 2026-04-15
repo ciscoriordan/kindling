@@ -17,7 +17,7 @@ pub mod manifest_spine;
 pub mod opf_grammar;
 pub mod toc_extras;
 pub mod cross_refs;
-// PHASE2-MOD: G
+pub mod filenames;
 // PHASE2-MOD: H
 // PHASE2-MOD: I
 // PHASE2-MOD: K
@@ -46,7 +46,7 @@ pub static CHECKS: &[&dyn Check] = &[
     &opf_grammar::OpfGrammarChecks,
     &toc_extras::TocExtrasChecks,
     &cross_refs::CrossRefsChecks,
-    // PHASE2-CHECK: G
+    &filenames::FilenameChecks,
     // PHASE2-CHECK: H
     // PHASE2-CHECK: I
     // PHASE2-CHECK: K

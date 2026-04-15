@@ -1093,7 +1093,62 @@ pub const RULES: &[Rule] = &[
                       manifest item.",
         profile_mask: ALL_PROFILES,
     },
-    // PHASE2-RULE: G
+    // ---- Section 13: OCF filename rules ----
+    Rule {
+        id: "R13.1",
+        section: "13",
+        level: Severity::Error,
+        title: "Illegal character in manifest href",
+        pdf_page: 10,
+        description: "Manifest item href contains a character that is not allowed in OCF \
+                      filenames. OCF forbids < > : \" | ? * and any control character below \
+                      U+0020.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R13.2",
+        section: "13",
+        level: Severity::Warning,
+        title: "Space in manifest href",
+        pdf_page: 10,
+        description: "Manifest item href contains a space. Spaces in OCF filenames cause \
+                      broken references on some readers and should be replaced with an \
+                      underscore or hyphen.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R13.3",
+        section: "13",
+        level: Severity::Warning,
+        title: "Trailing dot in manifest href",
+        pdf_page: 10,
+        description: "Manifest item href ends with a trailing dot. Windows silently drops \
+                      the trailing dot when writing the file, so the reference will not \
+                      resolve after extraction.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R13.4",
+        section: "13",
+        level: Severity::Warning,
+        title: "Non-ASCII character in manifest href",
+        pdf_page: 10,
+        description: "Manifest item href contains a non-ASCII character (above U+007E). OCF \
+                      permits Unicode in filenames but Kindle's pipeline has mixed support \
+                      and these paths often fail to resolve.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R13.5",
+        section: "13",
+        level: Severity::Error,
+        title: "Case-insensitive duplicate manifest hrefs",
+        pdf_page: 10,
+        description: "Two manifest items have hrefs that are equal after Unicode \
+                      case-folding. Case-insensitive filesystems will overwrite one file \
+                      with the other and at least one reference will break.",
+        profile_mask: ALL_PROFILES,
+    },
     // PHASE2-RULE: H
     // PHASE2-RULE: I
     // PHASE2-RULE: K
