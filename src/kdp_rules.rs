@@ -1149,7 +1149,42 @@ pub const RULES: &[Rule] = &[
                       with the other and at least one reference will break.",
         profile_mask: ALL_PROFILES,
     },
-    // PHASE2-RULE: H
+    Rule {
+        id: "R10.4.3",
+        section: "10",
+        level: Severity::Error,
+        title: "Image header or trailer corrupt (MED_004)",
+        pdf_page: 38,
+        description: "Image magic bytes match a known format but the file is truncated or \
+                      its header/trailer is corrupt. Examples: a JPEG with no FF D9 EOI \
+                      marker, a PNG missing its IHDR chunk, or a GIF without the \
+                      terminating 3B byte. Kindle conversion will fail or render a blank \
+                      image.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R10.4.4",
+        section: "10",
+        level: Severity::Error,
+        title: "Image cannot be decoded (PKG_021)",
+        pdf_page: 38,
+        description: "Image file cannot be parsed at all. The bytes are too short to \
+                      contain a valid header, or no known image magic signature (JPEG, \
+                      PNG, GIF, SVG, WebP) matches the leading bytes.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R10.4.5",
+        section: "10",
+        level: Severity::Warning,
+        title: "Image extension disagrees with magic bytes (PKG_022)",
+        pdf_page: 38,
+        description: "The file extension of an image manifest item disagrees with the \
+                      format detected from its magic bytes (e.g. foo.jpg but the bytes \
+                      are actually a PNG). Kindle may still convert the file, but the \
+                      mismatch commonly points at a build-pipeline bug.",
+        profile_mask: ALL_PROFILES,
+    },
     // PHASE2-RULE: I
     // PHASE2-RULE: K
 ];

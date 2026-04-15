@@ -18,7 +18,7 @@ pub mod opf_grammar;
 pub mod toc_extras;
 pub mod cross_refs;
 pub mod filenames;
-// PHASE2-MOD: H
+pub mod image_integrity;
 // PHASE2-MOD: I
 // PHASE2-MOD: K
 
@@ -47,7 +47,7 @@ pub static CHECKS: &[&dyn Check] = &[
     &toc_extras::TocExtrasChecks,
     &cross_refs::CrossRefsChecks,
     &filenames::FilenameChecks,
-    // PHASE2-CHECK: H
+    &image_integrity::ImageIntegrityChecks,
     // PHASE2-CHECK: I
     // PHASE2-CHECK: K
 ];
