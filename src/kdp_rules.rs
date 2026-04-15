@@ -1185,7 +1185,84 @@ pub const RULES: &[Rule] = &[
                       mismatch commonly points at a build-pipeline bug.",
         profile_mask: ALL_PROFILES,
     },
-    // PHASE2-RULE: I
+    // ---- Section 6: CSS forbidden properties and parse rules (epubcheck CSS_005-027) ----
+    Rule {
+        id: "R6.13",
+        section: "6",
+        level: Severity::Error,
+        title: "CSS parse error (CSS_005 / CSS_027)",
+        pdf_page: 24,
+        description: "CSS_005: lightningcss failed to parse this stylesheet. Hard parse \
+                      errors cause kindlegen to drop the stylesheet wholesale, so every \
+                      rule in the file becomes a no-op on device.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R6.14",
+        section: "6",
+        level: Severity::Error,
+        title: "Forbidden position value for reflowable Kindle (CSS_007)",
+        pdf_page: 24,
+        description: "CSS_007: Reflowable Kindle content cannot use position: fixed, \
+                      absolute, or sticky. The KF8 renderer collapses them back to \
+                      static, which typically destroys the intended layout.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R6.15",
+        section: "6",
+        level: Severity::Error,
+        title: "@import target unresolvable (CSS_015)",
+        pdf_page: 24,
+        description: "CSS_015: @import targets an external URL or a resource that is \
+                      not declared in the OPF manifest. Kindlegen cannot follow those \
+                      imports, so the imported rules are silently dropped.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R6.16",
+        section: "6",
+        level: Severity::Error,
+        title: "CSS url() target unresolvable (CSS_020)",
+        pdf_page: 24,
+        description: "CSS_020: A url(...) reference in this stylesheet points at an \
+                      external URL or a resource that is not in the manifest. The \
+                      declaration using it will silently drop on device.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R6.17",
+        section: "6",
+        level: Severity::Error,
+        title: "@font-face will be silently dropped (CSS_008 / CSS_017)",
+        pdf_page: 24,
+        description: "CSS_008 / CSS_017: @font-face block has no src descriptor or \
+                      references a font file that is not in the manifest. Kindle drops \
+                      unresolvable fonts silently and falls back to the system font.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R6.e1",
+        section: "6",
+        level: Severity::Warning,
+        title: "CSS @namespace rule (CSS_025)",
+        pdf_page: 24,
+        description: "CSS_025: @namespace rules are ignored by kindlegen and any \
+                      selectors that rely on the namespace will fail to match on device. \
+                      Flatten the stylesheet before shipping.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R6.e2",
+        section: "6",
+        level: Severity::Warning,
+        title: "Unsupported @media feature (CSS_019)",
+        pdf_page: 24,
+        description: "CSS_019: @media query uses a feature Kindle readers never match \
+                      (hover, pointer, color-gamut, prefers-color-scheme). The enclosed \
+                      rules will never take effect on device.",
+        profile_mask: ALL_PROFILES,
+    },
     // PHASE2-RULE: K
 ];
 

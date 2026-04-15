@@ -1,0 +1,17 @@
+@import url("not-in-manifest.css");
+@namespace svg url("http://www.w3.org/2000/svg");
+
+header {
+  position: fixed;
+  top: 0;
+  background: url("missing-bg.png");
+}
+
+@font-face {
+  font-family: "Missing";
+  src: url("fonts/missing.ttf");
+}
+
+@media (hover: hover) {
+  a:hover { color: blue; }
+}

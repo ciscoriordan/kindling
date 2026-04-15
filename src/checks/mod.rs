@@ -19,7 +19,7 @@ pub mod toc_extras;
 pub mod cross_refs;
 pub mod filenames;
 pub mod image_integrity;
-// PHASE2-MOD: I
+pub mod css_forbidden;
 // PHASE2-MOD: K
 
 /// A single-purpose validator module. Each impl owns one or more rule ids.
@@ -48,6 +48,6 @@ pub static CHECKS: &[&dyn Check] = &[
     &cross_refs::CrossRefsChecks,
     &filenames::FilenameChecks,
     &image_integrity::ImageIntegrityChecks,
-    // PHASE2-CHECK: I
+    &css_forbidden::CssForbiddenChecks,
     // PHASE2-CHECK: K
 ];

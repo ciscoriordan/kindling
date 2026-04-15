@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookId">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
+    <dc:title>CSS Forbidden Errors Fixture</dc:title>
+    <dc:language>en</dc:language>
+    <dc:creator>Kindling Test Suite</dc:creator>
+    <dc:identifier id="BookId">kindling-css-forbidden-errors-fixture</dc:identifier>
+    <meta name="cover" content="cover-img"/>
+  </metadata>
+  <manifest>
+    <item id="cover-img" href="cover.jpg" media-type="image/jpeg" properties="coverimage"/>
+    <item id="content" href="content.xhtml" media-type="application/xhtml+xml"/>
+    <item id="forbidden" href="forbidden.css" media-type="text/css"/>
+    <item id="broken" href="broken.css" media-type="text/css"/>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="content"/>
+  </spine>
+</package>

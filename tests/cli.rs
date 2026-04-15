@@ -1358,7 +1358,75 @@ mod phase2 {
         }
     }
     // PHASE2-TEST: H
-    // PHASE2-TEST: I
+    // ---- Cluster I: CSS forbidden properties and parse rules ----
+
+    fn cluster_i_bin() -> &'static str {
+        env!("CARGO_BIN_EXE_kindling-cli")
+    }
+
+    fn cluster_i_fixture_dir(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join(name)
+    }
+
+    #[test]
+    fn validate_css_forbidden_errors_flags_all_cluster_i_rules() {
+        // Cluster I (CSS forbidden and parse rules) must light up R6.13 through
+        // R6.17 plus R6.e1 and R6.e2 on this fixture. Each id is checked
+        // explicitly so a future refactor cannot silently drop one.
+        let opf = cluster_i_fixture_dir("css_forbidden_errors")
+            .join("css_forbidden_errors.opf");
+        let out = Command::new(cluster_i_bin())
+            .arg("validate")
+            .arg(opf.to_str().unwrap())
+            .output()
+            .expect("failed to spawn kindling-cli validate");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "css_forbidden_errors should exit 1\nstdout:\n{}\nstderr:\n{}",
+            stdout,
+            stderr
+        );
+        for rule_id in &[
+            "R6.13", "R6.14", "R6.15", "R6.16", "R6.17", "R6.e1", "R6.e2",
+        ] {
+            assert!(
+                stdout.contains(rule_id),
+                "expected rule id {} in css_forbidden_errors output\n{}",
+                rule_id,
+                stdout
+            );
+        }
+    }
+
+    #[test]
+    fn validate_clean_book_does_not_fire_cluster_i_rules() {
+        // The clean_book fixture has no CSS at all; it must not light up any
+        // Cluster I rule.
+        let opf = cluster_i_fixture_dir("clean_book").join("clean_book.opf");
+        let out = Command::new(cluster_i_bin())
+            .arg("validate")
+            .arg(opf.to_str().unwrap())
+            .output()
+            .expect("failed to spawn kindling-cli validate");
+        assert_eq!(out.status.code(), Some(0));
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        for rule_id in &[
+            "R6.13", "R6.14", "R6.15", "R6.16", "R6.17", "R6.e1", "R6.e2",
+        ] {
+            assert!(
+                !stdout.contains(rule_id),
+                "rule id {} should not fire on clean_book\n{}",
+                rule_id,
+                stdout
+            );
+        }
+    }
     // PHASE2-TEST: K
 }
 
