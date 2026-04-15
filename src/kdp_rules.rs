@@ -876,7 +876,6 @@ pub const RULES: &[Rule] = &[
                       when package_version is 3.0.",
         profile_mask: ALL_PROFILES,
     },
-    // PHASE2-RULE: E
     // ---- Section 9: Cross-references and dead links (epubcheck RSC_*/OPF_091/OPF_098) ----
     Rule {
         id: "R9.1",
@@ -1006,6 +1005,92 @@ pub const RULES: &[Rule] = &[
         pdf_page: 27,
         description: "OPF_098: An OPF <manifest> item href points at an element (bare \
                       '#id') rather than a resource. Manifest hrefs must name a file.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R5.4",
+        section: "5",
+        level: Severity::Warning,
+        title: "Pagebreak content but no page-list in NAV",
+        pdf_page: 19,
+        description: "Content documents contain epub:type=\"pagebreak\" elements but the NAV \
+                      document has no <nav epub:type=\"page-list\"> list (NAV_003). Kindle \
+                      will not expose page numbers for navigation.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R5.5",
+        section: "5",
+        level: Severity::Error,
+        title: "Nav or NCX contains remote resource link",
+        pdf_page: 19,
+        description: "Nav document or NCX contains a link to a remote resource (http:// or \
+                      https://) (NAV_010). Kindle navigation must point at packaged content, \
+                      not the network.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R5.6",
+        section: "5",
+        level: Severity::Warning,
+        title: "Nav TOC entries not in spine order",
+        pdf_page: 19,
+        description: "Nav TOC entries are not in spine reading order (NAV_011). An entry \
+                      points at a spine item that comes after the next entry's spine item, \
+                      so the Kindle chapter list reads backwards.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R5.7",
+        section: "5",
+        level: Severity::Error,
+        title: "NCX dtb:uid does not match OPF identifier",
+        pdf_page: 19,
+        description: "NCX <meta name=\"dtb:uid\"> value does not match the OPF <dc:identifier> \
+                      pointed at by <package unique-identifier> (NCX_001). Kindle's TOC will \
+                      not bind to the book.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R5.8",
+        section: "5",
+        level: Severity::Warning,
+        title: "NCX dtb:uid has surrounding whitespace",
+        pdf_page: 19,
+        description: "NCX dtb:uid value has leading or trailing whitespace (NCX_004). Some \
+                      parsers treat this as an identifier mismatch against the OPF.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R5.9",
+        section: "5",
+        level: Severity::Warning,
+        title: "NCX navPoint has empty text label",
+        pdf_page: 19,
+        description: "NCX navPoint has an empty <text> label inside <navLabel> (NCX_006). \
+                      Empty labels render as blank lines in the Kindle TOC.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R5.10",
+        section: "5",
+        level: Severity::Error,
+        title: "Guide reference target is not an OPS content document",
+        pdf_page: 19,
+        description: "OPF <guide><reference href> points at a file that is not a valid OPS \
+                      Content Document (OPF_032). The target must be in the manifest with \
+                      media-type application/xhtml+xml.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R5.11",
+        section: "5",
+        level: Severity::Error,
+        title: "Spine toc attribute target is not an NCX",
+        pdf_page: 19,
+        description: "OPF <spine toc=\"X\"> points at a manifest item whose media-type is not \
+                      application/x-dtbncx+xml (OPF_050). The toc attribute must name the NCX \
+                      manifest item.",
         profile_mask: ALL_PROFILES,
     },
     // PHASE2-RULE: G

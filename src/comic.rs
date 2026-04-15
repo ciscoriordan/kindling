@@ -2278,13 +2278,21 @@ fn write_fixed_layout_epub_v2(
         None
     };
 
+    let uid = format!(
+        "kindling-comic-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    );
+
     // Write OPF
-    let opf = build_comic_opf_v2(pages.len(), profile, rtl, metadata, any_panels, options, external_cover_id.as_deref());
+    let opf = build_comic_opf_v2(pages.len(), profile, rtl, metadata, any_panels, options, external_cover_id.as_deref(), &uid);
     let opf_path = temp_dir.join("content.opf");
     fs::write(&opf_path, opf.as_bytes())?;
 
     // Write NCX
-    let ncx = build_comic_ncx(pages.len());
+    let ncx = build_comic_ncx(pages.len(), &uid);
     fs::write(temp_dir.join("toc.ncx"), ncx.as_bytes())?;
 
     Ok(opf_path)
@@ -2299,6 +2307,7 @@ fn build_comic_opf_v2(
     panel_view: bool,
     options: &ComicOptions,
     external_cover_filename: Option<&str>,
+    uid: &str,
 ) -> String {
     let mut manifest_items = String::new();
     let mut spine_items = String::new();
@@ -2424,7 +2433,7 @@ fn build_comic_opf_v2(
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:title>{title}</dc:title>
     <dc:language>{language}</dc:language>
-    <dc:identifier id="uid">kindling-comic-{timestamp}</dc:identifier>
+    <dc:identifier id="uid">{uid}</dc:identifier>
 {creator_entries}{description_entry}    <meta name="fixed-layout" content="true"/>
     <meta name="original-resolution" content="{width}x{height}"/>
     <meta property="rendition:layout">pre-paginated</meta>
@@ -2438,10 +2447,7 @@ fn build_comic_opf_v2(
 "#,
         title = escape_xml(&title),
         language = escape_xml(language),
-        timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
+        uid = uid,
         width = profile.width,
         height = profile.height,
         cover_meta = cover_meta,
@@ -2560,7 +2566,7 @@ fn build_page_xhtml(
 }
 
 /// Build a minimal NCX table of contents.
-fn build_comic_ncx(num_pages: usize) -> String {
+fn build_comic_ncx(num_pages: usize, uid: &str) -> String {
     let mut nav_points = String::new();
     for i in 0..num_pages {
         nav_points.push_str(&format!(
@@ -2579,7 +2585,7 @@ fn build_comic_ncx(num_pages: usize) -> String {
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
   <head>
-    <meta name="dtb:uid" content="kindling-comic"/>
+    <meta name="dtb:uid" content="{uid}"/>
     <meta name="dtb:depth" content="1"/>
     <meta name="dtb:totalPageCount" content="{num_pages}"/>
     <meta name="dtb:maxPageNumber" content="{num_pages}"/>
@@ -2591,6 +2597,7 @@ fn build_comic_ncx(num_pages: usize) -> String {
 "#,
         num_pages = num_pages,
         nav_points = nav_points,
+        uid = uid,
     )
 }
 

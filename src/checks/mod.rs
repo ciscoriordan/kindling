@@ -15,7 +15,7 @@ pub mod parse_encoding;
 pub mod fixed_layout;
 pub mod manifest_spine;
 pub mod opf_grammar;
-// PHASE2-MOD: E
+pub mod toc_extras;
 pub mod cross_refs;
 // PHASE2-MOD: G
 // PHASE2-MOD: H
@@ -44,7 +44,7 @@ pub static CHECKS: &[&dyn Check] = &[
     &fixed_layout::FixedLayoutChecks,
     &manifest_spine::ManifestSpineChecks,
     &opf_grammar::OpfGrammarChecks,
-    // PHASE2-CHECK: E
+    &toc_extras::TocExtrasChecks,
     &cross_refs::CrossRefsChecks,
     // PHASE2-CHECK: G
     // PHASE2-CHECK: H
