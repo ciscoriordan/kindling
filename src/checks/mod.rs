@@ -10,6 +10,7 @@ pub mod helpers;
 pub mod images;
 pub mod nav_links;
 pub mod navigation;
+pub mod parse_encoding;
 
 /// A single-purpose validator module. Each impl owns one or more rule ids.
 pub trait Check: Sync {
@@ -28,4 +29,5 @@ pub static CHECKS: &[&dyn Check] = &[
     &content::ContentChecks,
     &images::ImageChecks,
     &file_case::FileCaseChecks,
+    &parse_encoding::ParseEncodingChecks,
 ];

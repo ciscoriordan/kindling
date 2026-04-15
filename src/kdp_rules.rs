@@ -230,6 +230,84 @@ pub const RULES: &[Rule] = &[
                       Case-sensitive filesystems will fail to resolve the reference.",
         profile_mask: ALL_PROFILES,
     },
+    Rule {
+        id: "R6.6",
+        section: "6",
+        level: Severity::Error,
+        title: "XML 1.0 required",
+        pdf_page: 22,
+        description: "XHTML file declares XML 1.1 in its prolog. kindlegen only supports \
+                      XML 1.0 and will reject XML 1.1 files at conversion time. Change \
+                      the declaration to version=\"1.0\".",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R6.7",
+        section: "6",
+        level: Severity::Error,
+        title: "No external entities",
+        pdf_page: 22,
+        description: "DOCTYPE declares an external ENTITY (SYSTEM or PUBLIC). kindlegen \
+                      crashes on external entity resolution and this is also an XXE \
+                      security risk. Remove the external entity declaration.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R6.8",
+        section: "6",
+        level: Severity::Warning,
+        title: "Irregular DOCTYPE",
+        pdf_page: 22,
+        description: "DOCTYPE is neither HTML5 (<!DOCTYPE html>) nor a canonical XHTML \
+                      1.0/1.1 form. Unusual DOCTYPEs trigger quirks mode in the \
+                      converter and break some fragments.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R6.9",
+        section: "6",
+        level: Severity::Error,
+        title: "EPUB namespace wrong",
+        pdf_page: 22,
+        description: "xmlns:epub points at a URI other than \
+                      http://www.idpf.org/2007/ops. This is the Vader Down bug class: \
+                      kindlegen silently drops the epub:type attribute so structural \
+                      nav entries point at blank pages.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R6.10",
+        section: "6",
+        level: Severity::Warning,
+        title: "Undeclared entity",
+        pdf_page: 22,
+        description: "XHTML references a named entity that is not in the XML 1.0 \
+                      predefined set or the common HTML5 whitelist. Undeclared \
+                      entities render as literal text on Kindle.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R6.11",
+        section: "6",
+        level: Severity::Error,
+        title: "HTML must be UTF-8",
+        pdf_page: 23,
+        description: "XHTML file begins with a UTF-16 BOM or declares a non-UTF-8 \
+                      encoding. kindlegen only handles UTF-8; other encodings produce \
+                      garbled text or an outright rejection.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R6.12",
+        section: "6",
+        level: Severity::Error,
+        title: "CSS must be UTF-8",
+        pdf_page: 24,
+        description: "CSS file begins with a UTF-16 BOM or declares a non-UTF-8 \
+                      @charset. Non-UTF-8 stylesheets are silently dropped wholesale \
+                      by kindlegen.",
+        profile_mask: ALL_PROFILES,
+    },
 
     // ---- Section 10: Text-Heavy Reflowable Books ----
     Rule {

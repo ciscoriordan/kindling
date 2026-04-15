@@ -163,6 +163,33 @@ mod validate {
     // ---------------------------------------------------------------------------
     
     #[test]
+    fn validate_parse_encoding_errors_flags_all_seven_rules() {
+        // Cluster B (parse-time / DOCTYPE / encoding) must light up R6.6 through
+        // R6.12 on this fixture. Each rule id is checked explicitly so a future
+        // refactor can't silently drop one of them.
+        let opf = fixture_dir("parse_encoding_errors").join("parse_encoding_errors.opf");
+        let out = run_validate(&[opf.to_str().unwrap()]);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "parse_encoding_errors should exit 1\n{}",
+            dump(&out)
+        );
+        for rule_id in &[
+            "R6.6", "R6.7", "R6.8", "R6.9", "R6.10", "R6.11", "R6.12",
+        ] {
+            assert!(
+                stdout.contains(rule_id),
+                "expected rule id {} in parse_encoding_errors output\n{}",
+                rule_id,
+                dump(&out)
+            );
+        }
+    }
+
+    #[test]
     fn validate_book_with_warnings_default_mode_exits_zero() {
         // Without --strict a warning alone should not fail the run.
         let opf = fixture_dir("book_with_warnings").join("book_with_warnings.opf");

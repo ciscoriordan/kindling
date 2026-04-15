@@ -1,0 +1,17 @@
+<?xml version="1.1" encoding="ISO-8859-1"?>
+<!DOCTYPE potato SYSTEM "potato.dtd" [
+  <!ENTITY xxe SYSTEM "file:///etc/passwd">
+]>
+<html xmlns="http://www.w3.org/1999/xhtml"
+      xmlns:epub="http://www.example.com/wrong-ops">
+  <head>
+    <title>Parse Encoding Errors Fixture</title>
+  </head>
+  <body>
+    <h1>Chapter 1</h1>
+    <p>This fixture intentionally triggers parse-time rules R6.6 through R6.12.
+    It references an undeclared entity like &fooundefined; to trip R6.10. The
+    DOCTYPE is irregular and the xmlns:epub attribute points at the wrong URI,
+    which is the Vader Down bug class.</p>
+  </body>
+</html>
