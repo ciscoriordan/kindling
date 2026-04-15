@@ -472,10 +472,10 @@ fn resolve_relative(base: &Path, rel: &str) -> PathBuf {
             continue;
         }
         if comp == ".." {
-            if out.pop().is_none() {
-                // Stack went negative: preserve the escape marker so
-                // path_escapes_root() can detect it.
+            if out.last().map(String::as_str) == Some("..") || out.is_empty() {
                 out.push("..".to_string());
+            } else {
+                out.pop();
             }
             continue;
         }
