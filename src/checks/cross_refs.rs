@@ -457,6 +457,7 @@ fn is_external_scheme(lower: &str) -> bool {
         || lower.starts_with("ftp:")
         || lower.starts_with("javascript:")
         || lower.starts_with("about:")
+        || lower.starts_with("kindle:")
 }
 
 /// Normalize `base/rel` to a forward-slash path, collapsing '.' and '..' components.
