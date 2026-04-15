@@ -132,7 +132,7 @@ mod validate {
         let opf = fixture_dir("book_with_errors").join("book_with_errors.opf");
         let out = run_validate(&[opf.to_str().unwrap()]);
         let stdout = String::from_utf8_lossy(&out.stdout);
-    
+
         assert_eq!(
             out.status.code(),
             Some(1),
@@ -144,7 +144,7 @@ mod validate {
             "book_with_errors should report at least one error\n{}",
             dump(&out)
         );
-    
+
         // Each rule id below corresponds to a deliberately-planted defect in
         // the fixture. Keep these assertions explicit so the test fails loudly
         // if a rule id is renumbered or a check is accidentally removed.
@@ -152,6 +152,40 @@ mod validate {
             assert!(
                 stdout.contains(rule_id),
                 "expected rule id {} in output\n{}",
+                rule_id,
+                dump(&out)
+            );
+        }
+    }
+
+    #[test]
+    fn validate_legacy_dict_errors_reports_section_15_rules() {
+        // legacy_dict_errors is an EPUB 2.0 dict fixture with deliberately-planted
+        // defects that should trip R15.1, R15.2, R15.3, R15.5, R15.6 and R15.7
+        // without firing any R15.e* (EPUB 3 DICT) rule.
+        let opf = fixture_dir("legacy_dict_errors").join("legacy_dict_errors.opf");
+        let out = run_validate(&[opf.to_str().unwrap()]);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "legacy_dict_errors should exit 1\n{}",
+            dump(&out)
+        );
+        for rule_id in &["R15.1", "R15.2", "R15.3", "R15.5", "R15.6", "R15.7"] {
+            assert!(
+                stdout.contains(rule_id),
+                "expected rule id {} in output\n{}",
+                rule_id,
+                dump(&out)
+            );
+        }
+        // EPUB 3 DICT rules must not fire on a package version="2.0" fixture.
+        for rule_id in &["R15.e1", "R15.e2", "R15.e3", "R15.e4", "R15.e5", "R15.e6", "R15.e7"] {
+            assert!(
+                !stdout.contains(rule_id),
+                "rule id {} must not fire on EPUB 2.0 legacy dict\n{}",
                 rule_id,
                 dump(&out)
             );

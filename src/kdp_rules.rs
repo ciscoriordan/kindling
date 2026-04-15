@@ -371,6 +371,160 @@ pub const RULES: &[Rule] = &[
                       JavaScript as unsupported; section 18.1 lists supported tags.",
         profile_mask: ALL_PROFILES,
     },
+
+    // ---- Section 15: Dictionaries (Amazon-legacy KDP format) ----
+    Rule {
+        id: "R15.1",
+        section: "15",
+        level: Severity::Error,
+        title: "DictionaryInLanguage required",
+        pdf_page: 60,
+        description: "Dictionary OPF must declare <x-metadata><DictionaryInLanguage> with a \
+                      BCP47 language code. Without it, KDP's dict compiler will not enable \
+                      lookup mode and the book will appear as a regular book.",
+        profile_mask: Profile::Dict.as_bit(),
+    },
+    Rule {
+        id: "R15.2",
+        section: "15",
+        level: Severity::Error,
+        title: "DictionaryOutLanguage required",
+        pdf_page: 60,
+        description: "Dictionary OPF must declare <x-metadata><DictionaryOutLanguage> with a \
+                      BCP47 language code. Without it, KDP's dict compiler will not enable \
+                      lookup mode and the book will appear as a regular book.",
+        profile_mask: Profile::Dict.as_bit(),
+    },
+    Rule {
+        id: "R15.3",
+        section: "15",
+        level: Severity::Error,
+        title: "DefaultLookupIndex must match an idx:entry name",
+        pdf_page: 60,
+        description: "The <x-metadata><DefaultLookupIndex> value must match at least one \
+                      <idx:entry name=\"...\"> in the spine content. A mismatch causes Kindle \
+                      to show 'no entries found' on every lookup.",
+        profile_mask: Profile::Dict.as_bit(),
+    },
+    Rule {
+        id: "R15.4",
+        section: "15",
+        level: Severity::Error,
+        title: "At least one idx:entry required",
+        pdf_page: 60,
+        description: "Dictionary builds must contain at least one <idx:entry> element in spine \
+                      content. If zero idx:entry elements are found, the file is not actually \
+                      a dictionary.",
+        profile_mask: Profile::Dict.as_bit(),
+    },
+    Rule {
+        id: "R15.5",
+        section: "15",
+        level: Severity::Warning,
+        title: "Spine content should be wrapped in <mbp:frameset>",
+        pdf_page: 60,
+        description: "Amazon's dictionary HTML parser expects entry content to be wrapped in \
+                      <mbp:frameset>. Omitting it works sometimes and fails silently other \
+                      times.",
+        profile_mask: Profile::Dict.as_bit(),
+    },
+    Rule {
+        id: "R15.6",
+        section: "15",
+        level: Severity::Error,
+        title: "idx:orth must have a non-empty value attribute",
+        pdf_page: 60,
+        description: "Every <idx:orth> element must have a non-empty value=\"...\" attribute. \
+                      An empty orth leaves a blank lookup entry and crashes lookup on \
+                      Paperwhite firmware.",
+        profile_mask: Profile::Dict.as_bit(),
+    },
+    Rule {
+        id: "R15.7",
+        section: "15",
+        level: Severity::Warning,
+        title: "OPF <guide> should contain reference type=\"index\"",
+        pdf_page: 60,
+        description: "OPF <guide> should include a <reference type=\"index\" ...> entry. Older \
+                      Kindle firmware versions use this to locate the dictionary's entry \
+                      section.",
+        profile_mask: Profile::Dict.as_bit(),
+    },
+
+    // ---- Section 15: Dictionaries (epubcheck EPUB 3 DICT rules, gated on EPUB 3) ----
+    Rule {
+        id: "R15.e1",
+        section: "15",
+        level: Severity::Error,
+        title: "EPUB 3 dict requires content with epub:type=\"dictionary\" (OPF_078)",
+        pdf_page: 60,
+        description: "OPF_078: An EPUB 3 dictionary must contain at least one content document \
+                      with epub:type=\"dictionary\". Fires only when package_version is 3.0.",
+        profile_mask: Profile::Dict.as_bit(),
+    },
+    Rule {
+        id: "R15.e2",
+        section: "15",
+        level: Severity::Error,
+        title: "Dictionary content found but OPF lacks dc:type=dictionary (OPF_079)",
+        pdf_page: 60,
+        description: "OPF_079: idx:entry or dictionary content is present but the OPF does \
+                      not declare <dc:type>dictionary</dc:type> in metadata. Fires only when \
+                      package_version is 3.0.",
+        profile_mask: Profile::Dict.as_bit(),
+    },
+    Rule {
+        id: "R15.e3",
+        section: "15",
+        level: Severity::Warning,
+        title: "Search Key Map document must use .xml extension (OPF_080)",
+        pdf_page: 60,
+        description: "OPF_080: A Search Key Map Document referenced from a dictionary \
+                      collection must have a .xml file extension. Fires only when \
+                      package_version is 3.0.",
+        profile_mask: Profile::Dict.as_bit(),
+    },
+    Rule {
+        id: "R15.e4",
+        section: "15",
+        level: Severity::Error,
+        title: "Collection link target missing from manifest (OPF_081)",
+        pdf_page: 60,
+        description: "OPF_081: A resource referenced by a <collection> element must exist in \
+                      the OPF manifest. Fires only when package_version is 3.0.",
+        profile_mask: Profile::Dict.as_bit(),
+    },
+    Rule {
+        id: "R15.e5",
+        section: "15",
+        level: Severity::Error,
+        title: "At most one Search Key Map per dictionary collection (OPF_082)",
+        pdf_page: 60,
+        description: "OPF_082: A dictionary collection may contain at most one Search Key Map \
+                      Document. Fires only when package_version is 3.0.",
+        profile_mask: Profile::Dict.as_bit(),
+    },
+    Rule {
+        id: "R15.e6",
+        section: "15",
+        level: Severity::Error,
+        title: "At least one Search Key Map per dictionary collection (OPF_083)",
+        pdf_page: 60,
+        description: "OPF_083: A dictionary collection must contain at least one Search Key \
+                      Map Document. Fires only when package_version is 3.0.",
+        profile_mask: Profile::Dict.as_bit(),
+    },
+    Rule {
+        id: "R15.e7",
+        section: "15",
+        level: Severity::Error,
+        title: "Dictionary collection may only contain XHTML or SKM docs (OPF_084)",
+        pdf_page: 60,
+        description: "OPF_084: A dictionary collection may only contain XHTML Content \
+                      Documents or Search Key Map Documents. Fires only when package_version \
+                      is 3.0.",
+        profile_mask: Profile::Dict.as_bit(),
+    },
 ];
 
 /// Look up a rule by its id. Panics if the id is unknown.

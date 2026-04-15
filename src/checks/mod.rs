@@ -5,6 +5,7 @@ use crate::validate::ValidationReport;
 
 pub mod content;
 pub mod cover;
+pub mod dict;
 pub mod file_case;
 pub mod helpers;
 pub mod images;
@@ -30,4 +31,5 @@ pub static CHECKS: &[&dyn Check] = &[
     &images::ImageChecks,
     &file_case::FileCaseChecks,
     &parse_encoding::ParseEncodingChecks,
+    &dict::DictChecks,
 ];

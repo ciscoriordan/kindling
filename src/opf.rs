@@ -30,6 +30,10 @@ pub struct OPFData {
     pub original_resolution: Option<String>,
     /// Page progression direction from OPF spine element (e.g. "ltr", "rtl").
     pub page_progression_direction: Option<String>,
+    /// `<package version="...">` attribute, e.g. "2.0" or "3.0".
+    pub package_version: String,
+    /// Collected `<dc:type>` values from metadata (EPUB 3 publication types).
+    pub dc_types: Vec<String>,
 }
 
 impl OPFData {
@@ -57,6 +61,8 @@ impl OPFData {
             is_fixed_layout: false,
             original_resolution: None,
             page_progression_direction: None,
+            package_version: String::new(),
+            dc_types: Vec::new(),
         };
 
         // Clean the XML for parsing - strip namespace prefixes that may be unbound
@@ -82,6 +88,14 @@ impl OPFData {
                     let local_name = local_tag_name(e.name().as_ref());
 
                     match local_name.as_str() {
+                        "package" => {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.as_ref() == b"version" {
+                                    self.package_version =
+                                        String::from_utf8_lossy(&attr.value).to_string();
+                                }
+                            }
+                        }
                         "metadata" => in_metadata = true,
                         "manifest" => in_manifest = true,
                         "spine" => {
@@ -100,6 +114,9 @@ impl OPFData {
                             if in_metadata =>
                         {
                             current_tag = local_name.clone();
+                        }
+                        "type" if in_metadata => {
+                            current_tag = "type".to_string();
                         }
                         "DictionaryInLanguage" if in_metadata => {
                             current_tag = "DictionaryInLanguage".to_string();
@@ -199,6 +216,7 @@ impl OPFData {
                             "language" => self.language = text,
                             "identifier" => self.identifier = text,
                             "date" => self.date = text,
+                            "type" => self.dc_types.push(text),
                             "DictionaryInLanguage" => self.dict_in_language = text,
                             "DictionaryOutLanguage" => self.dict_out_language = text,
                             "DefaultLookupIndex" => self.default_lookup_index = text,

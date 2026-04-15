@@ -20,7 +20,7 @@ pub const ALL_PROFILES: u8 = 0b1111;
 
 impl Profile {
     /// Bit value for this profile: `1 << variant_index`.
-    pub fn as_bit(&self) -> u8 {
+    pub const fn as_bit(&self) -> u8 {
         match self {
             Profile::Default => 1 << 0,
             Profile::Comic => 1 << 1,
