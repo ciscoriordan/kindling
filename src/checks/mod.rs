@@ -12,6 +12,15 @@ pub mod images;
 pub mod nav_links;
 pub mod navigation;
 pub mod parse_encoding;
+// PHASE2-MOD: A
+// PHASE2-MOD: C
+// PHASE2-MOD: D
+// PHASE2-MOD: E
+// PHASE2-MOD: F
+// PHASE2-MOD: G
+// PHASE2-MOD: H
+// PHASE2-MOD: I
+// PHASE2-MOD: K
 
 /// A single-purpose validator module. Each impl owns one or more rule ids.
 pub trait Check: Sync {
@@ -32,4 +41,13 @@ pub static CHECKS: &[&dyn Check] = &[
     &file_case::FileCaseChecks,
     &parse_encoding::ParseEncodingChecks,
     &dict::DictChecks,
+    // PHASE2-CHECK: A
+    // PHASE2-CHECK: C
+    // PHASE2-CHECK: D
+    // PHASE2-CHECK: E
+    // PHASE2-CHECK: F
+    // PHASE2-CHECK: G
+    // PHASE2-CHECK: H
+    // PHASE2-CHECK: I
+    // PHASE2-CHECK: K
 ];

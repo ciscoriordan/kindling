@@ -525,6 +525,15 @@ pub const RULES: &[Rule] = &[
                       is 3.0.",
         profile_mask: Profile::Dict.as_bit(),
     },
+    // PHASE2-RULE: A
+    // PHASE2-RULE: C
+    // PHASE2-RULE: D
+    // PHASE2-RULE: E
+    // PHASE2-RULE: F
+    // PHASE2-RULE: G
+    // PHASE2-RULE: H
+    // PHASE2-RULE: I
+    // PHASE2-RULE: K
 ];
 
 /// Look up a rule by its id. Panics if the id is unknown.

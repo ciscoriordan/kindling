@@ -1170,3 +1170,16 @@ mod rewrite_metadata {
     }
 }
 
+#[allow(unused_imports)]
+mod phase2 {
+    // PHASE2-TEST: A
+    // PHASE2-TEST: C
+    // PHASE2-TEST: D
+    // PHASE2-TEST: E
+    // PHASE2-TEST: F
+    // PHASE2-TEST: G
+    // PHASE2-TEST: H
+    // PHASE2-TEST: I
+    // PHASE2-TEST: K
+}
+
