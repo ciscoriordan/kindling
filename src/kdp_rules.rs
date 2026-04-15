@@ -529,7 +529,137 @@ pub const RULES: &[Rule] = &[
     // PHASE2-RULE: C
     // PHASE2-RULE: D
     // PHASE2-RULE: E
-    // PHASE2-RULE: F
+    // ---- Section 9: Cross-references and dead links (epubcheck RSC_*/OPF_091/OPF_098) ----
+    Rule {
+        id: "R9.1",
+        section: "9",
+        level: Severity::Warning,
+        title: "Non-SVG image referenced with a fragment",
+        pdf_page: 27,
+        description: "RSC_009: An <img src=\"foo.png#fragment\"> uses a fragment identifier on a \
+                      non-SVG raster image. Only SVG content documents support fragment \
+                      targeting; the fragment is silently ignored elsewhere.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R9.2",
+        section: "9",
+        level: Severity::Warning,
+        title: "Link targets a manifest item not in the spine",
+        pdf_page: 27,
+        description: "RSC_011: An <a href=\"...\"> points at a manifest item that is not \
+                      listed in the spine. The target file will not be reachable through \
+                      normal reading order and Kindle will not compile the jump target.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R9.3",
+        section: "9",
+        level: Severity::Error,
+        title: "Fragment id not defined in the target file",
+        pdf_page: 27,
+        description: "RSC_012: The file on the left of '#' exists in the manifest but the \
+                      '#anchor' id is not declared anywhere inside that file. The link will \
+                      scroll to the top of the target instead of the intended element.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R9.4",
+        section: "9",
+        level: Severity::Error,
+        title: "Fragment points into a resource without ids",
+        pdf_page: 27,
+        description: "RSC_014: The fragment identifier targets a CSS file, image, or font, \
+                      none of which support element ids. The anchor is meaningless.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R9.5",
+        section: "9",
+        level: Severity::Error,
+        title: "SVG <use> without a fragment identifier",
+        pdf_page: 27,
+        description: "RSC_015: An SVG <use> element must reference another symbol by \
+                      fragment identifier (for example xlink:href=\"#icon\"). A bare file \
+                      reference is a structural error.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R9.6",
+        section: "9",
+        level: Severity::Error,
+        title: "href/src is not a valid URL",
+        pdf_page: 27,
+        description: "RSC_020: An href or src attribute value contains whitespace, control \
+                      characters, or bare angle brackets. RFC 3986 cannot parse such a \
+                      reference and Kindle will silently strip the link.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R9.7",
+        section: "9",
+        level: Severity::Error,
+        title: "Relative URL escapes the EPUB container",
+        pdf_page: 27,
+        description: "RSC_026: A relative URL uses '..' path segments that would resolve \
+                      outside the EPUB root. This is a packaging error and a security risk \
+                      (path traversal).",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R9.8",
+        section: "9",
+        level: Severity::Warning,
+        title: "data: URL in href or src",
+        pdf_page: 27,
+        description: "RSC_029: A data: URL is used in an href or src attribute. Kindle does \
+                      not support data: URLs; images and stylesheets must be packaged as \
+                      manifest items.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R9.9",
+        section: "9",
+        level: Severity::Error,
+        title: "file: URL in href or src",
+        pdf_page: 27,
+        description: "RSC_030: A file: URL is used in an href or src attribute. file: \
+                      references point at the author's local disk and will never resolve \
+                      on a reader device.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R9.10",
+        section: "9",
+        level: Severity::Warning,
+        title: "Relative URL carries a ?query component",
+        pdf_page: 27,
+        description: "RSC_033: A relative URL contains a '?query' component. kindlegen's \
+                      URL hashing drops the query before resolving the reference, which \
+                      breaks any link that depends on the query part.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R9.11",
+        section: "9",
+        level: Severity::Error,
+        title: "Manifest item href contains a fragment",
+        pdf_page: 27,
+        description: "OPF_091: An OPF <manifest> item href must identify a whole resource. \
+                      A '#' fragment is not allowed in manifest hrefs because manifest \
+                      items are resources, not elements.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R9.12",
+        section: "9",
+        level: Severity::Error,
+        title: "Manifest item href references an element",
+        pdf_page: 27,
+        description: "OPF_098: An OPF <manifest> item href points at an element (bare \
+                      '#id') rather than a resource. Manifest hrefs must name a file.",
+        profile_mask: ALL_PROFILES,
+    },
     // PHASE2-RULE: G
     // PHASE2-RULE: H
     // PHASE2-RULE: I

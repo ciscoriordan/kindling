@@ -16,7 +16,7 @@ pub mod parse_encoding;
 // PHASE2-MOD: C
 // PHASE2-MOD: D
 // PHASE2-MOD: E
-// PHASE2-MOD: F
+pub mod cross_refs;
 // PHASE2-MOD: G
 // PHASE2-MOD: H
 // PHASE2-MOD: I
@@ -45,7 +45,7 @@ pub static CHECKS: &[&dyn Check] = &[
     // PHASE2-CHECK: C
     // PHASE2-CHECK: D
     // PHASE2-CHECK: E
-    // PHASE2-CHECK: F
+    &cross_refs::CrossRefsChecks,
     // PHASE2-CHECK: G
     // PHASE2-CHECK: H
     // PHASE2-CHECK: I
