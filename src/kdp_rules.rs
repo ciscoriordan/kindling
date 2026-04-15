@@ -631,7 +631,143 @@ pub const RULES: &[Rule] = &[
                       rendering on high-DPI Paperwhites.",
         profile_mask: Profile::Comic.as_bit() | Profile::Textbook.as_bit(),
     },
-    // PHASE2-RULE: C
+    // ---- Section 7: Manifest and spine integrity (epubcheck OPF_*) ----
+    Rule {
+        id: "R7.1",
+        section: "7",
+        level: Severity::Warning,
+        title: "File not declared in manifest (OPF_003)",
+        pdf_page: 10,
+        description: "OPF_003: A file exists in the EPUB content tree but is not declared \
+                      in the manifest. Undeclared files are ignored by converters and \
+                      waste space in the final book.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R7.2",
+        section: "7",
+        level: Severity::Error,
+        title: "Declared media-type does not match file bytes (OPF_013)",
+        pdf_page: 10,
+        description: "OPF_013: A manifest item's declared media-type does not match the \
+                      actual file, based on magic bytes. Kindle refuses to decode a file \
+                      whose declared type disagrees with its content.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R7.3",
+        section: "7",
+        level: Severity::Error,
+        title: "File contents do not match declared media-type (OPF_029)",
+        pdf_page: 10,
+        description: "OPF_029: The file bytes do not match any media-type we recognize \
+                      from the declaration. Either the file is corrupt or the declared \
+                      media-type is wrong.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R7.4",
+        section: "7",
+        level: Severity::Error,
+        title: "Spine has no linear content (OPF_033)",
+        pdf_page: 10,
+        description: "OPF_033: Every <itemref> in the spine has linear=\"no\". At least \
+                      one linear itemref is required or the book has no reading order.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R7.5",
+        section: "7",
+        level: Severity::Error,
+        title: "Duplicate itemref idref (OPF_034)",
+        pdf_page: 10,
+        description: "OPF_034: Two <itemref> elements reference the same manifest id. The \
+                      second reference is redundant and can confuse pagination.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R7.6",
+        section: "7",
+        level: Severity::Warning,
+        title: "text/html used where xhtml was expected (OPF_035)",
+        pdf_page: 10,
+        description: "OPF_035: A manifest item has media-type text/html on a .xhtml/.html \
+                      resource. EPUB uses application/xhtml+xml for content documents.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R7.7",
+        section: "7",
+        level: Severity::Warning,
+        title: "Deprecated media-type (OPF_037)",
+        pdf_page: 10,
+        description: "OPF_037: The item uses a deprecated media-type (image/jpg, \
+                      text/xml, application/x-dtbook+xml, text/x-oeb1-document). Replace \
+                      it with the canonical equivalent.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R7.8",
+        section: "7",
+        level: Severity::Error,
+        title: "Dangling fallback id (OPF_040)",
+        pdf_page: 10,
+        description: "OPF_040: A manifest item declares fallback=\"X\" but X is not a \
+                      manifest id. The fallback chain is broken.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R7.9",
+        section: "7",
+        level: Severity::Error,
+        title: "Dangling fallback-style id (OPF_041)",
+        pdf_page: 10,
+        description: "OPF_041: A manifest item declares fallback-style=\"X\" but X is not \
+                      a manifest id. The fallback-style chain is broken.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R7.10",
+        section: "7",
+        level: Severity::Error,
+        title: "Non-permissible spine media-type without fallback (OPF_042)",
+        pdf_page: 10,
+        description: "OPF_042: A spine item has a non-permissible media-type (not xhtml, \
+                      svg, or dtbook) and no fallback attribute. Kindle will not render \
+                      it as a reading-order page.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R7.11",
+        section: "7",
+        level: Severity::Error,
+        title: "Spine fallback chain never reaches xhtml/svg (OPF_043)",
+        pdf_page: 10,
+        description: "OPF_043: A spine item with a non-standard media-type has a fallback \
+                      chain that never terminates at an xhtml or svg resource. Kindle \
+                      cannot reach a displayable form.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R7.12",
+        section: "7",
+        level: Severity::Error,
+        title: "Duplicate manifest href (OPF_074)",
+        pdf_page: 10,
+        description: "OPF_074: Two manifest items share the same href. Each resource must \
+                      appear at most once in the manifest.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R7.13",
+        section: "7",
+        level: Severity::Error,
+        title: "Manifest item points at the OPF file itself (OPF_099)",
+        pdf_page: 10,
+        description: "OPF_099: A manifest item href resolves back to the OPF package file. \
+                      The package file must not be listed in its own manifest.",
+        profile_mask: ALL_PROFILES,
+    },
     // PHASE2-RULE: D
     // PHASE2-RULE: E
     // ---- Section 9: Cross-references and dead links (epubcheck RSC_*/OPF_091/OPF_098) ----

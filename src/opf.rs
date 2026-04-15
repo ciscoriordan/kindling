@@ -9,6 +9,26 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+/// One `<item>` entry in the OPF manifest, including EPUB 3 fallback attributes.
+#[derive(Debug, Clone)]
+pub struct ManifestItem {
+    pub id: String,
+    pub href: String,
+    pub media_type: String,
+    pub properties: String,
+    pub fallback: Option<String>,
+    pub fallback_style: Option<String>,
+}
+
+/// One `<itemref>` entry in the OPF spine, including `linear` and `properties`.
+#[derive(Debug, Clone)]
+pub struct SpineItemRef {
+    pub idref: String,
+    pub linear: String,
+    #[allow(dead_code)]
+    pub properties: String,
+}
+
 /// Parsed OPF file data.
 pub struct OPFData {
     pub base_dir: PathBuf,
@@ -22,6 +42,10 @@ pub struct OPFData {
     pub default_lookup_index: String,
     pub spine_items: Vec<(String, String)>, // (id, href) tuples in spine order
     pub manifest: HashMap<String, (String, String)>, // id -> (href, media_type)
+    /// Full manifest item list preserving attributes needed by cluster C checks.
+    pub manifest_items: Vec<ManifestItem>,
+    /// Raw itemref list in spine order, including dangling or duplicated idrefs.
+    pub raw_itemrefs: Vec<SpineItemRef>,
     /// Manifest item id with properties="coverimage" (EPUB 3 cover method).
     pub coverimage_id: Option<String>,
     /// True if the OPF declares fixed-layout (pre-paginated) rendering.
@@ -57,6 +81,8 @@ impl OPFData {
             default_lookup_index: String::from("default"),
             spine_items: Vec::new(),
             manifest: HashMap::new(),
+            manifest_items: Vec::new(),
+            raw_itemrefs: Vec::new(),
             coverimage_id: None,
             is_fixed_layout: false,
             original_resolution: None,
@@ -166,6 +192,8 @@ impl OPFData {
                             let mut href = String::new();
                             let mut media_type = String::new();
                             let mut properties = String::new();
+                            let mut fallback: Option<String> = None;
+                            let mut fallback_style: Option<String> = None;
                             for attr in e.attributes().flatten() {
                                 match attr.key.as_ref() {
                                     b"id" => {
@@ -182,6 +210,16 @@ impl OPFData {
                                         properties =
                                             String::from_utf8_lossy(&attr.value).to_string()
                                     }
+                                    b"fallback" => {
+                                        fallback = Some(
+                                            String::from_utf8_lossy(&attr.value).to_string(),
+                                        );
+                                    }
+                                    b"fallback-style" => {
+                                        fallback_style = Some(
+                                            String::from_utf8_lossy(&attr.value).to_string(),
+                                        );
+                                    }
                                     _ => {}
                                 }
                             }
@@ -190,16 +228,43 @@ impl OPFData {
                                 if properties.split_whitespace().any(|p| p == "coverimage") {
                                     self.coverimage_id = Some(id.clone());
                                 }
-                                self.manifest.insert(id, (href, media_type));
+                                self.manifest.insert(id.clone(), (href.clone(), media_type.clone()));
+                                self.manifest_items.push(ManifestItem {
+                                    id,
+                                    href,
+                                    media_type,
+                                    properties,
+                                    fallback,
+                                    fallback_style,
+                                });
                             }
                         }
                         "itemref" if in_spine => {
                             let mut idref = String::new();
+                            let mut linear = String::new();
+                            let mut properties = String::new();
                             for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"idref" {
-                                    idref = String::from_utf8_lossy(&attr.value).to_string();
+                                match attr.key.as_ref() {
+                                    b"idref" => {
+                                        idref =
+                                            String::from_utf8_lossy(&attr.value).to_string();
+                                    }
+                                    b"linear" => {
+                                        linear =
+                                            String::from_utf8_lossy(&attr.value).to_string();
+                                    }
+                                    b"properties" => {
+                                        properties =
+                                            String::from_utf8_lossy(&attr.value).to_string();
+                                    }
+                                    _ => {}
                                 }
                             }
+                            self.raw_itemrefs.push(SpineItemRef {
+                                idref: idref.clone(),
+                                linear,
+                                properties,
+                            });
                             if let Some((href, _)) = self.manifest.get(&idref) {
                                 self.spine_items.push((idref, href.clone()));
                             }
