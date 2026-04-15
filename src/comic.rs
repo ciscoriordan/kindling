@@ -2682,7 +2682,8 @@ mod tests {
             dir.join("page.xhtml"),
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml"><head><title>P</title></head>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>P</title>
+<meta name="viewport" content="width=1072, height=1448"/></head>
 <body><div><img src="cover.jpg" alt="p"/></div></body></html>"#,
         )
         .unwrap();

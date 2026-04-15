@@ -12,7 +12,7 @@ pub mod images;
 pub mod nav_links;
 pub mod navigation;
 pub mod parse_encoding;
-// PHASE2-MOD: A
+pub mod fixed_layout;
 // PHASE2-MOD: C
 // PHASE2-MOD: D
 // PHASE2-MOD: E
@@ -41,7 +41,7 @@ pub static CHECKS: &[&dyn Check] = &[
     &file_case::FileCaseChecks,
     &parse_encoding::ParseEncodingChecks,
     &dict::DictChecks,
-    // PHASE2-CHECK: A
+    &fixed_layout::FixedLayoutChecks,
     // PHASE2-CHECK: C
     // PHASE2-CHECK: D
     // PHASE2-CHECK: E

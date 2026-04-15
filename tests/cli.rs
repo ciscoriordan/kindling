@@ -1172,7 +1172,109 @@ mod rewrite_metadata {
 
 #[allow(unused_imports)]
 mod phase2 {
-    // PHASE2-TEST: A
+    #[test]
+    fn validate_fixed_layout_errors_reports_r11_rules() {
+        use std::path::PathBuf;
+        use std::process::Command;
+
+        let opf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("fixed_layout_errors")
+            .join("fixed_layout_errors.opf");
+        let out = Command::new(env!("CARGO_BIN_EXE_kindling-cli"))
+            .arg("validate")
+            .arg(opf.to_str().unwrap())
+            .output()
+            .expect("failed to spawn kindling-cli validate");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let dump = format!(
+            "exit={:?}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            out.status.code(),
+            stdout,
+            stderr,
+        );
+
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "fixed_layout_errors should exit 1\n{}",
+            dump
+        );
+        // Every R11.* rule except R11.1 (which fires only when OPF is missing
+        // the rendition:layout declaration) should be triggered by this
+        // fixture. R11.1 has its own dedicated fixture below.
+        for rule_id in &["R11.3", "R11.4", "R11.5", "R11.6", "R11.7", "R11.8", "R11.9"] {
+            assert!(
+                stdout.contains(rule_id),
+                "expected rule id {} in fixed_layout_errors output\n{}",
+                rule_id,
+                dump
+            );
+        }
+    }
+
+    #[test]
+    fn validate_fixed_layout_missing_opf_declaration_fires_r11_1() {
+        use std::path::PathBuf;
+        use std::process::Command;
+
+        let opf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("fixed_layout_missing_opf")
+            .join("fixed_layout_missing_opf.opf");
+        let out = Command::new(env!("CARGO_BIN_EXE_kindling-cli"))
+            .arg("validate")
+            .arg(opf.to_str().unwrap())
+            .output()
+            .expect("failed to spawn kindling-cli validate");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let dump = format!(
+            "exit={:?}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            out.status.code(),
+            stdout,
+            stderr,
+        );
+
+        assert!(
+            stdout.contains("R11.1"),
+            "expected R11.1 on OPF without rendition:layout\n{}",
+            dump
+        );
+    }
+
+    #[test]
+    fn validate_clean_book_does_not_fire_r11_rules() {
+        use std::path::PathBuf;
+        use std::process::Command;
+
+        // clean_book is reflowable; none of R11.* should fire on it.
+        let opf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("clean_book")
+            .join("clean_book.opf");
+        let out = Command::new(env!("CARGO_BIN_EXE_kindling-cli"))
+            .arg("validate")
+            .arg(opf.to_str().unwrap())
+            .output()
+            .expect("failed to spawn kindling-cli validate");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        for rule_id in &[
+            "R11.1", "R11.2", "R11.3", "R11.4", "R11.5", "R11.6", "R11.7",
+            "R11.8", "R11.9",
+        ] {
+            assert!(
+                !stdout.contains(rule_id),
+                "rule id {} must not fire on reflowable clean_book:\n{}",
+                rule_id,
+                stdout
+            );
+        }
+    }
     // PHASE2-TEST: C
     // PHASE2-TEST: D
     // PHASE2-TEST: E

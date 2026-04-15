@@ -525,7 +525,112 @@ pub const RULES: &[Rule] = &[
                       is 3.0.",
         profile_mask: Profile::Dict.as_bit(),
     },
-    // PHASE2-RULE: A
+    // ---- Section 11: Fixed-layout EPUB rules (epubcheck HTM_046-060, OPF_011) ----
+    Rule {
+        id: "R11.1",
+        section: "11",
+        level: Severity::Error,
+        title: "Fixed-layout content without rendition:layout declaration (OPF_011)",
+        pdf_page: 45,
+        description: "OPF_011: Content looks fixed-layout (viewport meta present, pixel \
+                      dimensions, image-heavy pages) but the OPF does not declare \
+                      <meta property=\"rendition:layout\">pre-paginated</meta>. KDP will \
+                      treat the book as reflowable and reflow the art, destroying the \
+                      layout.",
+        profile_mask: Profile::Comic.as_bit() | Profile::Textbook.as_bit(),
+    },
+    Rule {
+        id: "R11.2",
+        section: "11",
+        level: Severity::Error,
+        title: "Fixed-layout XHTML missing viewport meta (HTM_046)",
+        pdf_page: 45,
+        description: "HTM_046: A fixed-layout content document must carry a <meta \
+                      name=\"viewport\" content=\"width=..., height=...\"> so Kindle \
+                      knows the page dimensions. Without it the page renders at the \
+                      wrong size on every device.",
+        profile_mask: Profile::Comic.as_bit() | Profile::Textbook.as_bit(),
+    },
+    Rule {
+        id: "R11.3",
+        section: "11",
+        level: Severity::Error,
+        title: "Viewport meta missing width or height (HTM_047)",
+        pdf_page: 45,
+        description: "HTM_047: The viewport meta element must specify both width and \
+                      height. Fixed-layout pages without one of these render with the \
+                      wrong aspect ratio on Kindle.",
+        profile_mask: Profile::Comic.as_bit() | Profile::Textbook.as_bit(),
+    },
+    Rule {
+        id: "R11.4",
+        section: "11",
+        level: Severity::Error,
+        title: "Invalid rendition:spread value (HTM_048)",
+        pdf_page: 45,
+        description: "HTM_048: <meta property=\"rendition:spread\"> must be one of none, \
+                      landscape, portrait, both, or auto. Unknown values are silently \
+                      dropped, which usually means no two-page spread at all.",
+        profile_mask: Profile::Comic.as_bit() | Profile::Textbook.as_bit(),
+    },
+    Rule {
+        id: "R11.5",
+        section: "11",
+        level: Severity::Error,
+        title: "Invalid rendition:orientation value (HTM_049)",
+        pdf_page: 45,
+        description: "HTM_049: <meta property=\"rendition:orientation\"> must be one of \
+                      auto, landscape, or portrait. Unknown values break orientation \
+                      locking on Kindle Fire.",
+        profile_mask: Profile::Comic.as_bit() | Profile::Textbook.as_bit(),
+    },
+    Rule {
+        id: "R11.6",
+        section: "11",
+        level: Severity::Error,
+        title: "Invalid rendition:layout value (HTM_050)",
+        pdf_page: 45,
+        description: "HTM_050: <meta property=\"rendition:layout\"> must be one of \
+                      pre-paginated or reflowable. Typos like \"fixed\" or \
+                      \"prepaginated\" are silently ignored and the book falls back to \
+                      reflowable.",
+        profile_mask: Profile::Comic.as_bit() | Profile::Textbook.as_bit(),
+    },
+    Rule {
+        id: "R11.7",
+        section: "11",
+        level: Severity::Error,
+        title: "Fixed-layout OPF but XHTML has no viewport (HTM_051)",
+        pdf_page: 45,
+        description: "HTM_051: OPF declares rendition:layout=pre-paginated but this \
+                      spine document has no <meta name=\"viewport\"> element. The OPF \
+                      declaration and the content disagree; Kindle picks the wrong \
+                      layout.",
+        profile_mask: Profile::Comic.as_bit() | Profile::Textbook.as_bit(),
+    },
+    Rule {
+        id: "R11.8",
+        section: "11",
+        level: Severity::Warning,
+        title: "Fixed-layout page with no image content (HTM_052)",
+        pdf_page: 45,
+        description: "HTM_052: Fixed-layout pages without an <img>, <image>, or <svg> \
+                      element render as a blank rectangle on Kindle comic readers. If \
+                      this is intentional (title card), add a transparent 1x1 png.",
+        profile_mask: Profile::Comic.as_bit() | Profile::Textbook.as_bit(),
+    },
+    Rule {
+        id: "R11.9",
+        section: "11",
+        level: Severity::Warning,
+        title: "Fixed-layout missing original-resolution metadata (HTM_053)",
+        pdf_page: 45,
+        description: "HTM_053: KF8 fixed-layout builds should declare \
+                      <meta name=\"original-resolution\" content=\"WxH\"/> so Kindle \
+                      picks the right pixel scale. Missing the hint causes blurry \
+                      rendering on high-DPI Paperwhites.",
+        profile_mask: Profile::Comic.as_bit() | Profile::Textbook.as_bit(),
+    },
     // PHASE2-RULE: C
     // PHASE2-RULE: D
     // PHASE2-RULE: E

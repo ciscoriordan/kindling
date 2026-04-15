@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<package version="3.0" xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookId">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
+    <dc:title>Fixed Layout Errors Fixture</dc:title>
+    <dc:language>en</dc:language>
+    <dc:creator>Kindling Test Suite</dc:creator>
+    <dc:identifier id="BookId">kindling-fixed-layout-errors-fixture</dc:identifier>
+    <meta name="cover" content="cover-img"/>
+    <meta property="rendition:layout">pre-paginated</meta>
+    <meta property="rendition:layout">definitely-bogus</meta>
+    <meta property="rendition:spread">diagonal</meta>
+    <meta property="rendition:orientation">backwards</meta>
+  </metadata>
+  <manifest>
+    <item id="cover-img" href="cover.jpg" media-type="image/jpeg" properties="coverimage"/>
+    <item id="page1" href="page1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="page2" href="page2.xhtml" media-type="application/xhtml+xml"/>
+    <item id="page3" href="page3.xhtml" media-type="application/xhtml+xml"/>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="page1"/>
+    <itemref idref="page2"/>
+    <itemref idref="page3"/>
+  </spine>
+</package>
