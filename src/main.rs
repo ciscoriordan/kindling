@@ -9,7 +9,8 @@
 ///     kindling input.opf -o output.mobi -dont_append_source -verbose
 
 use kindling::{
-    comic, epub, kdp_rules, mobi, mobi_check, mobi_dump, mobi_rewrite, opf, repair, validate,
+    comic, epub, extracted::ExtractedEpub, kdp_rules, mobi, mobi_check, mobi_dump, mobi_rewrite,
+    opf, repair, validate,
 };
 
 use std::path::PathBuf;
@@ -533,61 +534,83 @@ fn do_build(
     // post-build MOBI readback check.
     let mut opf_snapshot: Option<(String, String, bool)> = None;
 
-    let result = if is_epub {
-        // TODO(phase 0.1): share ExtractedEpub with validator
-        // Extract EPUB to temp dir, find OPF, build, clean up
-        let (temp_dir, opf_path) = match epub::extract_epub(input) {
-            Ok(result) => result,
+    // Resolve the EPUB-or-OPF input down to an OPF path, unzipping the EPUB
+    // into a temp directory if needed. The temp directory (when present) is
+    // returned alongside the path so we can clean it up on every exit branch.
+    let (temp_dir, opf_path): (Option<std::path::PathBuf>, std::path::PathBuf) = if is_epub {
+        match epub::extract_epub(input) {
+            Ok((dir, path)) => (Some(dir), path),
             Err(e) => {
                 eprintln!("Error extracting EPUB: {}", e);
                 println!("Error(prcgen):E24000: Could not process input file");
                 process::exit(1);
             }
-        };
-
-        // Pre-flight KDP validation on the extracted OPF.
-        if let Err(errors) = kindling::run_preflight_validation(&opf_path, no_validate) {
-            epub::cleanup_temp_dir(&temp_dir);
-            eprintln!(
-                "Build aborted: {} validation errors. Run with --no-validate to skip.",
-                errors
-            );
-            println!("Error(prcgen):E24000: Could not build Mobi file");
-            process::exit(1);
         }
+    } else {
+        (None, input.clone())
+    };
 
-        if let Ok(parsed) = opf::OPFData::parse(&opf_path) {
-            opf_snapshot = Some((parsed.title.clone(), parsed.author.clone(), parsed.is_dictionary()));
+    // Build the ExtractedEpub once; pre-flight validation, build_mobi, and
+    // the post-build readback metadata snapshot all share this instance so
+    // we parse the OPF a single time per `kindling build` invocation. If the
+    // OPF cannot be parsed we still hand the path to run_preflight_validation
+    // so the existing "couldn't parse" warning + soft-pass behavior is
+    // preserved verbatim, then let the builder surface its own parse error.
+    let extracted: Option<ExtractedEpub> = match ExtractedEpub::from_opf_path(&opf_path) {
+        Ok(e) => Some(e),
+        Err(_) => None,
+    };
+
+    // Pre-flight KDP validation. Use the shared ExtractedEpub when we have
+    // one; otherwise fall back to the path-based entry point so the warning
+    // message matches the original wording exactly.
+    let preflight = match extracted.as_ref() {
+        Some(e) => kindling::run_preflight_validation_on_extracted(e, no_validate),
+        None => kindling::run_preflight_validation(&opf_path, no_validate),
+    };
+    if let Err(errors) = preflight {
+        if let Some(ref dir) = temp_dir {
+            epub::cleanup_temp_dir(dir);
         }
+        eprintln!(
+            "Build aborted: {} validation errors. Run with --no-validate to skip.",
+            errors
+        );
+        println!("Error(prcgen):E24000: Could not build Mobi file");
+        process::exit(1);
+    }
 
-        let result = mobi::build_mobi(
+    // Snapshot OPF metadata for the post-build readback check. Reuse the
+    // already-parsed ExtractedEpub when available; otherwise re-parse so
+    // that the OPF's title/author still round-trip when validation was
+    // skipped or the OPF parser failed earlier (the builder will then
+    // produce the canonical error itself).
+    if let Some(ref e) = extracted {
+        opf_snapshot = Some((
+            e.opf.title.clone(),
+            e.opf.author.clone(),
+            e.opf.is_dictionary(),
+        ));
+    } else if let Ok(parsed) = opf::OPFData::parse(&opf_path) {
+        opf_snapshot = Some((parsed.title.clone(), parsed.author.clone(), parsed.is_dictionary()));
+    }
+
+    let result = match extracted.as_ref() {
+        Some(e) => mobi::build_mobi_from_extracted(
+            e, output_path, no_compress, headwords_only,
+            srcs_data.as_deref(), include_cmet, no_hd_images, creator_tag, kf8_only, None, kindle_limits, self_check,
+            false, // kindlegen_parity: only meaningful for the comic path
+        ),
+        None => mobi::build_mobi(
             &opf_path, output_path, no_compress, headwords_only,
             srcs_data.as_deref(), include_cmet, no_hd_images, creator_tag, kf8_only, None, kindle_limits, self_check,
             false, // kindlegen_parity: only meaningful for the comic path
-        );
-        epub::cleanup_temp_dir(&temp_dir);
-        result
-    } else {
-        // Direct OPF input: run pre-flight validation first.
-        if let Err(errors) = kindling::run_preflight_validation(input, no_validate) {
-            eprintln!(
-                "Build aborted: {} validation errors. Run with --no-validate to skip.",
-                errors
-            );
-            println!("Error(prcgen):E24000: Could not build Mobi file");
-            process::exit(1);
-        }
-
-        if let Ok(parsed) = opf::OPFData::parse(input) {
-            opf_snapshot = Some((parsed.title.clone(), parsed.author.clone(), parsed.is_dictionary()));
-        }
-
-        mobi::build_mobi(
-            input, output_path, no_compress, headwords_only,
-            srcs_data.as_deref(), include_cmet, no_hd_images, creator_tag, kf8_only, None, kindle_limits, self_check,
-            false, // kindlegen_parity: only meaningful for the comic path
-        )
+        ),
     };
+
+    if let Some(ref dir) = temp_dir {
+        epub::cleanup_temp_dir(dir);
+    }
 
     match result {
         Ok(()) => {

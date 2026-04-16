@@ -14,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use regex::Regex;
 
 use crate::exth;
+use crate::extracted::ExtractedEpub;
 use crate::html_check;
 use crate::indx::{self, LookupTerm};
 use crate::opf::{self, DictionaryEntry, OPFData};
@@ -26,6 +27,12 @@ const MOBI_HEADER_LENGTH: usize = 264;
 ///
 /// Automatically detects whether the input is a dictionary (contains idx:entry tags)
 /// or a regular book, and adjusts the output accordingly.
+///
+/// This is the legacy path-based entry point that parses the OPF itself.
+/// Callers that have already built an [`ExtractedEpub`] (e.g. the CLI's
+/// pre-flight validator) should prefer [`build_mobi_from_extracted`] to
+/// avoid re-parsing the OPF.
+#[allow(clippy::too_many_arguments)]
 pub fn build_mobi(
     opf_path: &Path,
     output_path: &Path,
@@ -41,10 +48,50 @@ pub fn build_mobi(
     self_check: bool,
     kindlegen_parity: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let opf = OPFData::parse(opf_path)?;
+    let extracted = ExtractedEpub::from_opf_path(opf_path)?;
+    build_mobi_from_extracted(
+        &extracted,
+        output_path,
+        no_compress,
+        headwords_only,
+        srcs_data,
+        include_cmet,
+        no_hd_images,
+        creator_tag,
+        kf8_only,
+        doc_type,
+        kindle_limits,
+        self_check,
+        kindlegen_parity,
+    )
+}
+
+/// Build a MOBI file from an already-parsed [`ExtractedEpub`].
+///
+/// Identical behavior to [`build_mobi`], but takes the parsed OPF via
+/// `extracted` so callers that have already built an `ExtractedEpub`
+/// (typically for pre-flight validation) do not pay for a second parse
+/// of the OPF.
+#[allow(clippy::too_many_arguments)]
+pub fn build_mobi_from_extracted(
+    extracted: &ExtractedEpub,
+    output_path: &Path,
+    no_compress: bool,
+    headwords_only: bool,
+    srcs_data: Option<&[u8]>,
+    include_cmet: bool,
+    no_hd_images: bool,
+    creator_tag: bool,
+    kf8_only: bool,
+    doc_type: Option<&str>,
+    kindle_limits: bool,
+    self_check: bool,
+    kindlegen_parity: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let opf = &extracted.opf;
 
     // Detect dictionary vs book by checking HTML content for idx:entry tags
-    let is_dictionary = detect_dictionary(&opf);
+    let is_dictionary = detect_dictionary(opf);
 
     if is_dictionary {
         if kf8_only {
@@ -53,14 +100,14 @@ pub fn build_mobi(
         eprintln!("Detected dictionary content");
         // kindlegen_parity is a no-op for dictionaries (MOBI7 / KF7 path).
         let _ = kindlegen_parity;
-        build_dictionary_mobi(&opf, output_path, no_compress, headwords_only, srcs_data, include_cmet, creator_tag, kindle_limits, self_check)
+        build_dictionary_mobi(opf, output_path, no_compress, headwords_only, srcs_data, include_cmet, creator_tag, kindle_limits, self_check)
     } else {
         if kf8_only {
             eprintln!("Detected book content, building KF8-only (.azw3)");
         } else {
             eprintln!("Detected book content (no idx:entry tags found)");
         }
-        build_book_mobi(&opf, output_path, no_compress, srcs_data, include_cmet, !no_hd_images, creator_tag, kf8_only, doc_type, kindle_limits, self_check, kindlegen_parity)
+        build_book_mobi(opf, output_path, no_compress, srcs_data, include_cmet, !no_hd_images, creator_tag, kf8_only, doc_type, kindle_limits, self_check, kindlegen_parity)
     }
 }
 

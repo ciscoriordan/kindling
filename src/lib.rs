@@ -39,21 +39,30 @@ use std::path::Path;
 use crate::extracted::ExtractedEpub;
 
 /// Pre-flight KDP validation used by `do_build`. Returns `Err(error_count)`.
+///
+/// Path-based entry point: parses the OPF into an [`ExtractedEpub`] and
+/// then delegates to [`run_preflight_validation_on_extracted`]. Callers
+/// that already have an `ExtractedEpub` (e.g. the CLI build flow that
+/// then hands the same instance to `mobi::build_mobi_from_extracted`)
+/// should use the `_on_extracted` variant directly so the OPF is not
+/// parsed twice.
 pub fn run_preflight_validation(opf_path: &Path, no_validate: bool) -> Result<(), usize> {
     if no_validate {
         println!("Skipping KDP validation (--no-validate)");
         return Ok(());
     }
 
-    println!(
-        "Validating {} against Kindle Publishing Guidelines v{}",
-        opf_path.display(),
-        kdp_rules::KPG_VERSION
-    );
-
     let epub = match ExtractedEpub::from_opf_path(opf_path) {
         Ok(e) => e,
         Err(e) => {
+            // Match the original "couldn't parse" warning path exactly:
+            // print the path-aware warning and treat as a soft pass so the
+            // build can proceed and surface a more useful error itself.
+            println!(
+                "Validating {} against Kindle Publishing Guidelines v{}",
+                opf_path.display(),
+                kdp_rules::KPG_VERSION
+            );
             eprintln!(
                 "Warning: could not parse OPF for pre-flight validation ({}): {}",
                 opf_path.display(),
@@ -62,7 +71,33 @@ pub fn run_preflight_validation(opf_path: &Path, no_validate: bool) -> Result<()
             return Ok(());
         }
     };
-    let report = validate::validate(&epub);
+
+    run_preflight_validation_on_extracted(&epub, no_validate)
+}
+
+/// Pre-flight KDP validation against an already-parsed [`ExtractedEpub`].
+///
+/// Identical behavior to [`run_preflight_validation`] (including the
+/// header line, per-finding output, summary line, error/warning return
+/// semantics, and `--no-validate` short-circuit), but does not re-parse
+/// the OPF. Use this whenever the caller has already constructed an
+/// `ExtractedEpub` it intends to reuse for the subsequent build.
+pub fn run_preflight_validation_on_extracted(
+    epub: &ExtractedEpub,
+    no_validate: bool,
+) -> Result<(), usize> {
+    if no_validate {
+        println!("Skipping KDP validation (--no-validate)");
+        return Ok(());
+    }
+
+    println!(
+        "Validating {} against Kindle Publishing Guidelines v{}",
+        epub.opf_path.display(),
+        kdp_rules::KPG_VERSION
+    );
+
+    let report = validate::validate(epub);
 
     for finding in &report.findings {
         println!("{}", finding);
