@@ -1275,9 +1275,6 @@ mod phase2 {
             );
         }
     }
-    // PHASE2-TEST: C
-    // PHASE2-TEST: D
-    // PHASE2-TEST: E
     use std::path::PathBuf;
     use std::process::Command;
 
@@ -1357,7 +1354,6 @@ mod phase2 {
             );
         }
     }
-    // PHASE2-TEST: H
     // ---- Cluster I: CSS forbidden properties and parse rules ----
 
     fn cluster_i_bin() -> &'static str {
