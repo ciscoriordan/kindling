@@ -1263,7 +1263,92 @@ pub const RULES: &[Rule] = &[
                       rules will never take effect on device.",
         profile_mask: ALL_PROFILES,
     },
-    // PHASE2-RULE: K
+    // ---- Section 16: OPF metadata and package identity (epubcheck OPF_030-092) ----
+    Rule {
+        id: "R16.1",
+        section: "16",
+        level: Severity::Error,
+        title: "Unique-identifier points at a missing dc:identifier (OPF_030)",
+        pdf_page: 14,
+        description: "OPF_030: <package unique-identifier=\"X\"> references an id that \
+                      does not appear on any <dc:identifier>. Kindle cannot bind the \
+                      book identity and the upload is rejected.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R16.2",
+        section: "16",
+        level: Severity::Warning,
+        title: "<package> missing unique-identifier attribute (OPF_048)",
+        pdf_page: 14,
+        description: "OPF_048: The <package> element has no unique-identifier attribute. \
+                      Every OPF must name a <dc:identifier> as the book's unique id.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R16.3",
+        section: "16",
+        level: Severity::Error,
+        title: "<dc:date> is not W3CDTF syntax (OPF_053)",
+        pdf_page: 14,
+        description: "OPF_053: <dc:date> must follow W3CDTF (YYYY, YYYY-MM, YYYY-MM-DD, \
+                      or with time and timezone). Non-conforming dates are silently \
+                      dropped by the Kindle ingestion pipeline.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R16.4",
+        section: "16",
+        level: Severity::Warning,
+        title: "<dc:date> is W3CDTF-shaped but not a valid date (OPF_054)",
+        pdf_page: 14,
+        description: "OPF_054: <dc:date> value parses as W3CDTF syntactically but names \
+                      an impossible calendar date (e.g. 2024-02-30).",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R16.5",
+        section: "16",
+        level: Severity::Warning,
+        title: "Empty Dublin Core element (OPF_055)",
+        pdf_page: 14,
+        description: "OPF_055: A <dc:*> element has no text content. Empty metadata \
+                      elements are treated as missing by Kindle and surface as blanks \
+                      in the store.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R16.6",
+        section: "16",
+        level: Severity::Warning,
+        title: "Empty <metadata> child (OPF_072)",
+        pdf_page: 14,
+        description: "OPF_072: A <meta> or <x-metadata> child of <metadata> is empty. \
+                      The element should either carry content or be removed.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R16.7",
+        section: "16",
+        level: Severity::Error,
+        title: "opf:scheme=\"UUID\" value is not a valid RFC 4122 UUID (OPF_085)",
+        pdf_page: 14,
+        description: "OPF_085: A <dc:identifier opf:scheme=\"UUID\"> value must be a \
+                      valid RFC 4122 UUID string. Kindle uses this to deduplicate \
+                      uploads; a malformed UUID can cause the upload to be rejected.",
+        profile_mask: ALL_PROFILES,
+    },
+    Rule {
+        id: "R16.8",
+        section: "16",
+        level: Severity::Error,
+        title: "<dc:language> is not a well-formed BCP47 tag (OPF_092)",
+        pdf_page: 14,
+        description: "OPF_092: <dc:language> must carry a BCP47 language tag (e.g. en, \
+                      en-US, zh-Hant). Invalid tags cause Kindle to default to English \
+                      and may flag the book for manual review.",
+        profile_mask: ALL_PROFILES,
+    },
 ];
 
 /// Look up a rule by its id. Panics if the id is unknown.

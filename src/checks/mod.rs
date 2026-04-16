@@ -20,7 +20,7 @@ pub mod cross_refs;
 pub mod filenames;
 pub mod image_integrity;
 pub mod css_forbidden;
-// PHASE2-MOD: K
+pub mod metadata;
 
 /// A single-purpose validator module. Each impl owns one or more rule ids.
 pub trait Check: Sync {
@@ -49,5 +49,5 @@ pub static CHECKS: &[&dyn Check] = &[
     &filenames::FilenameChecks,
     &image_integrity::ImageIntegrityChecks,
     &css_forbidden::CssForbiddenChecks,
-    // PHASE2-CHECK: K
+    &metadata::MetadataChecks,
 ];
