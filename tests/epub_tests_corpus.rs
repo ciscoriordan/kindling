@@ -39,6 +39,8 @@ use std::path::{Path, PathBuf};
 use kindling::validate::{Finding, validate_opf};
 use kindling::kdp_rules::Severity;
 
+const EXPECTED_CORPUS_SHA: &str = "45feac979d9b12b502f124db7bc5056977628417";
+
 const KINDLE_NOISE_IDS: &[&str] = &["R4.1.1", "R4.2.1", "R5.2.1"];
 
 fn is_noise(rule_id: &str) -> bool {
@@ -115,6 +117,19 @@ fn epub_tests_corpus_baseline() {
         "corpus tests dir does not exist: {}",
         corpus_root.display()
     );
+
+    // Check that the corpus checkout matches the pinned SHA.
+    if let Ok(output) = std::process::Command::new("git")
+        .args(["-C", &corpus, "rev-parse", "HEAD"])
+        .output()
+    {
+        let actual = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if actual != EXPECTED_CORPUS_SHA {
+            eprintln!(
+                "WARNING: corpus is at {actual}, expected {EXPECTED_CORPUS_SHA}. Results may differ from baseline."
+            );
+        }
+    }
 
     let mut rows: Vec<TestRow> = Vec::new();
     for test_dir in read_subdirs(&corpus_root) {
@@ -282,6 +297,7 @@ fn build_json(
     s.push_str("{\n");
     s.push_str(&format!("  \"kindling_version\": \"{}\",\n", env!("CARGO_PKG_VERSION")));
     s.push_str(&format!("  \"corpus\": {},\n", json_str(corpus)));
+    s.push_str(&format!("  \"corpus_sha\": {},\n", json_str(EXPECTED_CORPUS_SHA)));
     s.push_str(&format!("  \"total_tests\": {},\n", rows.len()));
     s.push_str("  \"noise_ids\": [");
     for (i, id) in KINDLE_NOISE_IDS.iter().enumerate() {
