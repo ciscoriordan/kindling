@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <title>Cross-refs Errors</title>
+</head>
+<body>
+  <h1 id="top">Broken links</h1>
+  <p><a href="content.xhtml#nonexistent">R9.3 fragment id not defined</a></p>
+  <p><a href="styles.css#section1">R9.4 fragment into CSS resource</a></p>
+  <p><a href="foo bar.html">R9.6 whitespace in URL</a></p>
+  <p><a href="../../etc/passwd">R9.7 path escapes root</a></p>
+  <p><img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" alt="R9.8 data URL"/></p>
+  <p><a href="file:///etc/passwd">R9.9 file URL</a></p>
+  <p><a href="content.xhtml?x=1">R9.10 relative URL with query</a></p>
+  <p><img src="cover.jpg#panel1" alt="R9.1 non-SVG image with fragment"/></p>
+</body>
+</html>

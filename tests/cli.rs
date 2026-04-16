@@ -1279,7 +1279,6 @@ mod phase2 {
     use std::process::Command;
 
     #[test]
-    #[ignore = "Cluster F agent did not create fixture; unit tests cover rules; phase 2 follow-up"]
     fn validate_cross_refs_errors_reports_r9_rules() {
         let opf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests")

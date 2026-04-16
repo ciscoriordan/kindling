@@ -902,7 +902,6 @@ mod tests {
 
     fn dummy_epub() -> ExtractedEpub {
         use crate::opf::OPFData;
-        use crate::profile::Profile;
         use std::collections::HashMap;
         use std::path::PathBuf;
 

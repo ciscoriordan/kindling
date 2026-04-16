@@ -2783,7 +2783,6 @@ mod tests {
     #[test]
     fn test_webtoon_split_overlap_content() {
         use crate::comic;
-        use image::GenericImageView;
 
         // Create a strip with unique pixel values per row so we can verify
         // that the overlap region is truly duplicated across page boundaries.
@@ -6395,7 +6394,7 @@ mod tests {
         let jpeg = make_test_jpeg();
         let opf = create_book_fixture(dir.path(), Some(&jpeg));
         let data = build_kf8_only_mobi_bytes(&opf, dir.path());
-        let (_, record_count, offsets) = parse_palmdb(&data);
+        let (_, _record_count, offsets) = parse_palmdb(&data);
         let rec0 = get_record(&data, &offsets, 0);
         let text_count = u16::from_be_bytes(rec0[8..10].try_into().unwrap()) as usize;
         // NULL pad is at record text_count + 1

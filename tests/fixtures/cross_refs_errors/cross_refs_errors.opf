@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookId">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
+    <dc:title>Cross-refs Errors Fixture</dc:title>
+    <dc:language>en</dc:language>
+    <dc:creator>Kindling Test Suite</dc:creator>
+    <dc:identifier id="BookId">kindling-cross-refs-errors</dc:identifier>
+  </metadata>
+  <manifest>
+    <item id="cover-img" href="cover.jpg" media-type="image/jpeg" properties="coverimage"/>
+    <item id="content" href="content.xhtml" media-type="application/xhtml+xml"/>
+    <item id="page-svg" href="page.svg" media-type="image/svg+xml"/>
+    <item id="styles" href="styles.css" media-type="text/css"/>
+    <item id="with-frag" href="content.xhtml#section" media-type="application/xhtml+xml"/>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="content"/>
+    <itemref idref="page-svg"/>
+  </spine>
+</package>
