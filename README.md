@@ -139,19 +139,24 @@ kindling-cli validate input.opf --strict    # exit 1 on any warning too
 
 Validation also runs **automatically** as a pre-flight step inside every `kindling build` invocation (including kindlegen-compat mode `kindling input.opf`). Any validation errors abort the build with exit code 1; warnings are printed but do not block the build. Pass `--no-validate` to `build` to skip the pre-flight entirely. Comic builds (`kindling comic`) do not run the validator because comics have different structural requirements that the book-oriented rules do not cover.
 
-Runs pre-flight checks against the [Amazon Kindle Publishing Guidelines](http://kindlegen.s3.amazonaws.com/AmazonKindlePublishingGuidelines.pdf) (version 2026.1) before building, catching the most common authoring mistakes:
+Runs 117 pre-flight checks against the [Amazon Kindle Publishing Guidelines](http://kindlegen.s3.amazonaws.com/AmazonKindlePublishingGuidelines.pdf) (version 2026.1), covering the STEAL-grade subset of w3c/epubcheck plus kindling's own KDP-specific rules. Rules are grouped by KPG section:
 
-- **4.2 Internal cover image**: must exist via Method 1 (EPUB 3 `<item properties="coverimage"/>`, preferred per KPG 4.2) or Method 2 (`<meta name="cover">`), no duplicate HTML cover page in the spine, shortest side >= 500 px
-- **5.2 Navigation**: NCX must be declared in the manifest and referenced via `<spine toc="...">`, TOC recommended for books > 20 pages
-- **6.1-6.5 HTML/CSS hygiene**: well-formed XHTML, no negative CSS values, no `<script>`, no nested `<p>`, file references match case
-- **10.3.1 Heading alignment**: warn on `<h1>`-`<h6>` with explicit `text-align`
-- **10.4.1-10.4.2 Images**: supported formats (JPEG/PNG/GIF/SVG), per-image size <= 127 KB, dimensions <= 5 megapixels
-- **10.5.1 Tables**: warn on > 50 rows
-- **17/18.1 Unsupported tags**: `<form>`, `<input>`, `<frame>`, `<iframe>`, `<canvas>`, `<object>`, etc.
+- **4 Cover image** (5 rules): internal cover must exist via Method 1 (`<item properties="coverimage"/>`) or Method 2 (`<meta name="cover">`), file must exist on disk, shortest side >= 500 px, no duplicate HTML cover page in the spine (`R4.1.1`-`R4.2.4`)
+- **5 Navigation** (13 rules): NCX declared in manifest and referenced from `<spine toc>`, NCX and guide targets must resolve to manifest items, TOC recommended for books > 20 pages, NCX `dtb:uid` must match the OPF unique-identifier, page-list required when `epub:type="pagebreak"` is used, nav entries in spine order, no remote links in nav or NCX (`R5.1`-`R5.11`, epubcheck `NAV_003/010/011`, `NCX_001/004/006`, `OPF_032/050`)
+- **6 HTML, CSS, and encoding** (19 rules): well-formed XHTML, no `<script>`, no nested `<p>`, filename case must match, XML 1.0 only, no external entities, `epub:` namespace URI must be correct (Vader Down bug), UTF-8 required for HTML and CSS, no forbidden `position` values, `@import`/`url()`/`@font-face` targets must resolve through the manifest, `@namespace` and unsupported `@media` features flagged (`R6.1`-`R6.17`, `R6.e1`, `R6.e2`, epubcheck `CSS_005`-`CSS_027`)
+- **7 Manifest and spine integrity** (13 rules): declared media-types must match file bytes, every spine `itemref` must have a linear target, no duplicate `idref` or `href`, fallback chains must terminate at a renderable resource, deprecated media-types flagged, manifest cannot point at the OPF itself (`R7.1`-`R7.13`, epubcheck `OPF_003/013/029/033/034/035/037/040/041/042/043/074/099`)
+- **8 OPF prefix and property grammar** (10 rules): `<package prefix>` syntax, reserved-prefix rebinding, manifest `properties` attributes must match the content's feature use, unknown or undeclared prefixes flagged (`R8.1`-`R8.10`, epubcheck `OPF_004/005/006/007/012/014/015/026/027/028`, EPUB 3 only)
+- **9 Cross-references and dead links** (12 rules): fragment ids must exist in their target, fragments are rejected on non-SVG raster images and on manifest hrefs, `data:` and `file:` URLs refused, `..` path traversal blocked, manifest hrefs must name a resource (`R9.1`-`R9.12`, epubcheck `RSC_009/011/012/014/015/020/026/029/030/033`, `OPF_091/098`)
+- **10 Text-heavy reflowable** (8 rules): supported image formats (JPEG, PNG, GIF, SVG), per-image size <= 127 KB, dimensions <= 5 megapixels, headers require valid JPEG/PNG/GIF end markers, image extension must match magic bytes, tables capped at 50 rows, heading alignment defaults only (`R10.3.1`, `R10.4.1`-`R10.4.5`, `R10.5.1`, epubcheck `MED_004`, `PKG_021/022`)
+- **11 Fixed-layout** (9 rules, comic and textbook profiles only): OPF must declare `rendition:layout=pre-paginated`, XHTML must carry `<meta name="viewport">` with width and height, `rendition:spread`/`orientation`/`layout` values constrained, pages should contain image content, HD builds should carry `original-resolution` (`R11.1`-`R11.9`, epubcheck `OPF_011`, `HTM_046`-`HTM_053`)
+- **13 OCF filenames** (5 rules): no OCF-forbidden characters (`< > : " | ? *` and controls), spaces and non-ASCII flagged, trailing dot rejected (Windows drops it), case-insensitive duplicate hrefs rejected (`R13.1`-`R13.5`)
+- **15 Dictionaries** (14 rules, dict profile only): Amazon-legacy KDP format requires `DictionaryInLanguage`, `DictionaryOutLanguage`, `DefaultLookupIndex` matching an `idx:entry name`, at least one `idx:entry`, and non-empty `idx:orth value` (`R15.1`-`R15.7`). EPUB 3 dict rules gated on `package_version="3.0"` cover `epub:type="dictionary"`, `dc:type=dictionary`, Search Key Map Documents, and dictionary collections (`R15.e1`-`R15.e7`, epubcheck `OPF_078`-`OPF_084`)
+- **16 OPF metadata and package identity** (8 rules): `<package unique-identifier>` must point at a real `<dc:identifier>`, `<dc:date>` must be W3CDTF syntax and a real calendar date, no empty Dublin Core elements, `opf:scheme="UUID"` must be RFC 4122, `<dc:language>` must be BCP47 (`R16.1`-`R16.8`, epubcheck `OPF_030/048/053/054/055/072/085/092`)
+- **17/18.1 Unsupported tags** (1 rule): `<form>`, `<input>`, `<frame>`, `<iframe>`, `<canvas>`, `<object>`, etc. (`R17.1`)
 
 Output: one line per finding with severity (`info`/`warning`/`error`), rule id (e.g. `R4.2.1`), KPG section, PDF page reference, message, and file:line where applicable, followed by a summary (`X errors, Y warnings, Z info`). Exit code is 0 on success, 1 if any errors are present (or any warnings in `--strict` mode).
 
-The rule catalog is a single Rust const array in [`src/kdp_rules.rs`](src/kdp_rules.rs) with a `KPG_VERSION` constant and a `Rule` struct holding id, section, level, title, PDF page, and description. Check functions in `src/validate.rs` reference rules by id and inherit their severity and metadata, so updating the guidelines version touches one file plus any affected checks.
+The rule catalog is a single Rust const array in [`src/kdp_rules.rs`](src/kdp_rules.rs) with a `KPG_VERSION` constant and a `Rule` struct holding id, section, level, title, PDF page, description, and a profile mask (default, comic, dict, textbook). Each rule cluster lives in its own module under [`src/checks/<name>.rs`](src/checks/) and implements the `Check` trait; all active checks are registered in the `CHECKS` array in [`src/checks/mod.rs`](src/checks/mod.rs). Phase 2 added `fixed_layout`, `manifest_spine`, `opf_grammar`, `toc_extras`, `cross_refs`, `filenames`, `image_integrity`, `css_forbidden`, and `metadata` alongside the pilot clusters `parse_encoding` and `dict`. The pre-Phase-2 checks (`cover`, `navigation`, `nav_links`, `content`, `images`, `file_case`) are still `Check` impls. Updating the guidelines version touches `kdp_rules.rs` plus whatever `src/checks/*.rs` modules the affected rules live in.
 
 ### Repair
 
@@ -281,7 +286,7 @@ Kindling works with the KF7/MOBI format used by Kindle e-readers. The key struct
 Much of the foundational MOBI format knowledge comes from the [MobileRead wiki](https://wiki.mobileread.com/wiki/MOBI). The dictionary-specific details below were worked out empirically while building this project.
 
 - **Text record sizing**: Every PalmDOC text record (except the last) must satisfy two constraints simultaneously:
-  1. **Exactly 4096 bytes of decompressed content** (matching the declared `text_record_size` in the PalmDOC header). Kindle firmware routes popup lookups by computing `record_idx = byte_offset / text_record_size`, treating `text_record_size` as a constant. Records that drift below 4096 (e.g. by backing off to UTF-8 character boundaries) accumulate a per-record offset error that misroutes popup queries to wrong entries — the further into the alphabet the query, the worse the drift. Records significantly shorter than 4096 (e.g. by backing off to `<hr/>` entry separators) break routing entirely.
+  1. **Exactly 4096 bytes of decompressed content** (matching the declared `text_record_size` in the PalmDOC header). Kindle firmware routes popup lookups by computing `record_idx = byte_offset / text_record_size`, treating `text_record_size` as a constant. Records that drift below 4096 (e.g. by backing off to UTF-8 character boundaries) accumulate a per-record offset error that misroutes popup queries to wrong entries, and the further into the alphabet the query, the worse the drift. Records significantly shorter than 4096 (e.g. by backing off to `<hr/>` entry separators) break routing entirely.
   2. **Each record individually decodes as valid UTF-8 and parseable HTML.** Kindle's library indexer parses each record independently and will silently refuse to index a dictionary above some threshold of mid-character or mid-tag splits. Basic dictionaries with ~16% bad records still index; pro dictionaries with ~25% bad records do not.
 
   Kindling satisfies both constraints by emitting fixed-size 4096-byte chunks but inserting ASCII space padding at HTML inter-element gaps (between a `>` and the next `<`) so each chunk ends just past a complete tag close. The padding sits in HTML inter-element whitespace zones, which parsers collapse, so it has no rendering impact and never lands inside `<b>headword</b>` text runs that would break entry-position lookup.
@@ -387,17 +392,19 @@ kindling/
 │   ├── comic.rs                 # Comic pipeline (crop, split, enhance, Panel View)
 │   ├── cbr.rs                   # CBR (RAR) extraction via bsdtar
 │   ├── moire.rs                 # Moire correction for color e-ink
-│   ├── validate.rs              # KDP pre-flight checks
+│   ├── validate.rs              # KDP pre-flight driver; iterates `checks::CHECKS`
+│   ├── checks/                  # One Rust module per rule cluster, all impl `Check`
 │   ├── repair.rs                # Structural EPUB repair pass for Kindle ingest
 │   ├── kdp_rules.rs             # Rule catalog (KPG_VERSION, Rule struct, RULES array)
 │   ├── html_check.rs            # HTML/XHTML self-check for assembled MOBI text blob and per-record balance
 │   ├── ordt_greek.bin           # Embedded ORDT/SPL sort tables extracted from kindlegen output
 │   └── tests.rs                 # Unit tests
 ├── tests/
-│   ├── cli_validate.rs          # CLI smoke test for `validate`
-│   ├── cli_repair.rs             # CLI smoke test for `repair`
-│   ├── cli_rewrite_metadata.rs  # CLI smoke test for `rewrite-metadata`
-│   └── fixtures/                # OPF fixtures (clean_book, clean_dict, book_with_errors, book_with_warnings)
+│   ├── cli.rs                   # CLI smoke tests for validate, repair, rewrite-metadata, build, comic
+│   ├── kindlegen_parity.rs      # Byte/field parity vs committed kindlegen reference .mobi files
+│   ├── roundtrip.rs             # Structural round-trip of kindling output via inline MOBI reader
+│   ├── common/                  # Inline MOBI reader used by roundtrip and parity tests
+│   └── fixtures/                # One fixture per rule cluster plus the parity/ subtree
 └── target/release/kindling-cli  # compiled binary
 ```
 
@@ -408,10 +415,10 @@ Tests run automatically on every push and pull request via [GitHub Actions](.git
 ```bash
 cargo test                    # full suite
 cargo test -- --show-output   # include println! output
-cargo test --test cli_validate  # CLI smoke tests only
+cargo test --test cli         # CLI smoke tests only
 ```
 
-The suite currently contains around 430 tests spanning unit tests in `src/tests.rs`, CLI integration tests in `tests/cli.rs` that invoke the compiled `kindling-cli` binary against OPF/EPUB/MOBI fixtures under `tests/fixtures/`, structural round-trip tests in `tests/roundtrip.rs`, and kindlegen parity tests in `tests/kindlegen_parity.rs`.
+The suite currently contains around 733 tests spanning unit tests in `src/tests.rs` and per-cluster tests in `src/checks/`, CLI integration tests in `tests/cli.rs` that invoke the compiled `kindling-cli` binary against OPF/EPUB/MOBI fixtures under `tests/fixtures/`, structural round-trip tests in `tests/roundtrip.rs`, and kindlegen parity tests in `tests/kindlegen_parity.rs`. An opt-in corpus harness in `tests/epub_tests_corpus.rs` runs every test in a local [w3c/epub-tests](https://github.com/w3c/epub-tests) checkout through the validator to surface false positives and measure coverage; set `KINDLING_CORPUS_DIR` to the checkout path and run `cargo test --release --test epub_tests_corpus -- --ignored --nocapture`.
 
 - **PalmDB and MOBI structure**: PalmDB header fields, record count and offset tables, MOBI header (magic, version, encoding, language, capability marker 0x50 vs 0x4850), text record count, image record ranges, boundary records, FLIS/FCIS/EOF/SRCS records, trailing byte order
 - **Record 0 cross-checks**: MOBI header offsets are internally consistent with the PalmDOC header, EXTH block, full name, and image/INDX record indexes
@@ -419,8 +426,8 @@ The suite currently contains around 430 tests spanning unit tests in `src/tests.
 - **Book and KF8 output**: KF8-only `.azw3` output (default for non-dictionaries), legacy dual KF7+KF8 format via `--legacy-mobi` (BOUNDARY record, KF8 section version), image record JPEG magic, complete EXTH metadata set, SRCS embedding
 - **EXTH records**: Every documented EXTH record in the table above is checked for both dictionaries and books, including KF8-only cases
 - **HTML/XHTML validation**: Text blobs extracted from MOBI output are reparsed with a relaxed quick-xml pass plus a custom balanced-tag walker, catching unclosed tags, malformed `<hr/`, unclosed attribute quotes, and stray `<` / `>`
-- **KDP validator**: One test per rule in `src/kdp_rules.rs`, asserting both the positive case (rule fires on bad input) and the negative case (clean input passes)
-- **CLI smoke test**: `tests/cli_validate.rs` builds the `kindling-cli` binary via Cargo and runs `validate` against `tests/fixtures/clean_book`, `clean_dict`, `book_with_warnings`, and `book_with_errors`, asserting exit codes and expected findings
+- **KDP validator**: each rule cluster under `src/checks/` ships unit tests alongside its module, asserting both the positive case (rule fires on bad input) and the negative case (clean input passes) for every rule id the cluster owns
+- **CLI smoke test**: `tests/cli.rs` builds the `kindling-cli` binary via Cargo and runs `validate` against the clean fixtures (`clean_book`, `clean_dict`) plus one error fixture per Phase 2 rule cluster (`book_with_errors`, `book_with_warnings`, `parse_encoding_errors`, `legacy_dict_errors`, `fixed_layout_errors`, `fixed_layout_missing_opf`, `cross_refs_errors`, `filename_errors`, `css_forbidden_errors`, `image_integrity_errors`, `opf_grammar_errors`), asserting exit codes and that the expected rule ids appear in stdout
 - **Comic pipeline**: Device profiles (including kpw5, scribe2025, kindle2024), spread detection and splitting, crop-before-split symmetry, margin cropping, auto-contrast, moire wiring for color devices, webtoon merge/split with overlap fallback, dark gutter detection, Panel View markup, manga RTL ordering and cover selection, JPEG quality, ComicInfo.xml parsing, EPUB image extraction
 - **Comic CLI flags**: doc-type EBOK/PDOC, title/author/language overrides, `--legacy-mobi` opt-in for legacy dual-format output
 - **Compression**: PalmDOC LZ77 compress/decompress roundtrips for various sizes and encodings
@@ -501,7 +508,7 @@ Kindle firmware 5.19.2 introduced regressions for sideloaded fixed-layout conten
 
 Thanks to the wider ebook-tooling community whose public documentation and reverse-engineering efforts over many years made a project like this possible. In particular:
 
-- [KCC (Kindle Comic Converter)](https://github.com/ciromattia/kcc) by Ciro Mattia Gonano, with earlier work by [AcidWeb](https://github.com/AcidWeb), for pioneering comic-to-Kindle processing — panel detection, webtoon handling, and device profile data informed kindling's comic pipeline.
+- [KCC (Kindle Comic Converter)](https://github.com/ciromattia/kcc) by Ciro Mattia Gonano, with earlier work by [AcidWeb](https://github.com/AcidWeb), for pioneering comic-to-Kindle processing. Panel detection, webtoon handling, and device profile data informed kindling's comic pipeline.
 - The [MobileRead wiki](https://wiki.mobileread.com/wiki/MOBI) and Developer's Corner forum for the foundational public documentation of the MOBI format. Dc5e's [KindleComicParser](https://www.mobileread.com/forums/showthread.php?t=192783) thread on fixed-layout binaries filled in gaps the wiki does not cover.
 - Amazon's *kindlegen* (no longer maintained) is used as a reverse-engineering reference: its output files are compared byte by byte against kindling's to understand the MOBI format's undocumented corners.
 - The broader open-source MOBI tooling community whose format notes, sample files, and online discussions have been invaluable references.
