@@ -2061,7 +2061,6 @@ mod record_split_tests {
 
     /// Strip the two trailing bytes (TBS 0x81 + multibyte 0x00) written by
     /// both record-producing functions.
-    #[allow(dead_code)]
     fn strip_trailers(rec: &[u8]) -> &[u8] {
         assert!(rec.len() >= 2, "record too small to contain trailers");
         // TBS is the LAST byte, multibyte is the byte before it
@@ -2074,7 +2073,6 @@ mod record_split_tests {
     }
 
     /// Minimal PalmDOC (LZ77 + RLE) decompressor for round-trip testing.
-    #[allow(dead_code)]
     fn palmdoc_decompress(src: &[u8]) -> Vec<u8> {
         let mut out: Vec<u8> = Vec::with_capacity(src.len() * 2);
         let mut i = 0usize;
@@ -2190,7 +2188,6 @@ mod record_split_tests {
 
     /// Count matching `<tag>` and `</tag>` pairs in a byte slice. Used
     /// by HTML-safety tests to assert each record is balanced.
-    #[allow(dead_code)]
     fn count_tag_balance(bytes: &[u8], tag: &str) -> i32 {
         let haystack = std::str::from_utf8(bytes).unwrap_or("");
         let open = format!("<{}>", tag);
@@ -2198,6 +2195,35 @@ mod record_split_tests {
         let opens = haystack.matches(&open).count() as i32;
         let closes = haystack.matches(&close).count() as i32;
         opens - closes
+    }
+
+    #[test]
+    fn strip_trailers_removes_tbs_and_multibyte() {
+        let mut rec = b"hello world".to_vec();
+        rec.push(0x00); // multibyte trailer (overhang = 0)
+        rec.push(0x81); // TBS trailer
+        let stripped = strip_trailers(&rec);
+        assert_eq!(stripped, b"hello world");
+    }
+
+    #[test]
+    fn palmdoc_compress_decompress_round_trip() {
+        let original = b"The quick brown fox jumps over the lazy dog. \
+                         The quick brown fox jumps over the lazy dog.";
+        let compressed = super::palmdoc::compress(original);
+        let decompressed = palmdoc_decompress(&compressed);
+        assert_eq!(decompressed, original);
+    }
+
+    #[test]
+    fn count_tag_balance_balanced_and_unbalanced() {
+        // Balanced: two open <p> and two close </p>
+        let balanced = b"<p>hello</p><p>world</p>";
+        assert_eq!(count_tag_balance(balanced, "p"), 0);
+
+        // Unbalanced: two open <p> but only one close </p>
+        let unbalanced = b"<p>hello<p>world</p>";
+        assert_eq!(count_tag_balance(unbalanced, "p"), 1);
     }
 
 }
