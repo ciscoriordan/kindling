@@ -128,6 +128,11 @@ pub fn validate(epub: &ExtractedEpub) -> ValidationReport {
     for check in checks::CHECKS {
         check.run(epub, &mut report);
     }
+    let profile = epub.profile;
+    report.findings.retain(|f| {
+        f.rule_id
+            .map_or(true, |id| kdp_rules::get(id).applies_to(profile))
+    });
     report
 }
 

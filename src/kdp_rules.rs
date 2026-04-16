@@ -1206,7 +1206,7 @@ pub const RULES: &[Rule] = &[
         description: "CSS_007: Reflowable Kindle content cannot use position: fixed, \
                       absolute, or sticky. The KF8 renderer collapses them back to \
                       static, which typically destroys the intended layout.",
-        profile_mask: ALL_PROFILES,
+        profile_mask: Profile::Default.as_bit() | Profile::Dict.as_bit(),
     },
     Rule {
         id: "R6.15",

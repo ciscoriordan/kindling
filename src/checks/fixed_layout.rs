@@ -88,7 +88,16 @@ impl Check for FixedLayoutChecks {
         }
 
         // R11.2 / R11.3 / R11.7 / R11.8: scan each spine XHTML.
-        for (_idref, href) in &opf.spine_items {
+        // Use raw_itemrefs so we can honor per-itemref
+        // properties="rendition:layout-reflowable" overrides.
+        for item in &opf.raw_itemrefs {
+            let props_lower = item.properties.to_ascii_lowercase();
+            if props_lower.contains("rendition:layout-reflowable") {
+                continue;
+            }
+            let Some((href, _mt)) = opf.manifest.get(&item.idref) else {
+                continue;
+            };
             let full = opf.base_dir.join(href);
             let bytes = match fs::read(&full) {
                 Ok(b) => b,
