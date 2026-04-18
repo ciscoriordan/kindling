@@ -519,9 +519,9 @@ Thanks to the wider ebook-tooling community whose public documentation and rever
 
 - [Lemma](https://github.com/ciscoriordan/lemma) - Greek-English Kindle dictionary built with Kindling
 
-## Star History
+## Stargazers over time
 
-[![Star History Chart](https://api.star-history.com/svg?repos=ciscoriordan/kindling&type=Date)](https://star-history.com/#ciscoriordan/kindling&Date)
+[![Stargazers over time](https://starchart.cc/ciscoriordan/kindling.svg?variant=adaptive)](https://starchart.cc/ciscoriordan/kindling)
 
 ## License
 
