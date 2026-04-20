@@ -1,6 +1,6 @@
 [package]
 name = "kindling"
-version = "0.13.2"
+version = "0.14.0"
 edition = "2024"
 description = "Kindle MOBI/AZW3 builder for dictionaries, books, and comics"
 
