@@ -58,6 +58,9 @@ pub struct OPFData {
     pub package_version: String,
     /// Collected `<dc:type>` values from metadata (EPUB 3 publication types).
     pub dc_types: Vec<String>,
+    /// OEB 1.x `<x-metadata><EmbeddedCover>cover.png</EmbeddedCover>` cover
+    /// href, used by kindlegen as a legacy alternative to Method 1 / Method 2.
+    pub embedded_cover_href: Option<String>,
 }
 
 impl OPFData {
@@ -89,6 +92,7 @@ impl OPFData {
             page_progression_direction: None,
             package_version: String::new(),
             dc_types: Vec::new(),
+            embedded_cover_href: None,
         };
 
         // Clean the XML for parsing - strip namespace prefixes that may be unbound
@@ -112,8 +116,13 @@ impl OPFData {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
                     let local_name = local_tag_name(e.name().as_ref());
+                    // OEB 1.x uses capitalized DC elements (<dc:Title>,
+                    // <dc:Identifier>, etc.). Match case-insensitively on a
+                    // lowercased copy and preserve the original for tags that
+                    // are already case-sensitive (DictionaryInLanguage, etc.).
+                    let lower = local_name.to_ascii_lowercase();
 
-                    match local_name.as_str() {
+                    match lower.as_str() {
                         "package" => {
                             for attr in e.attributes().flatten() {
                                 if attr.key.as_ref() == b"version" {
@@ -139,19 +148,22 @@ impl OPFData {
                         "title" | "creator" | "language" | "identifier" | "date"
                             if in_metadata =>
                         {
-                            current_tag = local_name.clone();
+                            current_tag = lower.clone();
                         }
                         "type" if in_metadata => {
                             current_tag = "type".to_string();
                         }
-                        "DictionaryInLanguage" if in_metadata => {
+                        "dictionaryinlanguage" if in_metadata => {
                             current_tag = "DictionaryInLanguage".to_string();
                         }
-                        "DictionaryOutLanguage" if in_metadata => {
+                        "dictionaryoutlanguage" if in_metadata => {
                             current_tag = "DictionaryOutLanguage".to_string();
                         }
-                        "DefaultLookupIndex" if in_metadata => {
+                        "defaultlookupindex" if in_metadata => {
                             current_tag = "DefaultLookupIndex".to_string();
+                        }
+                        "embeddedcover" if in_metadata => {
+                            current_tag = "EmbeddedCover".to_string();
                         }
                         "meta" if in_metadata => {
                             // Check for fixed-layout and original-resolution metadata
@@ -285,6 +297,7 @@ impl OPFData {
                             "DictionaryInLanguage" => self.dict_in_language = text,
                             "DictionaryOutLanguage" => self.dict_out_language = text,
                             "DefaultLookupIndex" => self.default_lookup_index = text,
+                            "EmbeddedCover" => self.embedded_cover_href = Some(text),
                             "rendition:layout" => {
                                 if text == "pre-paginated" {
                                     self.is_fixed_layout = true;
@@ -296,7 +309,7 @@ impl OPFData {
                 }
                 Ok(Event::End(ref e)) => {
                     let local_name = local_tag_name(e.name().as_ref());
-                    match local_name.as_str() {
+                    match local_name.to_ascii_lowercase().as_str() {
                         "metadata" => in_metadata = false,
                         "manifest" => in_manifest = false,
                         "spine" => in_spine = false,
@@ -416,15 +429,27 @@ impl OPFData {
             buf.clear();
         }
 
+        // Method 3: OEB 1.x EmbeddedCover; reverse-look up the manifest id
+        // from the href so EXTH 129 can still carry the KF8 cover URI.
+        if let Some(href) = &self.embedded_cover_href {
+            for item in &self.manifest_items {
+                if item.href == *href && item.media_type.starts_with("image/") {
+                    return Some(item.id.clone());
+                }
+            }
+        }
+
         None
     }
 
     /// Find the cover image href from OPF metadata.
     ///
-    /// Supports both cover image methods from the Amazon Kindle Publishing
-    /// Guidelines section 4.2:
+    /// Supports three cover image methods:
     /// - Method 1 (preferred, EPUB 3): `<item ... properties="coverimage"/>`
-    /// - Method 2: `<meta name="cover" content="..."/>` pointing to a manifest id
+    /// - Method 2 (OPF 2.0): `<meta name="cover" content="..."/>` pointing to a manifest id
+    /// - Method 3 (OEB 1.x legacy, kindlegen-compatible):
+    ///   `<x-metadata><EmbeddedCover>cover.png</EmbeddedCover>` naming a
+    ///   manifest item by href. PyGlossary and other OEB 1.x tools emit this.
     pub fn get_cover_image_href(&self) -> Option<String> {
         // Method 1: check for properties="coverimage" captured during manifest parsing
         if let Some(ref cover_id) = self.coverimage_id {
@@ -495,6 +520,17 @@ impl OPFData {
             buf.clear();
         }
 
+        // Method 3: OEB 1.x <EmbeddedCover>cover.png</EmbeddedCover>. Validate
+        // that the named file is declared as an image in the manifest so we
+        // never embed something that does not render.
+        if let Some(href) = &self.embedded_cover_href {
+            for item in &self.manifest_items {
+                if item.href == *href && item.media_type.starts_with("image/") {
+                    return Some(href.clone());
+                }
+            }
+        }
+
         None
     }
 
@@ -518,15 +554,22 @@ pub struct DictionaryEntry {
 /// Looks for idx:entry elements with idx:orth headwords and idx:iform inflections.
 /// Uses direct string searching instead of regex for the outer entry matching,
 /// since the (?s).*? pattern is extremely slow on large files (100+ MB).
+///
+/// Amazon's KPG §15.6 permits two headword markup styles:
+///   Attribute form: `<idx:orth value="headword"/>`
+///   Body form:      `<idx:orth><b>headword</b></idx:orth>`
+/// kindlegen accepted both; PyGlossary emits the body form. We fall back to the
+/// body text when no `value=` attribute is present.
 pub fn parse_dictionary_html(html_path: &Path) -> Result<Vec<DictionaryEntry>, std::io::Error> {
     let content = std::fs::read_to_string(html_path)?;
     let mut entries = Vec::new();
 
     // Static regex compilation (avoids recompilation if called multiple times)
     use std::sync::OnceLock;
-    static ORTH_RE: OnceLock<Regex> = OnceLock::new();
+    static ORTH_VAL_RE: OnceLock<Regex> = OnceLock::new();
     static IFORM_RE: OnceLock<Regex> = OnceLock::new();
-    let orth_re = ORTH_RE.get_or_init(|| Regex::new(r#"<idx:orth\s+value="([^"]*)""#).unwrap());
+    let orth_val_re =
+        ORTH_VAL_RE.get_or_init(|| Regex::new(r#"<idx:orth\b[^>]*\svalue="([^"]*)""#).unwrap());
     let iform_re = IFORM_RE.get_or_init(|| Regex::new(r#"<idx:iform\s+value="([^"]*)""#).unwrap());
 
     // Find entry blocks by direct string search (much faster than regex on 100+ MB)
@@ -552,14 +595,21 @@ pub fn parse_dictionary_html(html_path: &Path) -> Result<Vec<DictionaryEntry>, s
         let entry_inner = &content[after_open..close_pos];
         let full_entry = &content[abs_start..close_pos + entry_close.len()];
 
-        // Extract headword
-        let headword = match orth_re.captures(entry_inner) {
-            Some(cap) => unescape_html(cap.get(1).unwrap().as_str()),
-            None => {
-                search_pos = close_pos + entry_close.len();
-                continue;
-            }
+        // Extract headword: prefer `value=` attribute; otherwise fall back to
+        // the body text of the first `<idx:orth>...</idx:orth>` element.
+        let headword = if let Some(cap) = orth_val_re.captures(entry_inner) {
+            unescape_html(cap.get(1).unwrap().as_str())
+        } else if let Some(hw) = extract_orth_body_text(entry_inner) {
+            hw
+        } else {
+            search_pos = close_pos + entry_close.len();
+            continue;
         };
+
+        if headword.is_empty() {
+            search_pos = close_pos + entry_close.len();
+            continue;
+        }
 
         // Extract inflections
         let inflections: Vec<String> = iform_re
@@ -577,6 +627,66 @@ pub fn parse_dictionary_html(html_path: &Path) -> Result<Vec<DictionaryEntry>, s
     }
 
     Ok(entries)
+}
+
+/// Extract headword from the body of the first `<idx:orth>...</idx:orth>` in
+/// an entry, stripping inline HTML markup (`<b>`, `<br>`, `<br/>`, `<idx:infl>`,
+/// etc.) and unescaping entities. Returns None when there is no `<idx:orth>`
+/// element with a non-self-closing body. Used as the body-form headword
+/// fallback for PyGlossary-style dictionaries.
+fn extract_orth_body_text(entry_inner: &str) -> Option<String> {
+    let open = entry_inner.find("<idx:orth")?;
+    let after_tag_name = open + "<idx:orth".len();
+    let gt = entry_inner[after_tag_name..].find('>')?;
+    let tag_close = after_tag_name + gt;
+    // Self-closing <idx:orth ... /> has no body; caller will fall through.
+    if entry_inner.as_bytes().get(tag_close.saturating_sub(1)) == Some(&b'/') {
+        return None;
+    }
+    let body_start = tag_close + 1;
+    let close_rel = entry_inner[body_start..].find("</idx:orth>")?;
+    let body = &entry_inner[body_start..body_start + close_rel];
+
+    // Strip nested `<idx:infl>...</idx:infl>` blocks entirely (they carry
+    // inflections, not headword text).
+    let mut cleaned = String::with_capacity(body.len());
+    let mut rest = body;
+    loop {
+        match rest.find("<idx:infl") {
+            Some(i) => {
+                cleaned.push_str(&rest[..i]);
+                match rest[i..].find("</idx:infl>") {
+                    Some(j) => {
+                        rest = &rest[i + j + "</idx:infl>".len()..];
+                    }
+                    None => break,
+                }
+            }
+            None => {
+                cleaned.push_str(rest);
+                break;
+            }
+        }
+    }
+
+    // Strip any remaining tags and collapse whitespace.
+    let mut out = String::with_capacity(cleaned.len());
+    let mut in_tag = false;
+    for ch in cleaned.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            c if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    let unescaped = unescape_html(&out);
+    let trimmed = unescaped.split_whitespace().collect::<Vec<_>>().join(" ");
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
 }
 
 /// Unescape HTML entities including numeric (decimal and hex) forms.
@@ -660,5 +770,219 @@ fn local_tag_name(name: &[u8]) -> String {
         s[pos + 1..].to_string()
     } else {
         s.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Regression tests for OEB 1.x-style OPFs (PyGlossary, legacy kindlegen
+    //! sources) and body-form `<idx:orth>` dictionary markup. Upstream issue:
+    //! https://github.com/ciscoriordan/kindling/issues/3.
+    use super::*;
+    use std::fs;
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "kindling_opf_test_{}_{}",
+            tag,
+            std::process::id()
+        ));
+        if d.exists() {
+            fs::remove_dir_all(&d).unwrap();
+        }
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn extract_orth_body_text_plain() {
+        let entry = r#"<idx:orth><b>hello</b></idx:orth>body"#;
+        assert_eq!(extract_orth_body_text(entry), Some("hello".to_string()));
+    }
+
+    #[test]
+    fn extract_orth_body_text_with_br_and_whitespace() {
+        // PyGlossary-style: body + <br/> inside <idx:orth>.
+        let entry = "<idx:orth>\n<b>-eresse</b><br/>\n</idx:orth>";
+        assert_eq!(extract_orth_body_text(entry), Some("-eresse".to_string()));
+    }
+
+    #[test]
+    fn extract_orth_body_text_skips_idx_infl() {
+        // Inflections sit inside <idx:orth> in some templates; must not bleed
+        // into the headword text.
+        let entry = r#"<idx:orth><b>grogner</b><idx:infl><idx:iform value="grognasses"/></idx:infl></idx:orth>"#;
+        assert_eq!(extract_orth_body_text(entry), Some("grogner".to_string()));
+    }
+
+    #[test]
+    fn extract_orth_body_text_self_closing_returns_none() {
+        let entry = r#"<idx:orth value="x"/>"#;
+        assert_eq!(extract_orth_body_text(entry), None);
+    }
+
+    #[test]
+    fn extract_orth_body_text_empty_body_returns_none() {
+        let entry = r#"<idx:orth></idx:orth>"#;
+        assert_eq!(extract_orth_body_text(entry), None);
+    }
+
+    #[test]
+    fn extract_orth_body_text_unescapes_entities() {
+        let entry = r#"<idx:orth><b>caf&#233;</b></idx:orth>"#;
+        assert_eq!(extract_orth_body_text(entry), Some("café".to_string()));
+    }
+
+    #[test]
+    fn parse_dictionary_html_body_form_idx_orth() {
+        // PyGlossary-style: no `value=` attribute, headword lives in body.
+        let dir = temp_dir("body_form");
+        let html = r#"<html><head></head><body><mbp:frameset>
+<idx:entry scriptable="yes" spell="yes">
+<idx:orth>
+<b>alpha</b><br/>
+</idx:orth>
+first letter
+</idx:entry>
+<hr/>
+<idx:entry>
+<idx:orth><b>beta</b></idx:orth>
+second letter
+</idx:entry>
+</mbp:frameset></body></html>"#;
+        let path = dir.join("c.html");
+        fs::write(&path, html).unwrap();
+        let entries = parse_dictionary_html(&path).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].headword, "alpha");
+        assert_eq!(entries[1].headword, "beta");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn parse_dictionary_html_body_form_with_inflections() {
+        let dir = temp_dir("body_form_infl");
+        let html = r#"<html><body>
+<idx:entry>
+<idx:orth><b>grogner</b>
+<idx:infl>
+<idx:iform value="grognes"/>
+<idx:iform value="grognasses"/>
+</idx:infl>
+</idx:orth>
+verb
+</idx:entry>
+</body></html>"#;
+        let path = dir.join("c.html");
+        fs::write(&path, html).unwrap();
+        let entries = parse_dictionary_html(&path).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].headword, "grogner");
+        assert_eq!(entries[0].inflections, vec!["grognes", "grognasses"]);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn parse_dictionary_html_attribute_form_still_works() {
+        // Make sure the pre-existing attribute form still parses identically.
+        let dir = temp_dir("attr_form");
+        let html = r#"<html><body>
+<idx:entry><idx:orth value="cat">cat</idx:orth><b>cat</b> animal<hr/></idx:entry>
+</body></html>"#;
+        let path = dir.join("c.html");
+        fs::write(&path, html).unwrap();
+        let entries = parse_dictionary_html(&path).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].headword, "cat");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn opf_parse_oeb1x_capitalized_dc_elements() {
+        // PyGlossary emits OEB 1.x DC elements with capital initial letters,
+        // wrapped in <dc-metadata>/<x-metadata>. Make sure we still pull out
+        // title, language, identifier, dictionary metadata, and EmbeddedCover.
+        let dir = temp_dir("oeb1x");
+        let opf = r#"<?xml version="1.0" encoding="utf-8"?>
+<package unique-identifier="uid">
+<metadata>
+<dc-metadata xmlns:dc="http://purl.org/metadata/dublin_core">
+<dc:Title>PyGlossary Dict</dc:Title>
+<dc:Language>fr</dc:Language>
+<dc:Identifier id="uid">abc123</dc:Identifier>
+<dc:Creator>An Author</dc:Creator>
+</dc-metadata>
+<x-metadata>
+<DictionaryInLanguage>fr</DictionaryInLanguage>
+<DictionaryOutLanguage>fr</DictionaryOutLanguage>
+<EmbeddedCover>cover.png</EmbeddedCover>
+</x-metadata>
+</metadata>
+<manifest>
+<item id="cover.png" href="cover.png" media-type="image/png"/>
+<item id="c" href="c.xhtml" media-type="application/xhtml+xml"/>
+</manifest>
+<spine><itemref idref="c"/></spine>
+</package>"#;
+        let opf_path = dir.join("content.opf");
+        fs::write(&opf_path, opf).unwrap();
+        // HTML target does not need to exist for OPF metadata parsing.
+        let data = OPFData::parse(&opf_path).unwrap();
+        assert_eq!(data.title, "PyGlossary Dict");
+        assert_eq!(data.language, "fr");
+        assert_eq!(data.identifier, "abc123");
+        assert_eq!(data.author, "An Author");
+        assert_eq!(data.dict_in_language, "fr");
+        assert_eq!(data.dict_out_language, "fr");
+        assert_eq!(data.embedded_cover_href.as_deref(), Some("cover.png"));
+        // Method 3 (EmbeddedCover) falls through to get_cover_image_href.
+        assert_eq!(data.get_cover_image_href().as_deref(), Some("cover.png"));
+        assert_eq!(data.get_cover_image_id().as_deref(), Some("cover.png"));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn opf_parse_modern_lowercase_dc_elements_unchanged() {
+        // Regression: case-insensitive matching must not break lowercase input.
+        let dir = temp_dir("modern_dc");
+        let opf = r#"<?xml version="1.0"?>
+<package unique-identifier="u" xmlns="http://www.idpf.org/2007/opf">
+<metadata>
+<dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">Lower Dict</dc:title>
+<dc:language xmlns:dc="http://purl.org/dc/elements/1.1/">en</dc:language>
+<dc:identifier xmlns:dc="http://purl.org/dc/elements/1.1/" id="u">x</dc:identifier>
+</metadata>
+<manifest><item id="c" href="c.xhtml" media-type="application/xhtml+xml"/></manifest>
+<spine><itemref idref="c"/></spine>
+</package>"#;
+        let opf_path = dir.join("content.opf");
+        fs::write(&opf_path, opf).unwrap();
+        let data = OPFData::parse(&opf_path).unwrap();
+        assert_eq!(data.title, "Lower Dict");
+        assert_eq!(data.language, "en");
+        assert_eq!(data.identifier, "x");
+        assert_eq!(data.embedded_cover_href, None);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn embedded_cover_ignored_if_not_in_manifest() {
+        // If <EmbeddedCover> points at something that is not an image manifest
+        // item, get_cover_image_href must not invent a path.
+        let dir = temp_dir("embedded_cover_nomanifest");
+        let opf = r#"<?xml version="1.0"?>
+<package unique-identifier="u">
+<metadata>
+<x-metadata><EmbeddedCover>missing.png</EmbeddedCover></x-metadata>
+</metadata>
+<manifest><item id="c" href="c.xhtml" media-type="application/xhtml+xml"/></manifest>
+<spine><itemref idref="c"/></spine>
+</package>"#;
+        let opf_path = dir.join("content.opf");
+        fs::write(&opf_path, opf).unwrap();
+        let data = OPFData::parse(&opf_path).unwrap();
+        assert_eq!(data.embedded_cover_href.as_deref(), Some("missing.png"));
+        assert_eq!(data.get_cover_image_href(), None);
+        fs::remove_dir_all(&dir).ok();
     }
 }

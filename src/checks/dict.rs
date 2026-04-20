@@ -284,7 +284,13 @@ fn collect_idx_entry_names(content: &str) -> Vec<String> {
     out
 }
 
-/// Find 1-based line numbers of every `<idx:orth>` with an empty or missing `value=`.
+/// Find 1-based line numbers of every `<idx:orth>` that has no headword text.
+///
+/// An `<idx:orth>` is considered populated when it either has a non-empty
+/// `value="..."` attribute (Kindle "attribute form") or a non-empty textual
+/// body (Kindle "body form", e.g. `<idx:orth><b>foo</b></idx:orth>` that
+/// PyGlossary emits). Only when both are empty do we flag R15.6, matching
+/// kindlegen which accepted either style.
 fn find_empty_orth_lines(content: &str) -> Vec<usize> {
     let mut out = Vec::new();
     let mut byte_pos = 0usize;
@@ -297,12 +303,37 @@ fn find_empty_orth_lines(content: &str) -> Vec<usize> {
         };
         let tag = &content[after_tag_name..end];
         let value = extract_dq_attr(tag, "value").unwrap_or_default();
-        if value.is_empty() {
+        let self_closing = tag.ends_with('/');
+        let body_has_text = if value.is_empty() && !self_closing {
+            let body_start = end + 1;
+            match content[body_start..].find("</idx:orth>") {
+                Some(rel) => has_non_whitespace_text(&content[body_start..body_start + rel]),
+                None => false,
+            }
+        } else {
+            false
+        };
+        if value.is_empty() && !body_has_text {
             out.push(line_of(content, abs));
         }
         byte_pos = end + 1;
     }
     out
+}
+
+/// True if `body` contains any non-whitespace character outside of `<...>`
+/// tag markup. Used to accept `<idx:orth><b>foo</b></idx:orth>` as populated.
+fn has_non_whitespace_text(body: &str) -> bool {
+    let mut in_tag = false;
+    for ch in body.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            c if !in_tag && !c.is_whitespace() => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Extract a double-quoted attribute value from an open-tag body.
@@ -468,6 +499,36 @@ mod tests {
     fn find_empty_orth_lines_ignores_populated() {
         let html = "<idx:orth value=\"abc\"/>";
         assert!(find_empty_orth_lines(html).is_empty());
+    }
+
+    #[test]
+    fn find_empty_orth_lines_accepts_body_form_headword() {
+        // PyGlossary-style body form: no `value=` but non-empty body text must
+        // be accepted as a valid headword (KPG §15.6). Issue #3 regression.
+        let html = "<idx:entry>\n<idx:orth><b>hello</b></idx:orth>\n</idx:entry>";
+        assert!(find_empty_orth_lines(html).is_empty());
+    }
+
+    #[test]
+    fn find_empty_orth_lines_accepts_body_with_br() {
+        let html = "<idx:orth>\n<b>-eresse</b><br/>\n</idx:orth>";
+        assert!(find_empty_orth_lines(html).is_empty());
+    }
+
+    #[test]
+    fn find_empty_orth_lines_flags_body_with_only_markup() {
+        // A body that contains only markup (no text nodes) is still empty.
+        let html = "<idx:orth>\n<br/>\n</idx:orth>";
+        let lines = find_empty_orth_lines(html);
+        assert_eq!(lines, vec![1]);
+    }
+
+    #[test]
+    fn has_non_whitespace_text_strips_tags() {
+        assert!(!has_non_whitespace_text("<b></b>"));
+        assert!(!has_non_whitespace_text("  \n\t"));
+        assert!(has_non_whitespace_text("<b>x</b>"));
+        assert!(has_non_whitespace_text("hi"));
     }
 
     #[test]

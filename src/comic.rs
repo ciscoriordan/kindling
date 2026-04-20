@@ -19,14 +19,11 @@
 use std::fs;
 use std::io::Read;
 
-/// Default author when no author is specified via CLI or ComicInfo.xml.
-/// Kindle silently refuses to index books with no author, so this must
-/// be non-empty.
-const DEFAULT_AUTHOR: &str = "kindling";
 use std::path::{Path, PathBuf};
 
 use crate::cbr;
 use crate::epub;
+use crate::DEFAULT_AUTHOR;
 
 use image::imageops::FilterType;
 use image::{DynamicImage, GenericImageView, GrayImage, Luma, Rgb, RgbImage};
@@ -2367,7 +2364,7 @@ fn build_comic_opf_v2(
             .unwrap_or_else(|| "Comic".to_string())
     };
 
-    // Determine creators: CLI override > ComicInfo.xml > "kindling".
+    // Determine creators: CLI override > ComicInfo.xml > DEFAULT_AUTHOR.
     // All creators are joined into a single <dc:creator> entry because the
     // OPF parser used downstream keeps only one creator, so multiple tags
     // would silently drop all but the last name (which is how EXTH 100 lost
@@ -2385,7 +2382,7 @@ fn build_comic_opf_v2(
             creators.join(", ")
         }
     } else {
-        "kindling".to_string()
+        DEFAULT_AUTHOR.to_string()
     };
     creator_entries.push_str(&format!(
         "    <dc:creator>{}</dc:creator>\n",

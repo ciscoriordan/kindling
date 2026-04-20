@@ -123,10 +123,30 @@ mod validate {
         );
     }
     
+    #[test]
+    fn validate_pyglossary_oeb1x_dict_does_not_trip_r4_r15_r16() {
+        // Regression for issue #3: PyGlossary's OEB 1.x OPF shape (capital
+        // <dc:Identifier>, <EmbeddedCover>, body-form <idx:orth>) must not
+        // fire R4.2.1 (missing internal cover), R15.6 (empty idx:orth), or
+        // R16.1 (unique-identifier / dc:identifier mismatch).
+        let opf = fixture_dir("pyglossary_oeb1x_dict").join("content.opf");
+        let out = run_validate(&[opf.to_str().unwrap()]);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+
+        for rule_id in &["R4.2.1", "R15.6", "R16.1"] {
+            assert!(
+                !stdout.contains(rule_id),
+                "rule {} should not fire on valid OEB 1.x OPF\n{}",
+                rule_id,
+                dump(&out)
+            );
+        }
+    }
+
     // ---------------------------------------------------------------------------
     // Error fixture: must flag the rules it was constructed to trigger
     // ---------------------------------------------------------------------------
-    
+
     #[test]
     fn validate_book_with_errors_exits_one() {
         let opf = fixture_dir("book_with_errors").join("book_with_errors.opf");
@@ -407,6 +427,38 @@ mod validate {
         );
     }
     
+    #[test]
+    fn build_pyglossary_oeb1x_dict_succeeds() {
+        // Regression for issue #3: PyGlossary emits an OEB 1.x OPF
+        // (`<dc-metadata>` / `<x-metadata>` with capitalized Dublin Core
+        // elements and `<EmbeddedCover>`) plus body-form `<idx:orth>` markup.
+        // kindlegen accepted this layout; kindling must too for drop-in
+        // replacement.
+        let (tmp, opf) = stage_fixture("pyglossary_oeb1x_dict", "content.opf");
+        let out = run_build(&[opf.to_str().unwrap()]);
+        assert!(
+            out.status.success(),
+            "build pyglossary_oeb1x_dict should succeed\n{}",
+            dump(&out)
+        );
+
+        // Entry count lands on stderr (normal build progress stream).
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("Parsed 3 dictionary entries"),
+            "expected body-form idx:orth to yield 3 entries\n{}",
+            dump(&out)
+        );
+
+        let expected = tmp.path().join("content.mobi");
+        assert!(
+            expected.exists(),
+            "expected dict output at {:?}\n{}",
+            expected,
+            dump(&out)
+        );
+    }
+
     #[test]
     fn build_non_dict_legacy_mobi_flag_produces_mobi() {
         // `--legacy-mobi` is the escape hatch: even on a non-dict book, this

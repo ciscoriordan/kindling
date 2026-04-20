@@ -262,10 +262,12 @@ pub fn build_book_exth(
         records.push(exth_record(106, date.as_bytes()));
     }
 
-    // Author (100)
-    if !author.is_empty() {
-        records.push(exth_record(100, author.as_bytes()));
-    }
+    // Author (100). Kindle silently drops library entries with no author, so
+    // we always emit EXTH 100. When the OPF supplies no `<dc:Creator>` (or
+    // provides an empty element, like PyGlossary does), fall back to the
+    // crate-wide `DEFAULT_AUTHOR` rather than suppressing the record.
+    let author_out = if author.is_empty() { crate::DEFAULT_AUTHOR } else { author };
+    records.push(exth_record(100, author_out.as_bytes()));
 
     // EXTH 503 (updated_title): emit for reflowable books, skip for
     // fixed-layout comics. EXTH 503 breaks Kindle fixed-layout navigation
@@ -469,10 +471,12 @@ pub fn build_exth(
         records.push(exth_record(106, date.as_bytes()));
     }
 
-    // Author (100)
-    if !author.is_empty() {
-        records.push(exth_record(100, author.as_bytes()));
-    }
+    // Author (100). Kindle silently drops library entries with no author, so
+    // we always emit EXTH 100. When the OPF supplies no `<dc:Creator>` (or
+    // provides an empty element, like PyGlossary does), fall back to the
+    // crate-wide `DEFAULT_AUTHOR` rather than suppressing the record.
+    let author_out = if author.is_empty() { crate::DEFAULT_AUTHOR } else { author };
+    records.push(exth_record(100, author_out.as_bytes()));
 
     // Updated title (503). Dictionaries are always reflowable, so safe to emit.
     if !title.is_empty() {

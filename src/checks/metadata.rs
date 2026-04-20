@@ -375,37 +375,23 @@ fn is_valid_bcp47(tag: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Return the first `<tag ...>` (start or empty) open tag body, minus brackets.
+///
+/// Tag name matching is case-insensitive so OEB 1.x OPFs (`<dc:Title>`,
+/// `<dc:Identifier>`, etc.) bind to the same checks as OPF 2.0+
+/// (`<dc:title>`, `<dc:identifier>`).
 fn find_open_tag(content: &str, tag: &str) -> Option<String> {
-    let needle = format!("<{}", tag);
-    let idx = content.find(&needle)?;
-    let after = idx + needle.len();
-    // Ensure it's really `<tag` followed by whitespace or `>` or `/`.
-    let next = content[after..].chars().next()?;
-    if !(next.is_ascii_whitespace() || next == '>' || next == '/') {
-        return None;
-    }
+    let (_, after) = find_open_tag_pos(content, tag, 0)?;
     let end = content[after..].find('>')?;
     let body = &content[after..after + end];
     let body = body.trim_end_matches('/').trim();
     Some(body.to_string())
 }
 
-/// Return every `<tag ...>` open-tag body in document order.
+/// Return every `<tag ...>` open-tag body in document order. Case-insensitive.
 fn find_all_open_tags(content: &str, tag: &str) -> Vec<String> {
     let mut out = Vec::new();
-    let needle = format!("<{}", tag);
     let mut cursor = 0usize;
-    while let Some(idx) = content[cursor..].find(&needle) {
-        let abs = cursor + idx;
-        let after = abs + needle.len();
-        let next = match content[after..].chars().next() {
-            Some(c) => c,
-            None => break,
-        };
-        if !(next.is_ascii_whitespace() || next == '>' || next == '/') {
-            cursor = after;
-            continue;
-        }
+    while let Some((_, after)) = find_open_tag_pos(content, tag, cursor) {
         let end = match content[after..].find('>') {
             Some(e) => e,
             None => break,
@@ -418,16 +404,67 @@ fn find_all_open_tags(content: &str, tag: &str) -> Vec<String> {
     out
 }
 
+/// Case-insensitively find the next `<tag` (at or after `start`) whose name
+/// ends in a tag-terminator byte. Returns (open_bracket_pos, after_name_pos).
+fn find_open_tag_pos(content: &str, tag: &str, start: usize) -> Option<(usize, usize)> {
+    let bytes = content.as_bytes();
+    let tag_bytes = tag.as_bytes();
+    let mut cursor = start;
+    loop {
+        let rel = content[cursor..].find('<')?;
+        let abs = cursor + rel;
+        let name_start = abs + 1;
+        let name_end = name_start + tag_bytes.len();
+        if name_end > bytes.len() {
+            return None;
+        }
+        if bytes[name_start..name_end].eq_ignore_ascii_case(tag_bytes) {
+            let next = *bytes.get(name_end)?;
+            if next == b' '
+                || next == b'\t'
+                || next == b'\n'
+                || next == b'\r'
+                || next == b'>'
+                || next == b'/'
+            {
+                return Some((abs, name_end));
+            }
+        }
+        cursor = abs + 1;
+    }
+}
+
 /// Return the inner text of the first `<tag>...</tag>` element.
+/// Case-insensitive on the tag name.
 fn extract_element_inner(content: &str, tag: &str) -> Option<String> {
-    let open_needle = format!("<{}", tag);
-    let close_needle = format!("</{}>", tag);
-    let open_idx = content.find(&open_needle)?;
-    let after_open = open_idx + open_needle.len();
+    let (_, after_open) = find_open_tag_pos(content, tag, 0)?;
     let tag_end = content[after_open..].find('>')?;
     let body_start = after_open + tag_end + 1;
-    let close_idx = content[body_start..].find(&close_needle)?;
+    let close_idx = find_close_tag_pos(&content[body_start..], tag)?;
     Some(content[body_start..body_start + close_idx].to_string())
+}
+
+/// Case-insensitively find the next `</tag>` in `content`, returning its
+/// byte offset within `content`.
+fn find_close_tag_pos(content: &str, tag: &str) -> Option<usize> {
+    let bytes = content.as_bytes();
+    let tag_bytes = tag.as_bytes();
+    let mut cursor = 0usize;
+    loop {
+        let rel = content[cursor..].find("</")?;
+        let abs = cursor + rel;
+        let name_start = abs + 2;
+        let name_end = name_start + tag_bytes.len();
+        if name_end >= bytes.len() {
+            return None;
+        }
+        if bytes[name_start..name_end].eq_ignore_ascii_case(tag_bytes)
+            && bytes[name_end] == b'>'
+        {
+            return Some(abs);
+        }
+        cursor = abs + 1;
+    }
 }
 
 /// Yield every `<tagName>text</tagName>` child of `inner` as (tag, text) pairs.
@@ -549,21 +586,11 @@ fn iter_child_elements_with_tag_body(inner: &str) -> Vec<(String, String, String
 
 /// Return every `(open_body, inner_text)` pair for `<tag>...</tag>` matches.
 /// Self-closing `<tag .../>` variants are returned with an empty inner.
+/// Case-insensitive on the tag name.
 fn iter_elements_with_body(content: &str, tag: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
-    let needle = format!("<{}", tag);
     let mut cursor = 0usize;
-    while let Some(idx) = content[cursor..].find(&needle) {
-        let abs = cursor + idx;
-        let after = abs + needle.len();
-        let next = match content[after..].chars().next() {
-            Some(c) => c,
-            None => break,
-        };
-        if !(next.is_ascii_whitespace() || next == '>' || next == '/') {
-            cursor = after;
-            continue;
-        }
+    while let Some((_, after)) = find_open_tag_pos(content, tag, cursor) {
         let gt = match content[after..].find('>') {
             Some(e) => after + e,
             None => break,
@@ -577,14 +604,13 @@ fn iter_elements_with_body(content: &str, tag: &str) -> Vec<(String, String)> {
             continue;
         }
         let body_start = gt + 1;
-        let close_needle = format!("</{}>", tag);
-        let body_end = match content[body_start..].find(&close_needle) {
-            Some(e) => body_start + e,
+        let body_end_rel = match find_close_tag_pos(&content[body_start..], tag) {
+            Some(e) => e,
             None => break,
         };
-        let inner = content[body_start..body_end].to_string();
+        let inner = content[body_start..body_start + body_end_rel].to_string();
         out.push((open_body, inner));
-        cursor = body_end + close_needle.len();
+        cursor = body_start + body_end_rel + format!("</{}>", tag).len();
     }
     out
 }
@@ -667,6 +693,22 @@ mod tests {
         check_package_identifier(opf, &None, &mut r);
         assert!(!fired(&r, "R16.1"));
         assert!(!fired(&r, "R16.2"));
+    }
+
+    #[test]
+    fn r16_1_matches_oeb1x_capitalized_dc_identifier() {
+        // PyGlossary / OEB 1.x emits <dc:Identifier> (capital I). Case-
+        // insensitive matching must bind it to unique-identifier. Issue #3.
+        let opf = r#"<package unique-identifier="uid">
+  <metadata>
+    <dc-metadata>
+      <dc:Identifier id="uid">abc</dc:Identifier>
+    </dc-metadata>
+  </metadata>
+</package>"#;
+        let mut r = make_report();
+        check_package_identifier(opf, &None, &mut r);
+        assert!(!fired(&r, "R16.1"));
     }
 
     #[test]

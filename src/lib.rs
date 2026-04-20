@@ -38,6 +38,13 @@ use std::path::Path;
 
 use crate::extracted::ExtractedEpub;
 
+/// Fallback author written to EXTH 100 when the input OPF or ComicInfo.xml
+/// does not supply a creator. Used anywhere kindling needs a non-empty author
+/// string: dictionary EXTH, book EXTH, and the comic pipeline. Kept as a
+/// single crate-wide constant so the displayed author on a Kindle home screen
+/// is consistent regardless of which entry point produced the file.
+pub const DEFAULT_AUTHOR: &str = "kindling";
+
 /// Pre-flight KDP validation used by `do_build`. Returns `Err(error_count)`.
 ///
 /// Path-based entry point: parses the OPF into an [`ExtractedEpub`] and
