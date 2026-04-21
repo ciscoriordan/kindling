@@ -1,8 +1,15 @@
 [package]
-name = "kindling"
+name = "kindling-mobi"
 version = "0.14.2"
 edition = "2024"
-description = "Kindle MOBI/AZW3 builder for dictionaries, books, and comics"
+rust-version = "1.85"
+description = "Kindle MOBI/AZW3 builder for dictionaries, books, and comics. Drop-in kindlegen replacement."
+license = "MIT"
+repository = "https://github.com/ciscoriordan/kindling"
+homepage = "https://github.com/ciscoriordan/kindling"
+readme = "README.md"
+keywords = ["kindle", "mobi", "azw3", "epub", "ebook"]
+categories = ["command-line-utilities", "encoding", "multimedia"]
 
 [lib]
 name = "kindling"
