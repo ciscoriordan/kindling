@@ -64,3 +64,25 @@ jobs:
         with:
           files: artifacts/**/*
           generate_release_notes: true
+
+  publish-crate:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify tag matches Cargo.toml version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          CARGO_VERSION=$(grep '^version = ' Cargo.toml | head -1 | cut -d'"' -f2)
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "Tag v$TAG_VERSION does not match Cargo.toml version $CARGO_VERSION"
+            exit 1
+          fi
+
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish
