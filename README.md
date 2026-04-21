@@ -4,6 +4,8 @@
 
 The missing Kindle toolkit. Dictionaries, books, and comics. Single static Rust binary, no dependencies, cross-platform.
 
+[![Crates.io](https://img.shields.io/crates/v/kindling-mobi.svg)](https://crates.io/crates/kindling-mobi) [![docs.rs](https://img.shields.io/docsrs/kindling-mobi)](https://docs.rs/kindling-mobi) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Amazon deprecated *kindlegen* in 2020, leaving no supported way to build Kindle MOBIs. The only remaining copy is buried inside Kindle Previewer 3's GUI, can't run headless, and can take 12+ hours (or run out of memory entirely) for large dictionaries due to x86-only Rosetta 2 emulation on Apple Silicon, superlinear inflection index computation, and a 32-bit Windows build that crashes on large files. Kindling builds the same dictionary in 6 seconds.
 
 For comics, [KCC](https://github.com/ciromattia/kcc) exists but requires Python, PySide6/Qt, Pillow, 7z, mozjpeg, psutil, pymupdf, and more. Installation is painful across platforms, there's no headless mode for CI, and Python image processing is slow. Kindling replaces all of that with a single statically-linked native binary, compiled from Rust.
@@ -40,12 +42,29 @@ Download the latest release for your platform from [Releases](https://github.com
 - **Linux** - `kindling-cli-linux`
 - **Windows** - `kindling-cli-windows.exe`
 
+Or install via Cargo (builds from source, installs `kindling-cli` to `~/.cargo/bin`):
+
+```bash
+cargo install kindling-mobi
+```
+
 Or build from source. Kindling uses Rust edition 2024 and requires Rust 1.85 or newer. Run from the repo root:
 ```bash
 cargo build --release
 ```
 
 The binary is written to `target/release/kindling-cli`.
+
+### As a library
+
+Add the crate to your `Cargo.toml` (published as `kindling-mobi`; the library name is `kindling`):
+
+```toml
+[dependencies]
+kindling-mobi = "0.14"
+```
+
+Then `use kindling::...`. Public API is defined in `src/lib.rs`.
 
 ## Usage
 
