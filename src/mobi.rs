@@ -154,8 +154,19 @@ fn build_dictionary_mobi(
 
     eprintln!("Parsed {} dictionary entries", all_entries.len());
 
-    // Collect images from the OPF manifest
-    let image_items = opf.get_image_items(); // Vec<(href, media_type)>
+    // Collect images from the OPF manifest. kindlegen also embeds images
+    // referenced from entry HTML that are missing from the manifest (a
+    // common PyGlossary quirk), so fall back to scanning the spine HTML
+    // for undeclared image files that exist on disk. See issue #4.
+    let mut image_items = opf.get_image_items(); // Vec<(href, media_type)>
+    let extras = opf.find_unreferenced_images();
+    if !extras.is_empty() {
+        eprintln!(
+            "Info: {} image(s) referenced by HTML but missing from manifest — embedding anyway",
+            extras.len()
+        );
+        image_items.extend(extras);
+    }
     let cover_href = opf.get_cover_image_href();
 
     let mut image_records: Vec<Vec<u8>> = Vec::new();
@@ -443,8 +454,19 @@ fn build_book_mobi(
     self_check: bool,
     kindlegen_parity: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Collect images from the OPF manifest
-    let image_items = opf.get_image_items(); // Vec<(href, media_type)>
+    // Collect images from the OPF manifest, plus any images referenced from
+    // spine HTML that are present on disk but missing from the manifest
+    // (same PyGlossary / OEB-1.x fallback the dictionary path uses — see
+    // issue #4).
+    let mut image_items = opf.get_image_items(); // Vec<(href, media_type)>
+    let extras = opf.find_unreferenced_images();
+    if !extras.is_empty() {
+        eprintln!(
+            "Info: {} image(s) referenced by HTML but missing from manifest — embedding anyway",
+            extras.len()
+        );
+        image_items.extend(extras);
+    }
     let cover_href = opf.get_cover_image_href();
 
     // Build the href-to-recindex mapping and load image data

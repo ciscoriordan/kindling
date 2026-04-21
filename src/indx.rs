@@ -38,31 +38,32 @@ struct TagDef {
 
 /// Encode a label string for use in an INDX entry.
 ///
-/// ASCII-only labels are stored as plain bytes. Labels with any non-ASCII
-/// characters are encoded as UTF-16BE.
+/// Labels are always written as UTF-16BE. The primary INDX header declares
+/// encoding `65002` (0xFDEA), which downstream parsers (iscc/mobi,
+/// KindleUnpack, libmobi) interpret as a fixed 2-byte-per-character label
+/// encoding. Storing ASCII labels as raw 1-byte-per-char bytes used to work
+/// on Kindle firmware but crashed iscc/mobi whenever a label had an odd
+/// byte count (e.g. "charlie" → 7 bytes), because the parser tried to
+/// decode the trailing byte as a UTF-16BE code unit. See issue #5.
 pub fn encode_indx_label(text: &str) -> Vec<u8> {
-    if text.chars().all(|c| (c as u32) < 128) {
-        text.as_bytes().to_vec()
-    } else {
-        let mut result = Vec::new();
-        for c in text.chars() {
-            let cp = c as u32;
-            if cp <= 0xFFFF {
-                result.push((cp >> 8) as u8);
-                result.push((cp & 0xFF) as u8);
-            } else {
-                // Surrogate pair for supplementary characters
-                let adjusted = cp - 0x10000;
-                let high = 0xD800 + (adjusted >> 10);
-                let low = 0xDC00 + (adjusted & 0x3FF);
-                result.push((high >> 8) as u8);
-                result.push((high & 0xFF) as u8);
-                result.push((low >> 8) as u8);
-                result.push((low & 0xFF) as u8);
-            }
+    let mut result = Vec::with_capacity(text.len() * 2);
+    for c in text.chars() {
+        let cp = c as u32;
+        if cp <= 0xFFFF {
+            result.push((cp >> 8) as u8);
+            result.push((cp & 0xFF) as u8);
+        } else {
+            // Surrogate pair for supplementary characters
+            let adjusted = cp - 0x10000;
+            let high = 0xD800 + (adjusted >> 10);
+            let low = 0xDC00 + (adjusted & 0x3FF);
+            result.push((high >> 8) as u8);
+            result.push((high & 0xFF) as u8);
+            result.push((low >> 8) as u8);
+            result.push((low & 0xFF) as u8);
         }
-        result
     }
+    result
 }
 
 /// Build all INDX records for the orthographic (dictionary) index.
@@ -504,4 +505,39 @@ fn build_indx_primary(
 fn put32(buf: &mut [u8], offset: usize, value: u32) {
     let bytes = value.to_be_bytes();
     buf[offset..offset + 4].copy_from_slice(&bytes);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encode_indx_label_ascii_is_utf16be() {
+        // Regression for issue #5: ASCII labels must be stored as UTF-16BE,
+        // because the primary INDX header declares encoding 0xFDEA. Raw
+        // 1-byte-per-char ASCII crashed iscc/mobi whenever a label had an
+        // odd byte count (e.g. "charlie" = 7 bytes).
+        assert_eq!(encode_indx_label("djed"),
+                   vec![0x00, b'd', 0x00, b'j', 0x00, b'e', 0x00, b'd']);
+        assert_eq!(encode_indx_label("charlie"),
+                   vec![0x00, b'c', 0x00, b'h', 0x00, b'a', 0x00, b'r',
+                        0x00, b'l', 0x00, b'i', 0x00, b'e']);
+    }
+
+    #[test]
+    fn encode_indx_label_is_always_even_byte_count() {
+        // The UTF-16BE invariant guarantees even-byte labels, which downstream
+        // 2-byte-per-char parsers (iscc/mobi, KindleUnpack) require.
+        for s in ["a", "ab", "abc", "abcdefg", "θάλασσα", "café", "日本語"] {
+            assert_eq!(encode_indx_label(s).len() % 2, 0,
+                "label {:?} must produce even byte count", s);
+        }
+    }
+
+    #[test]
+    fn encode_indx_label_non_bmp_uses_surrogate_pair() {
+        // U+1F600 (GRINNING FACE) → surrogate pair D83D DE00 in UTF-16BE.
+        let bytes = encode_indx_label("\u{1F600}");
+        assert_eq!(bytes, vec![0xD8, 0x3D, 0xDE, 0x00]);
+    }
 }

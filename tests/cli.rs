@@ -460,6 +460,51 @@ mod validate {
     }
 
     #[test]
+    fn build_dict_with_undeclared_html_image_embeds_it() {
+        // Regression for issue #4: PyGlossary-style dictionaries reference
+        // inline glyph GIFs from <idx:entry> HTML but do not always declare
+        // them in the OPF manifest. kindlegen embeds these anyway; kindling
+        // must match.
+        let (tmp, opf) = stage_fixture("dict_img_not_in_manifest", "content.opf");
+        let out = run_build(&["--no-validate", opf.to_str().unwrap()]);
+        assert!(
+            out.status.success(),
+            "build dict_img_not_in_manifest should succeed\n{}",
+            dump(&out)
+        );
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("referenced by HTML but missing from manifest"),
+            "expected fallback-embed notice in stderr\n{}",
+            dump(&out)
+        );
+        // Two images in the output: cover + undeclared glyph.
+        assert!(
+            stderr.contains("Collected 2 images"),
+            "expected 2 images in output (cover + glyph)\n{}",
+            dump(&out)
+        );
+
+        let expected = tmp.path().join("content.mobi");
+        assert!(expected.exists(), "expected dict output at {:?}", expected);
+
+        // Verify the glyph bytes made it into the MOBI, and the <img src=>
+        // was rewritten to a recindex reference.
+        let bytes = std::fs::read(&expected).unwrap();
+        let gif_magic = b"GIF89a";
+        assert!(
+            bytes.windows(gif_magic.len()).any(|w| w == gif_magic),
+            "expected glyph GIF bytes inside output MOBI"
+        );
+        // No leftover raw src="./glyph.gif" reference
+        assert!(
+            !bytes.windows(11).any(|w| w == b"./glyph.gif"),
+            "expected <img src='./glyph.gif'> to be rewritten to recindex"
+        );
+    }
+
+    #[test]
     fn build_non_dict_legacy_mobi_flag_produces_mobi() {
         // `--legacy-mobi` is the escape hatch: even on a non-dict book, this
         // should produce dual-format MOBI7+KF8 `.mobi` and pick the `.mobi`

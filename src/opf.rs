@@ -357,6 +357,88 @@ impl OPFData {
         items.into_iter().map(|(_, href, mt)| (href, mt)).collect()
     }
 
+    /// Scan spine HTML files for `<img src="...">` references that point at
+    /// image files present on disk but NOT declared in the OPF manifest, and
+    /// return them as `(href_relative_to_opf_base, media_type)` pairs.
+    ///
+    /// kindlegen quietly embeds such undeclared images. PyGlossary and other
+    /// OEB 1.x-era tools sometimes emit manifests that omit inline glyph GIFs
+    /// referenced from inside `<idx:entry>` HTML, so dictionaries produced
+    /// that way need the same "fall back to disk" behavior to render.
+    ///
+    /// Image srcs are resolved relative to the HTML file's directory (OPF
+    /// spec), collapsed into a manifest-style href relative to `base_dir`.
+    /// Results are deduped and returned in deterministic href order.
+    pub fn find_unreferenced_images(&self) -> Vec<(String, String)> {
+        use std::collections::BTreeSet;
+        use std::sync::OnceLock;
+        static IMG_SRC_RE: OnceLock<Regex> = OnceLock::new();
+        let img_src_re = IMG_SRC_RE.get_or_init(|| {
+            Regex::new(r#"(?i)<img\b[^>]*?\bsrc\s*=\s*"([^"]*)""#).unwrap()
+        });
+
+        let manifest_hrefs: HashMap<String, ()> = self
+            .manifest_items
+            .iter()
+            .map(|item| (item.href.clone(), ()))
+            .collect();
+
+        let mut found: BTreeSet<String> = BTreeSet::new();
+        for html_path in self.get_content_html_paths() {
+            let content = match std::fs::read_to_string(&html_path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let html_dir = html_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .to_path_buf();
+
+            for cap in img_src_re.captures_iter(&content) {
+                let src = cap.get(1).unwrap().as_str();
+                if src.is_empty() {
+                    continue;
+                }
+                // Remote, data: and scheme-qualified URLs have no local file.
+                if src.contains("://") || src.starts_with("data:") || src.starts_with("#") {
+                    continue;
+                }
+                let src_no_frag = src.split('#').next().unwrap_or(src);
+                let src_decoded = super_percent_decode(src_no_frag);
+
+                let candidate = html_dir.join(&src_decoded);
+                let canonical = candidate.canonicalize().unwrap_or(candidate);
+                if !canonical.is_file() {
+                    continue;
+                }
+                let base_canonical = self
+                    .base_dir
+                    .canonicalize()
+                    .unwrap_or_else(|_| self.base_dir.clone());
+                let rel = match canonical.strip_prefix(&base_canonical) {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                };
+                let href = rel
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                if href.is_empty() || manifest_hrefs.contains_key(&href) {
+                    continue;
+                }
+                found.insert(href);
+            }
+        }
+
+        found
+            .into_iter()
+            .filter_map(|href| {
+                guess_image_media_type(&href).map(|mt| (href, mt.to_string()))
+            })
+            .collect()
+    }
+
     /// Find the cover image manifest item id from OPF metadata.
     ///
     /// Returns the OPF manifest item `id` attribute for the cover image, which
@@ -739,6 +821,47 @@ fn unescape_html(text: &str) -> String {
     result
 }
 
+/// Percent-decode a URL path. Preserves the original bytes when the input
+/// contains no `%` escapes; otherwise decodes `%XX` triples as raw bytes.
+fn super_percent_decode(s: &str) -> String {
+    if !s.contains('%') {
+        return s.to_string();
+    }
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(h), Some(l)) = (hi, lo) {
+                out.push(((h << 4) | l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
+}
+
+/// Map a filename extension to a Kindle-supported image MIME type.
+/// Returns `None` for extensions we don't recognize as image formats, so
+/// unknown assets stay out of the image pool.
+fn guess_image_media_type(href: &str) -> Option<&'static str> {
+    let lower = href.to_ascii_lowercase();
+    let ext = lower.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
+    match ext {
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "png" => Some("image/png"),
+        "gif" => Some("image/gif"),
+        "bmp" => Some("image/bmp"),
+        "svg" => Some("image/svg+xml"),
+        _ => None,
+    }
+}
+
 /// Strip namespace prefixes and clean XML for parsing.
 fn clean_opf_xml(content: &str) -> String {
     let mut cleaned = content.to_string();
@@ -983,6 +1106,104 @@ verb
         let data = OPFData::parse(&opf_path).unwrap();
         assert_eq!(data.embedded_cover_href.as_deref(), Some("missing.png"));
         assert_eq!(data.get_cover_image_href(), None);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn find_unreferenced_images_picks_up_undeclared_gif() {
+        // PyGlossary-style: an entry HTML references a GIF that exists on disk
+        // next to the OPF, but the OPF manifest only declares the HTML file.
+        // kindlegen embeds the glyph anyway; we need to match that. Issue #4.
+        let dir = temp_dir("undeclared_img");
+        let opf = r#"<?xml version="1.0" encoding="utf-8"?>
+<package unique-identifier="u">
+<metadata>
+<dc-metadata xmlns:dc="http://purl.org/metadata/dublin_core">
+<dc:Title>T</dc:Title><dc:Language>fr</dc:Language><dc:Identifier id="u">x</dc:Identifier>
+</dc-metadata>
+<x-metadata><DictionaryInLanguage>fr</DictionaryInLanguage></x-metadata>
+</metadata>
+<manifest><item id="c" href="c.xhtml" media-type="application/xhtml+xml"/></manifest>
+<spine><itemref idref="c"/></spine>
+</package>"#;
+        let opf_path = dir.join("content.opf");
+        fs::write(&opf_path, opf).unwrap();
+        // Entry HTML with an <img> pointing at a glyph in the same dir.
+        let html = r#"<html><body><mbp:frameset>
+<idx:entry><idx:orth value="djed"/><b>djed</b>
+<img src="./glyph.gif" alt="g"/>
+</idx:entry></mbp:frameset></body></html>"#;
+        fs::write(dir.join("c.xhtml"), html).unwrap();
+        fs::write(dir.join("glyph.gif"), b"GIF89aSTUB").unwrap();
+
+        let data = OPFData::parse(&opf_path).unwrap();
+        let extras = data.find_unreferenced_images();
+        assert_eq!(extras.len(), 1);
+        assert_eq!(extras[0].0, "glyph.gif");
+        assert_eq!(extras[0].1, "image/gif");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn find_unreferenced_images_skips_declared_and_missing_files() {
+        // Images already in the manifest are NOT duplicated. src paths that
+        // don't resolve to a real file on disk are silently skipped.
+        let dir = temp_dir("declared_and_missing");
+        let opf = r#"<?xml version="1.0" encoding="utf-8"?>
+<package unique-identifier="u">
+<metadata>
+<dc-metadata xmlns:dc="http://purl.org/metadata/dublin_core">
+<dc:Title>T</dc:Title><dc:Language>en</dc:Language><dc:Identifier id="u">x</dc:Identifier>
+</dc-metadata>
+</metadata>
+<manifest>
+<item id="c" href="c.xhtml" media-type="application/xhtml+xml"/>
+<item id="cov" href="cover.png" media-type="image/png"/>
+</manifest>
+<spine><itemref idref="c"/></spine>
+</package>"#;
+        let opf_path = dir.join("content.opf");
+        fs::write(&opf_path, opf).unwrap();
+        let html = r#"<html><body>
+<img src="cover.png"/>
+<img src="does-not-exist.png"/>
+<img src="https://example.com/remote.png"/>
+</body></html>"#;
+        fs::write(dir.join("c.xhtml"), html).unwrap();
+        fs::write(dir.join("cover.png"), b"\x89PNG\r\n\x1a\n").unwrap();
+
+        let data = OPFData::parse(&opf_path).unwrap();
+        let extras = data.find_unreferenced_images();
+        assert!(extras.is_empty(), "expected no extras, got {:?}", extras);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn find_unreferenced_images_handles_percent_encoded_src() {
+        // Spaces and other reserved characters in <img src> are percent-
+        // encoded per HTML / OPF spec. The path must be decoded before we
+        // try to stat the file on disk.
+        let dir = temp_dir("percent_encoded_img");
+        let opf = r#"<?xml version="1.0" encoding="utf-8"?>
+<package unique-identifier="u">
+<metadata>
+<dc-metadata xmlns:dc="http://purl.org/metadata/dublin_core">
+<dc:Title>T</dc:Title><dc:Language>en</dc:Language><dc:Identifier id="u">x</dc:Identifier>
+</dc-metadata>
+</metadata>
+<manifest><item id="c" href="c.xhtml" media-type="application/xhtml+xml"/></manifest>
+<spine><itemref idref="c"/></spine>
+</package>"#;
+        let opf_path = dir.join("content.opf");
+        fs::write(&opf_path, opf).unwrap();
+        let html = r#"<html><body><img src="my%20glyph.png"/></body></html>"#;
+        fs::write(dir.join("c.xhtml"), html).unwrap();
+        fs::write(dir.join("my glyph.png"), b"\x89PNG\r\n\x1a\n").unwrap();
+
+        let data = OPFData::parse(&opf_path).unwrap();
+        let extras = data.find_unreferenced_images();
+        assert_eq!(extras.len(), 1);
+        assert_eq!(extras[0].0, "my glyph.png");
         fs::remove_dir_all(&dir).ok();
     }
 }
