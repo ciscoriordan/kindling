@@ -1661,6 +1661,22 @@ fn strip_idx_markup(html: &str) -> String {
     let entry_close = Regex::new(r"\s*</idx:entry>").unwrap();
     result = entry_close.replace_all(&result, "<hr/>").to_string();
 
+    // Strip class="..." and style="..." attributes from tag bodies.
+    //
+    // Kindle's library search preview and popup dictionary renderers do not
+    // honour CSS; when an entry's <table>/<td>/<img> carries style or class
+    // attributes, the preview engine bails mid-entry and shows raw tag text
+    // like `li value="1">` (reader-dict, issue #6). kindlegen normalises these
+    // away; we do the same so the preview sees plain structural markup only.
+    let class_attr = Regex::new(r#"\s+class\s*=\s*"[^"]*""#).unwrap();
+    result = class_attr.replace_all(&result, "").to_string();
+    let class_attr_sq = Regex::new(r#"\s+class\s*=\s*'[^']*'"#).unwrap();
+    result = class_attr_sq.replace_all(&result, "").to_string();
+    let style_attr = Regex::new(r#"\s+style\s*=\s*"[^"]*""#).unwrap();
+    result = style_attr.replace_all(&result, "").to_string();
+    let style_attr_sq = Regex::new(r#"\s+style\s*=\s*'[^']*'"#).unwrap();
+    result = style_attr_sq.replace_all(&result, "").to_string();
+
     // Collapse whitespace
     let ws = Regex::new(r"\s+").unwrap();
     result = ws.replace_all(&result, " ").to_string();

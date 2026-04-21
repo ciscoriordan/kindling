@@ -505,6 +505,38 @@ mod validate {
     }
 
     #[test]
+    fn build_dict_strips_class_and_style_attributes() {
+        // Regression for issue #6: Kindle's library-search dictionary preview
+        // mangles entries that carry class/style attributes, rendering raw
+        // tag text (e.g. `li value="1">`) and truncating everything past the
+        // first styled table. kindlegen normalises these attributes away; so
+        // do we.
+        let (tmp, opf) = stage_fixture("dict_styled_entry", "content.opf");
+        let out = run_build(&["--no-validate", opf.to_str().unwrap()]);
+        assert!(
+            out.status.success(),
+            "build dict_styled_entry should succeed\n{}",
+            dump(&out)
+        );
+
+        let expected = tmp.path().join("content.mobi");
+        assert!(expected.exists(), "expected dict output at {:?}", expected);
+
+        // The MOBI text record is PalmDOC-compressed, so short attribute
+        // strings survive uncompressed in the record bytes. If stripping
+        // failed, `class="` or `style="` would appear verbatim in the file.
+        let bytes = std::fs::read(&expected).unwrap();
+        assert!(
+            !bytes.windows(7).any(|w| w == b"class=\""),
+            "class=\"...\" attribute must be stripped from dict entries"
+        );
+        assert!(
+            !bytes.windows(7).any(|w| w == b"style=\""),
+            "style=\"...\" attribute must be stripped from dict entries"
+        );
+    }
+
+    #[test]
     fn build_non_dict_legacy_mobi_flag_produces_mobi() {
         // `--legacy-mobi` is the escape hatch: even on a non-dict book, this
         // should produce dual-format MOBI7+KF8 `.mobi` and pick the `.mobi`

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package unique-identifier="uid">
+<metadata>
+<dc-metadata xmlns:dc="http://purl.org/metadata/dublin_core">
+<dc:Title>Dict With Styled Entry</dc:Title>
+<dc:Language>fr</dc:Language>
+<dc:Identifier id="uid">dict-styled-fixture</dc:Identifier>
+<dc:Creator>Kindling Test Suite</dc:Creator>
+</dc-metadata>
+<x-metadata>
+<DictionaryInLanguage>fr</DictionaryInLanguage>
+<DictionaryOutLanguage>fr</DictionaryOutLanguage>
+<EmbeddedCover>cover.jpg</EmbeddedCover>
+</x-metadata>
+</metadata>
+<manifest>
+<item href="cover.jpg" id="cover.jpg" media-type="image/jpeg"/>
+<item href="content.html" id="content.html" media-type="application/xhtml+xml"/>
+</manifest>
+<spine>
+<itemref idref="content.html"/>
+</spine>
+<tours></tours>
+<guide></guide>
+</package>
