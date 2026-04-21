@@ -1,6 +1,6 @@
 # Kindling
 
-<img width="100%" alt="Kindling - The missing MOBI generator. Dictionaries, books, comics." src="images/kindling_social.jpg">
+<img width="100%" alt="Kindling - The missing MOBI generator. Dictionaries, books, comics." src="https://raw.githubusercontent.com/ciscoriordan/kindling/main/images/kindling_social.jpg">
 
 The missing Kindle toolkit. Dictionaries, books, and comics. Single static Rust binary, no dependencies, cross-platform.
 
@@ -13,8 +13,8 @@ Kindling was built by reverse-engineering Amazon's undocumented MOBI format byte
 Pre-built binaries for Mac (Apple Silicon, Intel), Linux (x86_64), and Windows (x86_64): [Releases](https://github.com/ciscoriordan/kindling/releases)
 
 <p align="center">
-  <img width="400" alt="Greek dictionary lookup on Kindle" src="images/kindle_test.jpg">
-  <img width="400" alt="Pepper & Carrot comic on Kindle" src="images/kindle_comic_test.jpg">
+  <img width="400" alt="Greek dictionary lookup on Kindle" src="https://raw.githubusercontent.com/ciscoriordan/kindling/main/images/kindle_test.jpg">
+  <img width="400" alt="Pepper & Carrot comic on Kindle" src="https://raw.githubusercontent.com/ciscoriordan/kindling/main/images/kindle_comic_test.jpg">
 </p>
 
 ## Features
