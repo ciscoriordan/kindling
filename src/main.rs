@@ -98,6 +98,16 @@ enum Commands {
         /// tags, or `<hr/` corruption. Overhead is typically 50-200 ms.
         #[arg(long)]
         no_self_check: bool,
+
+        /// Strict accent matching for dictionary lookups. By default
+        /// kindling embeds the kindlegen-derived ORDT/SPL collation tables
+        /// in the orth INDX, which makes Kindle fold diacritics at lookup
+        /// time ("meme" matches "même"). With this flag, the collation
+        /// blob is omitted: Kindle falls back to raw UTF-16BE ordering,
+        /// so exact-accent headwords always beat unaccented homographs
+        /// when both exist in the dictionary. No effect on book builds.
+        #[arg(long)]
+        strict_accents: bool,
     },
 
     /// Convert comic images/CBZ/CBR/EPUB to Kindle-optimized MOBI
@@ -492,6 +502,7 @@ fn detect_is_dictionary(input: &std::path::Path) -> bool {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn do_build(
     input: &PathBuf,
     output_path: &PathBuf,
@@ -505,6 +516,7 @@ fn do_build(
     kindle_limits: bool,
     no_validate: bool,
     self_check: bool,
+    strict_accents: bool,
 ) {
     let is_epub = input
         .extension()
@@ -600,11 +612,13 @@ fn do_build(
             e, output_path, no_compress, headwords_only,
             srcs_data.as_deref(), include_cmet, no_hd_images, creator_tag, kf8_only, None, kindle_limits, self_check,
             false, // kindlegen_parity: only meaningful for the comic path
+            strict_accents,
         ),
         None => mobi::build_mobi(
             &opf_path, output_path, no_compress, headwords_only,
             srcs_data.as_deref(), include_cmet, no_hd_images, creator_tag, kf8_only, None, kindle_limits, self_check,
             false, // kindlegen_parity: only meaningful for the comic path
+            strict_accents,
         ),
     };
 
@@ -668,7 +682,7 @@ fn main() {
             input.with_extension("mobi")
         };
 
-        do_build(&input, &output_path, false, false, true, false, false, false, false, true, no_validate, !no_self_check);
+        do_build(&input, &output_path, false, false, true, false, false, false, false, true, no_validate, !no_self_check, false);
     } else {
         let cli = Cli::parse();
 
@@ -688,6 +702,7 @@ fn main() {
                 no_kindle_limits,
                 no_validate,
                 no_self_check,
+                strict_accents,
             } => {
                 // Default: ON for dictionaries, OFF for books.
                 // Since we don't know the content type yet at parse time, we pass
@@ -746,7 +761,7 @@ fn main() {
                 };
 
                 let output_path = resolve_output_path(&input, output, effective_kf8_only);
-                do_build(&input, &output_path, no_compress, headwords_only, !no_embed_source, include_cmet, no_hd_images, creator_tag, effective_kf8_only, effective_kindle_limits, no_validate, !no_self_check);
+                do_build(&input, &output_path, no_compress, headwords_only, !no_embed_source, include_cmet, no_hd_images, creator_tag, effective_kf8_only, effective_kindle_limits, no_validate, !no_self_check, strict_accents);
             }
             Commands::Comic {
                 input,

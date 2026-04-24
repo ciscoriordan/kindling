@@ -76,9 +76,12 @@ kindling-cli build input.opf -o output.mobi --no-compress    # skip compression 
 kindling-cli build input.opf -o output.mobi --headwords-only  # index headwords only (no inflections)
 kindling-cli build input.opf -o output.mobi --no-kindle-limits  # skip per-letter HTML grouping
 kindling-cli build input.opf -o output.mobi --no-validate     # skip KDP pre-flight validation
+kindling-cli build input.opf -o output.mobi --strict-accents  # exact accent match (see below)
 ```
 
 The input OPF must reference HTML files with `<idx:entry>`, `<idx:orth>`, and `<idx:iform>` markup following the [Amazon Kindle Publishing Guidelines](http://kindlegen.s3.amazonaws.com/AmazonKindlePublishingGuidelines.pdf). Both headwords and inflected forms are indexed so that looking up any form on the Kindle finds the correct dictionary entry.
+
+By default, dictionaries embed the kindlegen-derived ORDT/SPL collation tables in the orth index so Kindle folds diacritics at lookup time: looking up `meme` finds `même`, `mere` finds `mère`, etc. This matches kindlegen's behaviour and is what most users want. Pass `--strict-accents` to omit the collation blob; Kindle then uses raw UTF-16BE ordering so exact-accent headwords always beat unaccented homographs when both exist in the dictionary (e.g. `même` returns the `même` entry, not the `meme` entry). The flag has no effect on book builds.
 
 If the OPF references a cover image (Method 1 `<item properties="coverimage"/>` or Method 2 `<meta name="cover">`), Kindling embeds it in the dictionary MOBI via EXTH 201 so it shows up on the Kindle home screen next to regular books and comics.
 

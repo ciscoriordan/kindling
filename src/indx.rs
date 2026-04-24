@@ -75,6 +75,7 @@ pub fn encode_indx_label(text: &str) -> Vec<u8> {
 pub fn build_orth_indx(
     lookup_terms: &[LookupTerm],
     headword_chars: &HashSet<char>,
+    strict_accents: bool,
 ) -> Vec<Vec<u8>> {
     // --- Sub-index 1: Headword entries ---
     let tag_defs1 = [
@@ -155,7 +156,7 @@ pub fn build_orth_indx(
         last_labels.push(prev_label_bytes);
     }
 
-    let primary1 = build_indx_primary(&tagx1, data_records.len(), lookup_terms.len(), &last_labels, 199);
+    let primary1 = build_indx_primary(&tagx1, data_records.len(), lookup_terms.len(), &last_labels, 199, strict_accents);
 
     let mut sub1 = vec![primary1];
     sub1.extend(data_records);
@@ -196,7 +197,7 @@ pub fn build_orth_indx(
         vec![]
     };
 
-    let char_primary = build_indx_primary(&tagx2, 1, chars.len(), &[last_char_label], 192);
+    let char_primary = build_indx_primary(&tagx2, 1, chars.len(), &[last_char_label], 192, false);
     let sub2 = vec![char_primary, char_data_rec];
 
     // --- Sub-index 3: "default" index name ---
@@ -211,7 +212,7 @@ pub fn build_orth_indx(
     let tag_values3 = vec![(1u8, 0u32)];
     let default_entry = encode_indx_entry(&default_label, &[], &tag_values3, &tag_defs3);
     let default_data_rec = build_indx_data_record(&[default_entry]);
-    let default_primary = build_indx_primary(&tagx3, 1, 1, &[default_label], 192);
+    let default_primary = build_indx_primary(&tagx3, 1, 1, &[default_label], 192, false);
     let sub3 = vec![default_primary, default_data_rec];
 
     let total_sub1 = sub1.len();
@@ -358,12 +359,18 @@ fn build_indx_data_record(entry_list: &[Vec<u8>]) -> Vec<u8> {
 ///
 /// For sub-index 1 (headwords), header_length=199 includes the embedded
 /// "default" string. For sub-indexes 2 and 3, header_length=192.
+///
+/// `strict_accents` only matters for sub-index 1: when true, the ORDT/SPL
+/// collation blob is omitted so Kindle falls back to raw UTF-16BE
+/// ordering and exact-accent hits beat fuzzy ones on-device. Sub-indexes
+/// 2 and 3 always pass false; they never embed the blob regardless.
 fn build_indx_primary(
     tagx: &[u8],
     num_data_records: usize,
     total_entries: usize,
     last_labels: &[Vec<u8>],
     header_length: usize,
+    strict_accents: bool,
 ) -> Vec<u8> {
     let embed_default = header_length == 199;
     let default_str: &[u8] = if embed_default { b"default" } else { b"" };
@@ -429,8 +436,11 @@ fn build_indx_primary(
         record.push(0x00);
     }
 
-    // Append ORDT/SPL sort tables for the main headword sub-index (hdr=199)
-    if embed_default && !ORDT_GREEK.is_empty() {
+    // Append ORDT/SPL sort tables for the main headword sub-index (hdr=199).
+    // `strict_accents` suppresses the embed so Kindle reverts to plain
+    // UTF-16BE collation; exact-accented headwords then beat fuzzy matches
+    // at lookup time (see the --strict-accents CLI flag).
+    if embed_default && !strict_accents && !ORDT_GREEK.is_empty() {
         let ordt_start = record.len();
         record.extend_from_slice(ORDT_GREEK);
 

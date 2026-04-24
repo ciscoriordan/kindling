@@ -451,6 +451,7 @@ pub fn build_comic_with_options(
         options.kindle_limits,
         options.self_check,
         options.kindlegen_parity,
+        false,  // strict_accents (dictionary-only flag, no effect on comics)
     );
 
     // Step 6: Clean up temp dirs

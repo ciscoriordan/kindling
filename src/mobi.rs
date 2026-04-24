@@ -47,6 +47,7 @@ pub fn build_mobi(
     kindle_limits: bool,
     self_check: bool,
     kindlegen_parity: bool,
+    strict_accents: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let extracted = ExtractedEpub::from_opf_path(opf_path)?;
     build_mobi_from_extracted(
@@ -63,6 +64,7 @@ pub fn build_mobi(
         kindle_limits,
         self_check,
         kindlegen_parity,
+        strict_accents,
     )
 }
 
@@ -87,6 +89,7 @@ pub fn build_mobi_from_extracted(
     kindle_limits: bool,
     self_check: bool,
     kindlegen_parity: bool,
+    strict_accents: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let opf = &extracted.opf;
 
@@ -100,13 +103,15 @@ pub fn build_mobi_from_extracted(
         eprintln!("Detected dictionary content");
         // kindlegen_parity is a no-op for dictionaries (MOBI7 / KF7 path).
         let _ = kindlegen_parity;
-        build_dictionary_mobi(opf, output_path, no_compress, headwords_only, srcs_data, include_cmet, creator_tag, kindle_limits, self_check)
+        build_dictionary_mobi(opf, output_path, no_compress, headwords_only, srcs_data, include_cmet, creator_tag, kindle_limits, self_check, strict_accents)
     } else {
         if kf8_only {
             eprintln!("Detected book content, building KF8-only (.azw3)");
         } else {
             eprintln!("Detected book content (no idx:entry tags found)");
         }
+        // strict_accents only affects the dictionary orth INDX; books have no INDX.
+        let _ = strict_accents;
         build_book_mobi(opf, output_path, no_compress, srcs_data, include_cmet, !no_hd_images, creator_tag, kf8_only, doc_type, kindle_limits, self_check, kindlegen_parity)
     }
 }
@@ -130,6 +135,7 @@ const KINDLE_HTML_SIZE_LIMIT: usize = 30 * 1024 * 1024;
 const KINDLE_HTML_FILE_LIMIT: usize = 300;
 
 /// Build a dictionary MOBI file (existing behavior).
+#[allow(clippy::too_many_arguments)]
 fn build_dictionary_mobi(
     opf: &OPFData,
     output_path: &Path,
@@ -140,6 +146,7 @@ fn build_dictionary_mobi(
     creator_tag: bool,
     kindle_limits: bool,
     self_check: bool,
+    strict_accents: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Parse all dictionary entries from HTML content
     let mut all_entries: Vec<DictionaryEntry> = Vec::new();
@@ -322,7 +329,7 @@ fn build_dictionary_mobi(
             }
         }
     }
-    let indx_records = indx::build_orth_indx(&lookup_terms, &headword_chars_for_indx);
+    let indx_records = indx::build_orth_indx(&lookup_terms, &headword_chars_for_indx, strict_accents);
     eprintln!("  Orth INDX: {} records", indx_records.len());
 
     // Build FLIS, FCIS, EOF records

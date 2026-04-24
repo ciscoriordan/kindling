@@ -261,6 +261,7 @@ mod tests {
             false, // kindle_limits (disabled in tests by default)
             false, // self_check (off in tests; dedicated tests cover the checker)
             false, // kindlegen_parity
+            false, // strict_accents
         )
         .expect("build_mobi failed");
         fs::read(&output_path).expect("could not read output MOBI")
@@ -556,6 +557,73 @@ mod tests {
         println!("  \u{2713} INDX headword count: {}", total_entries);
     }
 
+    /// The ORDT/SPL collation blob makes Kindle fold diacritics at lookup
+    /// time. It's embedded by default; `--strict-accents` suppresses it so
+    /// exact-accented headwords beat fuzzy matches.
+    #[test]
+    fn test_dict_strict_accents_toggle() {
+        fn build(dir: &Path, strict: bool) -> Vec<u8> {
+            let opf = create_dict_fixture(
+                dir,
+                &[("meme", &[]), ("même", &[]), ("mere", &[]), ("mère", &[])],
+            );
+            let output = dir.join("output.mobi");
+            mobi::build_mobi(
+                &opf, &output, true, false, None, false, false, false, false, None, false, false, false, strict,
+            )
+            .expect("build_mobi failed");
+            fs::read(&output).unwrap()
+        }
+
+        fn orth_primary(data: &[u8]) -> Vec<u8> {
+            let (_, _, offsets) = parse_palmdb(data);
+            let rec0 = get_record(data, &offsets, 0);
+            let orth_idx = read_u32_be(rec0, 40) as usize;
+            get_record(data, &offsets, orth_idx).to_vec()
+        }
+
+        let dir_default = TempDir::new("strict_off");
+        let dir_strict = TempDir::new("strict_on");
+
+        let default_indx = orth_primary(&build(dir_default.path(), false));
+        let strict_indx = orth_primary(&build(dir_strict.path(), true));
+
+        // Default build: ORDT/SPL collation blob must be embedded.
+        let ordt_count_default = default_indx.windows(4).filter(|w| *w == b"ORDT").count();
+        let spl_present_default = default_indx.windows(4).any(|w| w == b"SPL1");
+        assert!(
+            ordt_count_default >= 2,
+            "default orth INDX should contain ORDT1+ORDT2 magics (got {})",
+            ordt_count_default
+        );
+        assert!(
+            spl_present_default,
+            "default orth INDX should contain SPL collation tables"
+        );
+
+        // Strict build: no ORDT/SPL at all in the orth INDX.
+        let ordt_count_strict = strict_indx.windows(4).filter(|w| *w == b"ORDT").count();
+        let spl_present_strict = strict_indx.windows(4).any(|w| w == b"SPL1");
+        assert_eq!(
+            ordt_count_strict, 0,
+            "strict_accents orth INDX must not embed ORDT"
+        );
+        assert!(
+            !spl_present_strict,
+            "strict_accents orth INDX must not embed SPL"
+        );
+
+        // Both builds must still declare 4 headword entries.
+        assert_eq!(read_u32_be(&default_indx, 36), 4);
+        assert_eq!(read_u32_be(&strict_indx, 36), 4);
+
+        println!(
+            "  \u{2713} strict_accents toggle: default embeds ORDT/SPL ({} bytes), strict omits ({} bytes)",
+            default_indx.len(),
+            strict_indx.len()
+        );
+    }
+
     // =======================================================================
     // 4. Book MOBI validation
     // =======================================================================
@@ -679,6 +747,7 @@ mod tests {
             false, // kindle_limits
             false, // self_check (off in tests for speed)
             false, // kindlegen_parity
+            false, // strict_accents
         )
         .expect("build_mobi (kf8_only) failed");
         fs::read(&output_path).expect("could not read output AZW3")
@@ -4470,6 +4539,7 @@ mod tests {
             true,  // kindle_limits ON
             false, // self_check
             false, // kindlegen_parity
+            false, // strict_accents
         )
         .expect("build_mobi with kindle_limits should succeed");
 
@@ -4520,6 +4590,7 @@ mod tests {
             true,  // kindle_limits ON
             false, // self_check
             false, // kindlegen_parity
+            false, // strict_accents
         )
         .expect("build_mobi with kindle_limits for book should succeed");
 
@@ -4553,6 +4624,7 @@ mod tests {
             false, // kindle_limits OFF
             false, // self_check
             false, // kindlegen_parity
+            false, // strict_accents
         )
         .expect("build_mobi without kindle_limits should succeed");
 
@@ -4686,6 +4758,7 @@ mod tests {
             true,  // kindle_limits ON
             false, // self_check
             false, // kindlegen_parity
+            false, // strict_accents
         )
         .expect("build_mobi with kindle_limits should succeed");
 
@@ -4798,6 +4871,7 @@ mod tests {
             true,  // kindle_limits ON
             false, // self_check
             false, // kindlegen_parity
+            false, // strict_accents
         )
         .expect("build_mobi with kindle_limits failed");
         fs::read(&output_path).expect("could not read output MOBI")
@@ -5395,6 +5469,7 @@ mod tests {
             false,
             false, // self_check
             false, // kindlegen_parity
+            false, // strict_accents
         )
         .expect("compressed build_mobi failed");
         let data_comp = fs::read(&output_comp).expect("could not read compressed MOBI");
@@ -7046,7 +7121,7 @@ mod tests {
         // Compressed
         let output_c = dir_c.path().join("output_comp.mobi");
         mobi::build_mobi(
-            &opf_c, &output_c, false, false, None, false, false, false, false, None, false, false, false,
+            &opf_c, &output_c, false, false, None, false, false, false, false, None, false, false, false, false,
         ).expect("compressed build failed");
         let data_c = fs::read(&output_c).unwrap();
 
@@ -8494,7 +8569,7 @@ mod tests {
         // And the MOBI build itself should still succeed end-to-end.
         let output = dir.path().join("out.mobi");
         mobi::build_mobi(
-            &opf, &output, true, false, None, false, false, false, false, None, false, false, false,
+            &opf, &output, true, false, None, false, false, false, false, None, false, false, false, false,
         )
         .expect("build should succeed for clean OPF");
         assert!(output.exists(), "MOBI output file must exist");
@@ -9018,6 +9093,7 @@ mod tests {
             false, // kindle_limits
             true,  // self_check ENABLED
             false, // kindlegen_parity
+            false, // strict_accents
         )
         .expect("build with self_check enabled should succeed");
 
