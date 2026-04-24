@@ -1537,12 +1537,24 @@ fn build_text_content_by_letter(opf: &OPFData, entries: &[DictionaryEntry]) -> V
 
     // Build dictionary sections, splitting at entry boundaries to stay under 30MB.
     // Entries stay in file order so find_entry_positions can locate them sequentially.
+    //
+    // The strip_idx_markup pass is the dominant cost on large dictionaries
+    // (~500k entries * ~20 regex passes each). Parallelise the pure function
+    // with rayon, then stitch chunks serially to preserve entry ordering and
+    // the 30MB section boundary math.
+    use rayon::prelude::*;
+    let stripped_entries: Vec<String> = entries
+        .par_iter()
+        .map(|entry| strip_idx_markup(&entry.html_content))
+        .collect();
+
     let mut dict_sections: Vec<String> = Vec::new();
     let mut current_chunk = String::new();
 
-    for entry in entries {
-        let stripped = strip_idx_markup(&entry.html_content);
-        if !current_chunk.is_empty() && current_chunk.len() + stripped.len() > KINDLE_HTML_SIZE_LIMIT {
+    for stripped in stripped_entries {
+        if !current_chunk.is_empty()
+            && current_chunk.len() + stripped.len() > KINDLE_HTML_SIZE_LIMIT
+        {
             dict_sections.push(current_chunk);
             current_chunk = String::new();
         }
@@ -1592,74 +1604,126 @@ fn build_text_content_by_letter(opf: &OPFData, entries: &[DictionaryEntry]) -> V
 
 /// Strip idx: namespace tags from HTML, keeping only display content.
 fn strip_idx_markup(html: &str) -> String {
-    let mut result = html.to_string();
+    use std::sync::OnceLock;
+    // Hoist every regex into a process-wide OnceLock so
+    // build_text_content_by_letter (called once per entry, 502k+ times on the
+    // FR reader-dict) doesn't pay the regex compile cost per call. This used
+    // to be 10M+ regex compilations per build.
+    static XML_DECL: OnceLock<Regex> = OnceLock::new();
+    static XMLNS: OnceLock<Regex> = OnceLock::new();
+    static STYLE_RE: OnceLock<Regex> = OnceLock::new();
+    static HEAD_RE: OnceLock<Regex> = OnceLock::new();
+    static IFORM: OnceLock<Regex> = OnceLock::new();
+    static INFL_EMPTY: OnceLock<Regex> = OnceLock::new();
+    static INFL_FULL: OnceLock<Regex> = OnceLock::new();
+    static ORTH_SELF: OnceLock<Regex> = OnceLock::new();
+    static ORTH_OPEN: OnceLock<Regex> = OnceLock::new();
+    static ORTH_CLOSE: OnceLock<Regex> = OnceLock::new();
+    static SHORT_OPEN: OnceLock<Regex> = OnceLock::new();
+    static SHORT_CLOSE: OnceLock<Regex> = OnceLock::new();
+    static ENTRY_OPEN: OnceLock<Regex> = OnceLock::new();
+    static ENTRY_CLOSE: OnceLock<Regex> = OnceLock::new();
+    static CLASS_ATTR: OnceLock<Regex> = OnceLock::new();
+    static CLASS_ATTR_SQ: OnceLock<Regex> = OnceLock::new();
+    static STYLE_ATTR: OnceLock<Regex> = OnceLock::new();
+    static STYLE_ATTR_SQ: OnceLock<Regex> = OnceLock::new();
+    static WS: OnceLock<Regex> = OnceLock::new();
+    static TAG_SPACE: OnceLock<Regex> = OnceLock::new();
 
-    // Remove XML declarations
-    let xml_decl = Regex::new(r"<\?xml[^?]*\?>\s*").unwrap();
-    result = xml_decl.replace_all(&result, "").to_string();
+    let xml_decl = XML_DECL.get_or_init(|| Regex::new(r"<\?xml[^?]*\?>\s*").unwrap());
+    let xmlns = XMLNS.get_or_init(|| Regex::new(r#"\s+xmlns:\w+="[^"]*""#).unwrap());
+    let style_re = STYLE_RE.get_or_init(|| Regex::new(r"(?s)<style[^>]*>.*?</style>").unwrap());
+    let head_re = HEAD_RE.get_or_init(|| Regex::new(r"(?s)<head>.*?</head>").unwrap());
+    let iform = IFORM.get_or_init(|| Regex::new(r"<idx:iform[^/]*/>\s*").unwrap());
+    let infl_empty = INFL_EMPTY.get_or_init(|| Regex::new(r"<idx:infl>\s*</idx:infl>\s*").unwrap());
+    let infl_full =
+        INFL_FULL.get_or_init(|| Regex::new(r"(?s)\s*<idx:infl>.*?</idx:infl>\s*").unwrap());
+    let orth_self = ORTH_SELF.get_or_init(|| Regex::new(r"<idx:orth[^>]*/>").unwrap());
+    let orth_open = ORTH_OPEN.get_or_init(|| Regex::new(r"<idx:orth[^>]*>").unwrap());
+    let orth_close = ORTH_CLOSE.get_or_init(|| Regex::new(r"</idx:orth>").unwrap());
+    let short_open = SHORT_OPEN.get_or_init(|| Regex::new(r"<idx:short>\s*").unwrap());
+    let short_close = SHORT_CLOSE.get_or_init(|| Regex::new(r"\s*</idx:short>").unwrap());
+    let entry_open = ENTRY_OPEN.get_or_init(|| Regex::new(r"<idx:entry[^>]*>\s*").unwrap());
+    let entry_close = ENTRY_CLOSE.get_or_init(|| Regex::new(r"\s*</idx:entry>").unwrap());
+    let class_attr = CLASS_ATTR.get_or_init(|| Regex::new(r#"\s+class\s*=\s*"[^"]*""#).unwrap());
+    let class_attr_sq =
+        CLASS_ATTR_SQ.get_or_init(|| Regex::new(r#"\s+class\s*=\s*'[^']*'"#).unwrap());
+    let style_attr = STYLE_ATTR.get_or_init(|| Regex::new(r#"\s+style\s*=\s*"[^"]*""#).unwrap());
+    let style_attr_sq =
+        STYLE_ATTR_SQ.get_or_init(|| Regex::new(r#"\s+style\s*=\s*'[^']*'"#).unwrap());
+    let ws = WS.get_or_init(|| Regex::new(r"\s+").unwrap());
+    let tag_space = TAG_SPACE.get_or_init(|| Regex::new(r">\s+<").unwrap());
 
-    // Remove xmlns:* attributes
-    let xmlns = Regex::new(r#"\s+xmlns:\w+="[^"]*""#).unwrap();
-    result = xmlns.replace_all(&result, "").to_string();
+    // Fast-path bailouts: most entry-level HTML chunks do NOT contain XML
+    // declarations, <head>, or xmlns: attributes, so avoid the regex scan
+    // entirely when the fixed substring isn't present. The regex engine still
+    // has to walk the full string even when no match exists.
+    let mut result: std::borrow::Cow<str> = std::borrow::Cow::Borrowed(html);
 
-    // Extract any <style>...</style> blocks from the <head> before replacing it
-    let style_re = Regex::new(r"(?s)<style[^>]*>.*?</style>").unwrap();
-    let head_re = Regex::new(r"(?s)<head>.*?</head>").unwrap();
-    let style_block: String = head_re
-        .find(&result)
-        .map(|head_match| {
-            style_re
-                .find_iter(head_match.as_str())
-                .map(|m| m.as_str().to_string())
-                .collect::<Vec<_>>()
-                .join("")
-        })
-        .unwrap_or_default();
-    let new_head = if style_block.is_empty() {
-        "<head><guide></guide></head>".to_string()
-    } else {
-        format!("<head>{}<guide></guide></head>", style_block)
-    };
-    result = head_re
-        .replace_all(&result, new_head.as_str())
-        .to_string();
+    if result.contains("<?xml") {
+        result = std::borrow::Cow::Owned(xml_decl.replace_all(&result, "").to_string());
+    }
 
-    // Remove idx:iform tags entirely
-    let iform = Regex::new(r"<idx:iform[^/]*/>\s*").unwrap();
-    result = iform.replace_all(&result, "").to_string();
+    if result.contains("xmlns:") {
+        result = std::borrow::Cow::Owned(xmlns.replace_all(&result, "").to_string());
+    }
 
-    // Remove idx:infl tags and content
-    let infl_empty = Regex::new(r"<idx:infl>\s*</idx:infl>\s*").unwrap();
-    result = infl_empty.replace_all(&result, "").to_string();
+    if result.contains("<head") {
+        let style_block: String = head_re
+            .find(&result)
+            .map(|head_match| {
+                style_re
+                    .find_iter(head_match.as_str())
+                    .map(|m| m.as_str().to_string())
+                    .collect::<Vec<_>>()
+                    .join("")
+            })
+            .unwrap_or_default();
+        let new_head = if style_block.is_empty() {
+            "<head><guide></guide></head>".to_string()
+        } else {
+            format!("<head>{}<guide></guide></head>", style_block)
+        };
+        result = std::borrow::Cow::Owned(
+            head_re.replace_all(&result, new_head.as_str()).to_string(),
+        );
+    }
 
-    let infl_full = Regex::new(r"(?s)\s*<idx:infl>.*?</idx:infl>\s*").unwrap();
-    result = infl_full.replace_all(&result, "").to_string();
+    if result.contains("<idx:iform") {
+        result = std::borrow::Cow::Owned(iform.replace_all(&result, "").to_string());
+    }
 
-    // Remove idx:orth tags but keep inner content (v0.5.0/lemma v1.0.0
-    // behaviour; h5 wrapping was breaking on-device popup routing).
-    let orth_self = Regex::new(r"<idx:orth[^>]*/>").unwrap();
-    result = orth_self.replace_all(&result, "").to_string();
+    if result.contains("<idx:infl") {
+        // Remove idx:infl tags and content
+        result = std::borrow::Cow::Owned(infl_empty.replace_all(&result, "").to_string());
+        result = std::borrow::Cow::Owned(infl_full.replace_all(&result, "").to_string());
+    }
 
-    let orth_open = Regex::new(r"<idx:orth[^>]*>").unwrap();
-    result = orth_open.replace_all(&result, "").to_string();
+    if result.contains("<idx:orth") {
+        // Remove idx:orth tags but keep inner content (v0.5.0/lemma v1.0.0
+        // behaviour; h5 wrapping was breaking on-device popup routing).
+        result = std::borrow::Cow::Owned(orth_self.replace_all(&result, "").to_string());
+        result = std::borrow::Cow::Owned(orth_open.replace_all(&result, "").to_string());
+    }
+    if result.contains("</idx:orth>") {
+        result = std::borrow::Cow::Owned(orth_close.replace_all(&result, "").to_string());
+    }
 
-    let orth_close = Regex::new(r"</idx:orth>").unwrap();
-    result = orth_close.replace_all(&result, "").to_string();
+    if result.contains("<idx:short>") {
+        result = std::borrow::Cow::Owned(short_open.replace_all(&result, "").to_string());
+    }
+    if result.contains("</idx:short>") {
+        result = std::borrow::Cow::Owned(short_close.replace_all(&result, "").to_string());
+    }
 
-    // Remove idx:short tags but keep inner content
-    let short_open = Regex::new(r"<idx:short>\s*").unwrap();
-    result = short_open.replace_all(&result, "").to_string();
-
-    let short_close = Regex::new(r"\s*</idx:short>").unwrap();
-    result = short_close.replace_all(&result, "").to_string();
-
-    // Remove idx:entry open tags but keep inner content;
-    // replace close tags with <hr/> to visually separate entries
-    let entry_open = Regex::new(r"<idx:entry[^>]*>\s*").unwrap();
-    result = entry_open.replace_all(&result, "").to_string();
-
-    let entry_close = Regex::new(r"\s*</idx:entry>").unwrap();
-    result = entry_close.replace_all(&result, "<hr/>").to_string();
+    if result.contains("<idx:entry") {
+        // Remove idx:entry open tags but keep inner content;
+        // replace close tags with <hr/> to visually separate entries
+        result = std::borrow::Cow::Owned(entry_open.replace_all(&result, "").to_string());
+    }
+    if result.contains("</idx:entry>") {
+        result = std::borrow::Cow::Owned(entry_close.replace_all(&result, "<hr/>").to_string());
+    }
 
     // Strip class="..." and style="..." attributes from tag bodies.
     //
@@ -1668,27 +1732,32 @@ fn strip_idx_markup(html: &str) -> String {
     // attributes, the preview engine bails mid-entry and shows raw tag text
     // like `li value="1">` (reader-dict, issue #6). kindlegen normalises these
     // away; we do the same so the preview sees plain structural markup only.
-    let class_attr = Regex::new(r#"\s+class\s*=\s*"[^"]*""#).unwrap();
-    result = class_attr.replace_all(&result, "").to_string();
-    let class_attr_sq = Regex::new(r#"\s+class\s*=\s*'[^']*'"#).unwrap();
-    result = class_attr_sq.replace_all(&result, "").to_string();
-    let style_attr = Regex::new(r#"\s+style\s*=\s*"[^"]*""#).unwrap();
-    result = style_attr.replace_all(&result, "").to_string();
-    let style_attr_sq = Regex::new(r#"\s+style\s*=\s*'[^']*'"#).unwrap();
-    result = style_attr_sq.replace_all(&result, "").to_string();
+    if result.contains("class") {
+        result = std::borrow::Cow::Owned(class_attr.replace_all(&result, "").to_string());
+        result = std::borrow::Cow::Owned(class_attr_sq.replace_all(&result, "").to_string());
+    }
+    if result.contains("style") {
+        result = std::borrow::Cow::Owned(style_attr.replace_all(&result, "").to_string());
+        result = std::borrow::Cow::Owned(style_attr_sq.replace_all(&result, "").to_string());
+    }
 
     // Collapse whitespace
-    let ws = Regex::new(r"\s+").unwrap();
-    result = ws.replace_all(&result, " ").to_string();
+    result = std::borrow::Cow::Owned(ws.replace_all(&result, " ").to_string());
 
     // Clean up spaces around HTML tags
-    let tag_space = Regex::new(r">\s+<").unwrap();
-    result = tag_space.replace_all(&result, "><").to_string();
+    result = std::borrow::Cow::Owned(tag_space.replace_all(&result, "><").to_string());
 
-    // Restore important spaces
-    result = result.replace("</b><", "</b> <");
-    result = result.replace("</p><hr", "</p> <hr");
-    result = result.replace("/><b>", "/> <b>");
+    // Restore important spaces (cheap literal replaces)
+    let mut result = result.into_owned();
+    if result.contains("</b><") {
+        result = result.replace("</b><", "</b> <");
+    }
+    if result.contains("</p><hr") {
+        result = result.replace("</p><hr", "</p> <hr");
+    }
+    if result.contains("/><b>") {
+        result = result.replace("/><b>", "/> <b>");
+    }
 
     result.trim().to_string()
 }
@@ -3248,10 +3317,13 @@ fn put32(buf: &mut [u8], offset: usize, value: u32) {
 }
 
 /// Find a byte sequence in a slice, returning the start position.
+///
+/// Uses memchr's SIMD-accelerated two-way substring search (orders of
+/// magnitude faster than `windows(n).position()` on large haystacks - the
+/// find_entry_positions path scans the full 135MB text blob millions of
+/// times on a large dictionary build).
 fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|w| w == needle)
+    memchr::memmem::find(haystack, needle)
 }
 
 /// Find a byte sequence starting from a given position.
@@ -3259,10 +3331,7 @@ fn find_bytes_from(haystack: &[u8], needle: &[u8], start: usize) -> Option<usize
     if start >= haystack.len() || needle.is_empty() {
         return None;
     }
-    haystack[start..]
-        .windows(needle.len())
-        .position(|w| w == needle)
-        .map(|p| p + start)
+    memchr::memmem::find(&haystack[start..], needle).map(|p| p + start)
 }
 
 /// Find a byte sequence searching backwards in a slice.
@@ -3270,8 +3339,6 @@ fn rfind_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.len() > haystack.len() {
         return None;
     }
-    haystack
-        .windows(needle.len())
-        .rposition(|w| w == needle)
+    memchr::memmem::rfind(haystack, needle)
 }
 

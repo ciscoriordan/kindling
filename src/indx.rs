@@ -7,6 +7,8 @@
 
 use std::collections::HashSet;
 
+use rayon::prelude::*;
+
 use crate::vwi::encode_vwi_inv;
 
 const INDX_HEADER_LENGTH: usize = 192;
@@ -89,6 +91,20 @@ pub fn build_orth_indx(
     ];
     let tagx1 = build_tagx(&tag_defs1);
 
+    // Encode every routing entry in parallel. `encode_indx_entry` is a pure
+    // function of the label + tag_values (prefix compression is disabled, so
+    // the `prev_label_bytes` argument is ignored for the output bytes). The
+    // data-record chunking below is serial because it needs to track
+    // running byte sizes, but the per-entry encoding was the dominant cost.
+    let encoded_entries: Vec<Vec<u8>> = lookup_terms
+        .par_iter()
+        .map(|term| {
+            let tag_values: [(u8, u32); 2] =
+                [(1, term.start_pos as u32), (2, term.text_len as u32)];
+            encode_indx_entry(&term.label_bytes, &[], &tag_values, &tag_defs1)
+        })
+        .collect();
+
     let mut data_records: Vec<Vec<u8>> = Vec::new();
     let mut current_entries: Vec<Vec<u8>> = Vec::new();
     let mut current_data_size: usize = 0;
@@ -96,7 +112,11 @@ pub fn build_orth_indx(
     let mut prev_label_bytes: Vec<u8> = Vec::new();
 
     let total_terms = lookup_terms.len();
-    for (term_idx, term) in lookup_terms.iter().enumerate() {
+    for (term_idx, (term, entry_bytes)) in lookup_terms
+        .iter()
+        .zip(encoded_entries.into_iter())
+        .enumerate()
+    {
         if term_idx % 500000 == 0 && term_idx > 0 {
             eprintln!(
                 "  Encoded {} / {} INDX entries ({:.0}%)...",
@@ -106,13 +126,6 @@ pub fn build_orth_indx(
             );
         }
 
-        let tag_values: Vec<(u8, u32)> = vec![
-            (1, term.start_pos as u32),
-            (2, term.text_len as u32),
-        ];
-
-        let entry_bytes =
-            encode_indx_entry(&term.label_bytes, &prev_label_bytes, &tag_values, &tag_defs1);
         let entry_overhead = entry_bytes.len() + 2;
 
         if current_data_size + entry_overhead > MAX_INDX_DATA_SIZE && !current_entries.is_empty() {
@@ -125,11 +138,10 @@ pub fn build_orth_indx(
             prev_label_bytes.clear();
 
             // Re-encode without prefix reference
-            let entry_bytes2 =
-                encode_indx_entry(&term.label_bytes, &[], &tag_values, &tag_defs1);
-            let entry_overhead2 = entry_bytes2.len() + 2;
-            current_entries.push(entry_bytes2);
-            current_data_size += entry_overhead2;
+            // (No-op with prefix compression disabled: entry_bytes is already
+            //  produced from an empty prev.  Reuse the already-encoded bytes.)
+            current_entries.push(entry_bytes);
+            current_data_size += entry_overhead;
         } else {
             current_entries.push(entry_bytes);
             current_data_size += entry_overhead;

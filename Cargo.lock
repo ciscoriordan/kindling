@@ -892,6 +892,7 @@ dependencies = [
  "clap",
  "image",
  "lightningcss",
+ "memchr",
  "quick-xml",
  "rayon",
  "regex",
