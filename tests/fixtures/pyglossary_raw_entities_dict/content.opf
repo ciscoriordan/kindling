@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package unique-identifier="uid">
+<metadata>
+<dc-metadata xmlns:dc="http://purl.org/metadata/dublin_core"
+xmlns:oebpackage="http://openebook.org/namespaces/oeb-package/1.0/">
+<dc:Title>PyGlossary Raw Entities Dict</dc:Title>
+<dc:Language>fr</dc:Language>
+<dc:Identifier id="uid">pyglossary-raw-entities-fixture</dc:Identifier>
+<dc:Creator>Kindling Test Suite</dc:Creator>
+<dc:Subject BASICCode="REF008000">Dictionaries</dc:Subject>
+</dc-metadata>
+<x-metadata>
+<output encoding="utf-8"></output>
+<DictionaryInLanguage>fr</DictionaryInLanguage>
+<DictionaryOutLanguage>fr</DictionaryOutLanguage>
+<EmbeddedCover>cover.jpg</EmbeddedCover>
+</x-metadata>
+</metadata>
+<manifest>
+<item href="cover.jpg" id="cover.jpg" media-type="image/jpeg" />
+<item href="content.html" id="content.html" media-type="application/xhtml+xml" />
+</manifest>
+<spine>
+<itemref idref="content.html" />
+</spine>
+<tours></tours>
+<guide></guide>
+</package>

@@ -1629,6 +1629,11 @@ fn strip_idx_markup(html: &str) -> String {
     static STYLE_ATTR_SQ: OnceLock<Regex> = OnceLock::new();
     static WS: OnceLock<Regex> = OnceLock::new();
     static TAG_SPACE: OnceLock<Regex> = OnceLock::new();
+    static DOCTYPE_RE: OnceLock<Regex> = OnceLock::new();
+    static HTML_OPEN: OnceLock<Regex> = OnceLock::new();
+    static HTML_CLOSE: OnceLock<Regex> = OnceLock::new();
+    static BODY_OPEN: OnceLock<Regex> = OnceLock::new();
+    static BODY_CLOSE: OnceLock<Regex> = OnceLock::new();
 
     let xml_decl = XML_DECL.get_or_init(|| Regex::new(r"<\?xml[^?]*\?>\s*").unwrap());
     let xmlns = XMLNS.get_or_init(|| Regex::new(r#"\s+xmlns:\w+="[^"]*""#).unwrap());
@@ -1653,6 +1658,12 @@ fn strip_idx_markup(html: &str) -> String {
         STYLE_ATTR_SQ.get_or_init(|| Regex::new(r#"\s+style\s*=\s*'[^']*'"#).unwrap());
     let ws = WS.get_or_init(|| Regex::new(r"\s+").unwrap());
     let tag_space = TAG_SPACE.get_or_init(|| Regex::new(r">\s+<").unwrap());
+    let doctype_re =
+        DOCTYPE_RE.get_or_init(|| Regex::new(r"(?i)<!DOCTYPE[^>]*>\s*").unwrap());
+    let html_open = HTML_OPEN.get_or_init(|| Regex::new(r"(?i)<html\b[^>]*>\s*").unwrap());
+    let html_close = HTML_CLOSE.get_or_init(|| Regex::new(r"(?i)\s*</html\s*>").unwrap());
+    let body_open = BODY_OPEN.get_or_init(|| Regex::new(r"(?i)<body\b[^>]*>\s*").unwrap());
+    let body_close = BODY_CLOSE.get_or_init(|| Regex::new(r"(?i)\s*</body\s*>").unwrap());
 
     // Fast-path bailouts: most entry-level HTML chunks do NOT contain XML
     // declarations, <head>, or xmlns: attributes, so avoid the regex scan
@@ -1739,6 +1750,28 @@ fn strip_idx_markup(html: &str) -> String {
     if result.contains("style") {
         result = std::borrow::Cow::Owned(style_attr.replace_all(&result, "").to_string());
         result = std::borrow::Cow::Owned(style_attr_sq.replace_all(&result, "").to_string());
+    }
+
+    // Strip stray <html>/</html>/<body>/</body>/<!DOCTYPE ...> that leaked in
+    // from the entry payload. The reader-dict DictFile template wraps each
+    // definition in `<html>...</html>`; PyGlossary drops the opener but keeps
+    // the closer, so every entry in a PyGlossary-produced MOBI carries an
+    // orphan `</html>` that prematurely closes the outer document in the
+    // merged rawml (reader-dict, issue #8). kindlegen normalises these away.
+    if result.contains("<!DOCTYPE") || result.contains("<!doctype") {
+        result = std::borrow::Cow::Owned(doctype_re.replace_all(&result, "").to_string());
+    }
+    if result.contains("<html") || result.contains("<HTML") {
+        result = std::borrow::Cow::Owned(html_open.replace_all(&result, "").to_string());
+    }
+    if result.contains("</html") || result.contains("</HTML") {
+        result = std::borrow::Cow::Owned(html_close.replace_all(&result, "").to_string());
+    }
+    if result.contains("<body") || result.contains("<BODY") {
+        result = std::borrow::Cow::Owned(body_open.replace_all(&result, "").to_string());
+    }
+    if result.contains("</body") || result.contains("</BODY") {
+        result = std::borrow::Cow::Owned(body_close.replace_all(&result, "").to_string());
     }
 
     // Collapse whitespace
@@ -2382,6 +2415,28 @@ mod record_split_tests {
 
 }
 
+/// Scan `text_bytes` for the first occurrence of `needle` that lands at an
+/// entry boundary (so we don't pick up headword mentions inside etymologies,
+/// definitions, or cross-refs). Returns `(bold_pos, headword_start)`.
+fn scan_for_bold_at_boundary(
+    text_bytes: &[u8],
+    needle: &[u8],
+    start: usize,
+) -> Option<(usize, usize)> {
+    let mut scan_from = start;
+    loop {
+        match find_bytes_from(text_bytes, needle, scan_from) {
+            Some(bold_pos) => {
+                if is_entry_boundary(text_bytes, bold_pos) {
+                    return Some((bold_pos, bold_pos + 3));
+                }
+                scan_from = bold_pos + needle.len();
+            }
+            None => return None,
+        }
+    }
+}
+
 /// Find the byte position of each dictionary entry in the stripped text.
 ///
 /// Searches for `<b>headword</b>` at entry boundaries to avoid matching
@@ -2407,46 +2462,78 @@ fn find_entry_positions(text_bytes: &[u8], entries: &[DictionaryEntry]) -> Vec<(
             .replace('>', "&gt;");
         let headword_bytes = escaped_hw.as_bytes();
 
-        // Build <b>headword</b> needle
+        // PyGlossary's xhtml emits raw `&` and raw `'` in headwords (e.g.
+        // `<b>& al.</b>`, `<b>C'est gucci</b>`) rather than the `&amp;` /
+        // `&#x27;` entity forms that kindling-generated dicts use. Both forms
+        // survive strip_idx_markup verbatim, so a dict built with
+        // apostrophe- or ampersand-containing headwords misses every one of
+        // them with a single escape strategy. Build a "minimal escape"
+        // variant (just `<`/`>`, which can never appear raw in valid HTML
+        // text) and try it when the fully-escaped form misses.
+        let raw_entities_hw = if entry.headword.contains('&') || entry.headword.contains('\'') {
+            Some(entry.headword
+                .replace('"', "&quot;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;"))
+        } else {
+            None
+        };
+
+        // Build <b>headword</b> needle (escaped form).
         let mut bold_needle = Vec::with_capacity(3 + headword_bytes.len() + 4);
         bold_needle.extend_from_slice(b"<b>");
         bold_needle.extend_from_slice(headword_bytes);
         bold_needle.extend_from_slice(b"</b>");
 
         // Search for <b>headword</b> at an entry boundary.
-        // Entry headings are preceded by "<hr/> " or "/> " (after <br/>) or
-        // appear near the start of the body. Skip matches inside example
-        // sentences or other content.
-        let mut found = None;
-        let mut scan_from = search_start;
+        // Entry headings are preceded by "<hr/>" or "/>" (after <br/>) plus
+        // any trailing space padding from pad_text_for_chunking, or appear
+        // near the start of the body. Skip matches inside example sentences
+        // or other content.
+        let mut found = scan_for_bold_at_boundary(text_bytes, &bold_needle, search_start);
 
-        loop {
-            match find_bytes_from(text_bytes, &bold_needle, scan_from) {
-                Some(bold_pos) => {
-                    if is_entry_boundary(text_bytes, bold_pos) {
-                        found = Some((bold_pos, bold_pos + 3));
-                        break;
-                    }
-                    // Not at entry boundary: skip this match and keep searching
-                    scan_from = bold_pos + bold_needle.len();
-                }
-                None => break,
+        // Escaped needle didn't land: try the minimal-escape variant that
+        // covers PyGlossary-style raw-`&` / raw-`'` headwords.
+        if found.is_none() {
+            if let Some(raw_hw) = &raw_entities_hw {
+                let raw_bytes = raw_hw.as_bytes();
+                let mut raw_needle = Vec::with_capacity(3 + raw_bytes.len() + 4);
+                raw_needle.extend_from_slice(b"<b>");
+                raw_needle.extend_from_slice(raw_bytes);
+                raw_needle.extend_from_slice(b"</b>");
+                found = scan_for_bold_at_boundary(text_bytes, &raw_needle, search_start);
             }
         }
 
         let (block_start, pos) = match found {
             Some(result) => result,
             None => {
-                // Fallback: search for bare headword (for entries without <b> tags)
-                match find_bytes_from(text_bytes, headword_bytes, search_start) {
-                    Some(p) => {
-                        let search_from = if p >= 10 { p - 10 } else { 0 };
-                        let bs = match rfind_bytes(&text_bytes[search_from..p], b"<b>") {
-                            Some(rel) => search_from + rel,
-                            None => p,
-                        };
-                        (bs, p)
+                // Fallback: search for bare headword (for entries without <b>
+                // tags). Require the match to sit at an entry boundary so a
+                // random `&amp;` or other byte sequence elsewhere in the body
+                // doesn't get mistaken for an entry head — mismatches here
+                // used to cascade via search_start on PyGlossary-shaped input.
+                let mut bare_found: Option<(usize, usize)> = None;
+                let mut scan_from = search_start;
+                loop {
+                    match find_bytes_from(text_bytes, headword_bytes, scan_from) {
+                        Some(p) => {
+                            let search_from = if p >= 10 { p - 10 } else { 0 };
+                            let bs = match rfind_bytes(&text_bytes[search_from..p], b"<b>") {
+                                Some(rel) => search_from + rel,
+                                None => p,
+                            };
+                            if is_entry_boundary(text_bytes, bs) {
+                                bare_found = Some((bs, p));
+                                break;
+                            }
+                            scan_from = p + headword_bytes.len();
+                        }
+                        None => break,
                     }
+                }
+                match bare_found {
+                    Some(result) => result,
                     None => {
                         positions.push((0, 0));
                         continue;
@@ -2499,13 +2586,24 @@ fn is_entry_boundary(text_bytes: &[u8], bold_pos: usize) -> bool {
         return true;
     }
 
+    // Skip over any run of trailing spaces before the <b>. `pad_text_for_chunking`
+    // (called after strip_idx_markup) inserts space bytes at 4096-byte record
+    // boundaries to keep multi-byte UTF-8 chars intact; those spaces often land
+    // between `<hr/>` and the next `<b>` headword. Without this skip,
+    // pad-affected entries fall out of find_entry_positions (~3k / 500k on
+    // large PyGlossary dicts), cascading search_start misses.
+    let mut end = bold_pos;
+    while end > 0 && text_bytes[end - 1] == b' ' {
+        end -= 1;
+    }
+
     // Look backward from the <b> position for the preceding context.
     // Entry headings can be preceded by any of:
     //   <h5><b>  (the block-level headword wrapper inserted by strip_idx_markup)
     //   <hr/> <b>  (with space between, legacy path when no h5 wrap)
     //   /> <b>  (after <br/> or other self-closing tags at end of prev entry)
-    let check_start = if bold_pos >= 8 { bold_pos - 8 } else { 0 };
-    let preceding = &text_bytes[check_start..bold_pos];
+    let check_start = if end >= 8 { end - 8 } else { 0 };
+    let preceding = &text_bytes[check_start..end];
 
     // Check for "<h5>" immediately before (block-level headword wrapper)
     if preceding.ends_with(b"<h5>") {
@@ -2517,9 +2615,21 @@ fn is_entry_boundary(text_bytes: &[u8], bold_pos: usize) -> bool {
         return true;
     }
 
-    // Check for "/> " (after <br/> or self-closing tags)
-    if preceding.ends_with(b"/> ") {
-        return true;
+    // Check for "/> " (after <br/> or other self-closing tags). The form
+    // without trailing space is post-space-skip redundant and accepted for
+    // clarity.
+    if preceding.ends_with(b"/> ") || preceding.ends_with(b"/>") {
+        // Tighten: only accept when the self-close is from a block-level
+        // separator (<hr/>, <mbp:pagebreak/>), not an in-line <br/> or
+        // <img/> which can legitimately appear inside an entry body.
+        let wider_start = if end >= 24 { end - 24 } else { 0 };
+        let wider = &text_bytes[wider_start..end];
+        if wider.ends_with(b"<hr/>")
+            || wider.ends_with(b"<mbp:pagebreak/>")
+            || wider.ends_with(b"<h5>")
+        {
+            return true;
+        }
     }
 
     false

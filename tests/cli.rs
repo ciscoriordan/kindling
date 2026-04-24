@@ -537,6 +537,47 @@ mod validate {
     }
 
     #[test]
+    fn build_dict_pyglossary_raw_entities() {
+        // Regression for reader-dict issue #8. PyGlossary writes raw `&` /
+        // `'` in `<idx:orth>` body-form headwords (e.g. `<b>& al.</b>`,
+        // `<b>C'est gucci</b>`) and leaves an orphan `</html>` at the end
+        // of each entry's payload (the reader-dict DictFile template wraps
+        // definitions in `<html>...</html>`; PyGlossary strips the opener
+        // but not the closer). Both of these used to break kindling: the
+        // escaped headword needle missed, the fallback hit random `&amp;`
+        // entities and poisoned search_start → ~99% of entries resolved to
+        // (0,0) position; and the orphan </html> prematurely closed the
+        // outer document, leaving the popup dictionary blank on-device.
+        let (tmp, opf) = stage_fixture("pyglossary_raw_entities_dict", "content.opf");
+        let out = run_build(&["--no-validate", opf.to_str().unwrap()]);
+        assert!(
+            out.status.success(),
+            "build pyglossary_raw_entities_dict should succeed\n{}",
+            dump(&out)
+        );
+
+        // Every headword must resolve to a non-zero position: no "entries
+        // not found in text blob" warning on stderr.
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !stderr.contains("entries not found in text blob"),
+            "expected every headword to resolve; kindling-cli stderr:\n{stderr}"
+        );
+
+        let expected = tmp.path().join("content.mobi");
+        assert!(expected.exists(), "expected dict output at {:?}", expected);
+
+        // Self-check (enabled by default) would warn if the merged rawml
+        // still has an orphan `</html>` mid-body — the self-check walks tag
+        // balance on the decompressed blob and treats `</html>` that isn't
+        // the document close as a mismatched-close.
+        assert!(
+            !stderr.contains("mismatched close </html>"),
+            "stray </html> from PyGlossary payload should have been stripped; stderr:\n{stderr}"
+        );
+    }
+
+    #[test]
     fn build_non_dict_legacy_mobi_flag_produces_mobi() {
         // `--legacy-mobi` is the escape hatch: even on a non-dict book, this
         // should produce dual-format MOBI7+KF8 `.mobi` and pick the `.mobi`
