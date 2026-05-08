@@ -10,6 +10,8 @@ Amazon deprecated *kindlegen* in 2020, leaving no supported way to build Kindle 
 
 For comics, [KCC](https://github.com/ciromattia/kcc) exists but requires Python, PySide6/Qt, Pillow, 7z, mozjpeg, psutil, pymupdf, and more. Installation is painful across platforms, there's no headless mode for CI, and Python image processing is slow. Kindling replaces all of that with a single statically-linked native binary, compiled from Rust.
 
+Kindling also publishes dictionaries to StarDict (`kindling stardict`), producing the four-file `.ifo` / `.idx` / `.dict` / `.syn` bundle consumed by [GoldenDict](http://goldendict.org/), [GoldenDict-ng](https://github.com/xiaoyifang/goldendict-ng), [KOReader](https://github.com/koreader/koreader), [sdcv](https://github.com/Dushistov/sdcv), and other non-Kindle dictionary readers. The same OPF or EPUB you pass to `kindling build` is the input, so one dictionary project can target Kindle, Linux/macOS/Windows desktops, Android, and Kobo/PocketBook e-readers from a single source. Headword and inflection lookup, ASCII case-insensitive index, inflection redirects via `.syn`, and `<idx:orth value="X"/>` headword rewriting all work out of the box; see [StarDict export](#stardict-export) for the format details and current cross-reference caveats.
+
 Kindling was built by reverse-engineering Amazon's undocumented MOBI format byte by byte, with help from the [MobileRead wiki](https://wiki.mobileread.com/wiki/MOBI).
 
 Pre-built binaries for Mac (Apple Silicon, Intel), Linux (x86_64), and Windows (x86_64): [Releases](https://github.com/ciscoriordan/kindling/releases)
