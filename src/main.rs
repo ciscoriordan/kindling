@@ -10,7 +10,7 @@
 
 use kindling::{
     comic, epub, extracted::ExtractedEpub, kdp_rules, mobi, mobi_check, mobi_dump, mobi_rewrite,
-    opf, repair, validate,
+    opf, repair, stardict, validate,
 };
 
 use std::path::PathBuf;
@@ -376,6 +376,47 @@ enum Commands {
         /// already have a cover.
         #[arg(long)]
         cover: Option<PathBuf>,
+    },
+
+    /// Build a StarDict bundle (.ifo / .idx / .dict / .syn) from an OPF or
+    /// EPUB dictionary, for use with GoldenDict, GoldenDict-ng, KOReader,
+    /// and other non-Kindle dictionary readers.
+    ///
+    /// Headwords from `<idx:orth>` become flat `.idx` entries; inflections
+    /// from `<idx:iform>` become `.syn` redirects to their lemma; entry HTML
+    /// is stripped of Kindle-only `<idx:*>` markup and stored verbatim under
+    /// `sametypesequence=h`.
+    #[command(version)]
+    Stardict {
+        /// Input OPF or EPUB file (same shape as `kindling build`).
+        input: PathBuf,
+
+        /// Output directory. Defaults to `<input-stem>-stardict/` next to
+        /// the input. Will be created if missing. The four StarDict files
+        /// are named after the directory's stem so the bundle is self-
+        /// contained and ready to drop into a reader's dictionary path.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Override the dictionary's display name (defaults to the OPF
+        /// `dc:title`).
+        #[arg(long)]
+        bookname: Option<String>,
+
+        /// Override the dictionary's author (defaults to the OPF
+        /// `dc:creator`).
+        #[arg(long)]
+        author: Option<String>,
+
+        /// Override the dictionary's date (defaults to the OPF
+        /// `dc:date`). Free-form text per the StarDict spec; ISO 8601 is
+        /// conventional.
+        #[arg(long)]
+        date: Option<String>,
+
+        /// Optional one-line description for the `.ifo` manifest.
+        #[arg(long)]
+        description: Option<String>,
     },
 
     /// Dump the structural contents of a MOBI/AZW3 file to stdout.
@@ -954,9 +995,98 @@ fn main() {
                     cover.as_ref(),
                 );
             }
+            Commands::Stardict {
+                input,
+                output,
+                bookname,
+                author,
+                date,
+                description,
+            } => {
+                do_stardict(&input, output.as_ref(), bookname, author, date, description);
+            }
             Commands::Dump { input } => {
                 do_dump(&input);
             }
+        }
+    }
+}
+
+/// Build a StarDict bundle from an OPF or EPUB dictionary input.
+///
+/// Mirrors the input handling in `do_build`: an `.epub` is unzipped into a
+/// temp directory and the inner OPF is used; an `.opf` is consumed in place.
+/// On success the four (or three, when there are no inflections) StarDict
+/// files have been written under `output_dir`. On failure the process
+/// exits with code 1 after emitting a single-line error.
+fn do_stardict(
+    input: &PathBuf,
+    output: Option<&PathBuf>,
+    bookname: Option<String>,
+    author: Option<String>,
+    date: Option<String>,
+    description: Option<String>,
+) {
+    let is_epub = input
+        .extension()
+        .map(|ext| ext.eq_ignore_ascii_case("epub"))
+        .unwrap_or(false);
+
+    let (temp_dir, opf_path): (Option<PathBuf>, PathBuf) = if is_epub {
+        match epub::extract_epub(input) {
+            Ok((dir, path)) => (Some(dir), path),
+            Err(e) => {
+                eprintln!("Error extracting EPUB: {}", e);
+                process::exit(1);
+            }
+        }
+    } else {
+        (None, input.clone())
+    };
+
+    let output_dir: PathBuf = match output {
+        Some(p) => p.clone(),
+        None => {
+            let stem = input
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "stardict".to_string());
+            let parent = input.parent().unwrap_or(std::path::Path::new("."));
+            parent.join(format!("{}-stardict", stem))
+        }
+    };
+
+    let options = stardict::StarDictOptions {
+        bookname,
+        author,
+        description,
+        date,
+    };
+
+    let result = stardict::build_stardict(&opf_path, &output_dir, &options);
+
+    if let Some(ref dir) = temp_dir {
+        epub::cleanup_temp_dir(dir);
+    }
+
+    match result {
+        Ok(report) => {
+            eprintln!(
+                "Wrote StarDict bundle to {}: {} headwords, {} inflection redirects",
+                output_dir.display(),
+                report.wordcount,
+                report.synwordcount
+            );
+            eprintln!("  {}", report.ifo_path.display());
+            eprintln!("  {}", report.idx_path.display());
+            eprintln!("  {}", report.dict_path.display());
+            if report.synwordcount > 0 {
+                eprintln!("  {}", report.syn_path.display());
+            }
+        }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            process::exit(1);
         }
     }
 }

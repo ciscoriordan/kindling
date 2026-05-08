@@ -17,6 +17,7 @@ pub mod mobi_rewrite;
 pub mod opf;
 pub mod profile;
 pub mod repair;
+pub mod stardict;
 pub mod validate;
 
 // Internal implementation modules, visible inside the crate only.

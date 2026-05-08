@@ -24,6 +24,7 @@ Pre-built binaries for Mac (Apple Silicon, Intel), Linux (x86_64), and Windows (
 - **Dictionaries**: Full orth index with headword + inflection lookup, ORDT/SPL sort tables, fontsignature
 - **Books**: EPUB or OPF input, embedded images, KF8-only (.azw3) by default with legacy dual-format (MOBI7+KF8) available via `--legacy-mobi`, HD image container, fixed-layout support
 - **Comics**: Image folder, CBZ, CBR, or EPUB input, device-specific resizing, spread splitting, margin cropping, auto-contrast, moire correction for color e-ink, manga RTL, webtoon with overlap fallback, Panel View, KF8-only (.azw3) by default, metadata overrides
+- **StarDict export**: `kindling stardict` builds a four-file StarDict bundle (`.ifo` / `.idx` / `.dict` / `.syn`) from the same OPF or EPUB dictionary input as `kindling build`, for use with GoldenDict, GoldenDict-ng, KOReader, sdcv, and other non-Kindle dictionary readers (see [StarDict export](#stardict-export))
 - **EPUB repair**: `kindling repair` applies a small, byte-stable, idempotent set of structural fixes to an EPUB for cleaner Send-to-Kindle ingest (see [Repair](#repair))
 - **Metadata rewrite**: `kindling rewrite-metadata` updates title, authors, publisher, description, language, ISBN, ASIN, publication date, tags, series, and cover image on an existing MOBI/AZW3 in place without rebuilding from source. Byte-stable on no-op, idempotent, refuses DRM files (see [Rewrite metadata](#rewrite-metadata))
 - **Build-time HTML self-check**: every `build` runs a two-pass HTML balance check on the assembled MOBI text blob and on each individual PalmDB text record after splitting, catching regressions like dangling tags, `<hr/` corruption, and bold/italic state leaking across record boundaries (see [Build-time self-check](#build-time-self-check))
@@ -181,6 +182,23 @@ Runs 117 pre-flight checks against the [Amazon Kindle Publishing Guidelines](htt
 Output: one line per finding with severity (`info`/`warning`/`error`), rule id (e.g. `R4.2.1`), KPG section, PDF page reference, message, and file:line where applicable, followed by a summary (`X errors, Y warnings, Z info`). Exit code is 0 on success, 1 if any errors are present (or any warnings in `--strict` mode).
 
 The rule catalog is a single Rust const array in [`src/kdp_rules.rs`](src/kdp_rules.rs) with a `KPG_VERSION` constant and a `Rule` struct holding id, section, level, title, PDF page, description, and a profile mask (default, comic, dict, textbook). Each rule cluster lives in its own module under [`src/checks/<name>.rs`](src/checks/) and implements the `Check` trait; all active checks are registered in the `CHECKS` array in [`src/checks/mod.rs`](src/checks/mod.rs). Phase 2 added `fixed_layout`, `manifest_spine`, `opf_grammar`, `toc_extras`, `cross_refs`, `filenames`, `image_integrity`, `css_forbidden`, and `metadata` alongside the pilot clusters `parse_encoding` and `dict`. The pre-Phase-2 checks (`cover`, `navigation`, `nav_links`, `content`, `images`, `file_case`) are still `Check` impls. Updating the guidelines version touches `kdp_rules.rs` plus whatever `src/checks/*.rs` modules the affected rules live in.
+
+### StarDict export
+
+```bash
+kindling-cli stardict input.opf                   # writes input-stardict/ next to the input
+kindling-cli stardict input.epub -o my_dict       # explicit output directory
+kindling-cli stardict input.opf -o my_dict --bookname "My Greek Dictionary" --author "Jane Doe" --date 2026-05-07
+```
+
+`kindling stardict` reads the same OPF or EPUB dictionary input as `kindling build` and emits a four-file StarDict 2.4.2 bundle ready to drop into GoldenDict, GoldenDict-ng, KOReader, sdcv, or any other reader that consumes the format. The output directory contains:
+
+- `<name>.ifo` — UTF-8 manifest with `bookname`, `wordcount`, `idxfilesize`, optional `synwordcount`, `author`, `date`, `description`, and `sametypesequence=h`. Metadata defaults to the OPF's `dc:title` / `dc:creator` / `dc:date`; CLI flags override.
+- `<name>.idx` — concatenation of `(headword\0, offset:u32be, size:u32be)`, sorted by `g_ascii_strcasecmp` (ASCII case-insensitive bytewise) so readers can binary-search.
+- `<name>.dict` — concatenation of per-entry HTML payloads. Each entry's `<idx:entry>` / `<idx:orth>` wrapper is stripped, `<idx:infl>` / `<idx:iform>` blocks are dropped (those forms are surfaced through `.syn` instead), and self-closing `<idx:orth value="X"/>` is rewritten to `<b>X</b>` so the headword stays visible in apps that render entries verbatim.
+- `<name>.syn` — `(form\0, original_word_index:u32be)` pairs mapping each inflected form to its lemma's row in `.idx`, sorted by the same key as `.idx`. Omitted when the source dictionary has no inflections.
+
+Cross-references that point at MOBI per-letter HTML files (`content_NN.html#hw_…`) are not yet rewritten to StarDict's `bword://` scheme, so cross-entry links in such dictionaries will not resolve in StarDict readers. Headword lookup, definitions, and inflection redirects all work as expected.
 
 ### Repair
 
@@ -402,7 +420,7 @@ kindling/
 ├── Cargo.toml                   # edition 2024, Rust 1.85+
 ├── src/
 │   ├── lib.rs                   # Library crate root, public API for external consumers
-│   ├── main.rs                  # CLI: build, comic, validate, repair, rewrite-metadata, kindlegen-compat
+│   ├── main.rs                  # CLI: build, comic, stardict, validate, repair, rewrite-metadata, kindlegen-compat
 │   ├── mobi.rs                  # PalmDB + MOBI record 0 + EXTH writer, UTF-8/tag-safe record splitter
 │   ├── mobi_check.rs            # Post-build MOBI readback: PalmDB, EXTH, text-record sanity
 │   ├── mobi_rewrite.rs          # In-place MOBI/AZW3 metadata and cover rewrite
@@ -419,6 +437,7 @@ kindling/
 │   ├── validate.rs              # KDP pre-flight driver; iterates `checks::CHECKS`
 │   ├── checks/                  # One Rust module per rule cluster, all impl `Check`
 │   ├── repair.rs                # Structural EPUB repair pass for Kindle ingest
+│   ├── stardict.rs              # StarDict 2.4.2 builder (.ifo/.idx/.dict/.syn) for GoldenDict, KOReader, sdcv
 │   ├── kdp_rules.rs             # Rule catalog (KPG_VERSION, Rule struct, RULES array)
 │   ├── html_check.rs            # HTML/XHTML self-check for assembled MOBI text blob and per-record balance
 │   ├── ordt_greek.bin           # Embedded ORDT/SPL sort tables extracted from kindlegen output
