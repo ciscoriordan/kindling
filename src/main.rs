@@ -415,8 +415,21 @@ enum Commands {
         date: Option<String>,
 
         /// Optional one-line description for the `.ifo` manifest.
+        /// Use `<br>` to insert line breaks per the StarDict 2.4.2 spec.
+        /// Since `.ifo` has no dedicated `license` field, license info is
+        /// conventionally folded into description.
         #[arg(long)]
         description: Option<String>,
+
+        /// Optional contact email for the `.ifo` manifest (StarDict 2.4.2
+        /// optional field). Omitted when empty.
+        #[arg(long)]
+        email: Option<String>,
+
+        /// Optional homepage / repo URL for the `.ifo` manifest (StarDict
+        /// 2.4.2 optional field). Omitted when empty.
+        #[arg(long)]
+        website: Option<String>,
     },
 
     /// Dump the structural contents of a MOBI/AZW3 file to stdout.
@@ -1002,8 +1015,19 @@ fn main() {
                 author,
                 date,
                 description,
+                email,
+                website,
             } => {
-                do_stardict(&input, output.as_ref(), bookname, author, date, description);
+                do_stardict(
+                    &input,
+                    output.as_ref(),
+                    bookname,
+                    author,
+                    date,
+                    description,
+                    email,
+                    website,
+                );
             }
             Commands::Dump { input } => {
                 do_dump(&input);
@@ -1026,6 +1050,8 @@ fn do_stardict(
     author: Option<String>,
     date: Option<String>,
     description: Option<String>,
+    email: Option<String>,
+    website: Option<String>,
 ) {
     let is_epub = input
         .extension()
@@ -1059,6 +1085,8 @@ fn do_stardict(
     let options = stardict::StarDictOptions {
         bookname,
         author,
+        email,
+        website,
         description,
         date,
     };

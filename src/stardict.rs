@@ -31,11 +31,15 @@ use crate::opf::{self, DictionaryEntry, OPFData};
 
 /// Caller overrides for the metadata that lands in `.ifo`. Fields left as
 /// `None` fall back to the OPF (`bookname` <- `dc:title`, `author` <-
-/// `dc:creator`, `date` <- `dc:date`).
+/// `dc:creator`, `date` <- `dc:date`). `email`, `website`, and `description`
+/// have no OPF counterpart and are simply omitted from the `.ifo` when
+/// `None` or empty.
 #[derive(Default, Debug, Clone)]
 pub struct StarDictOptions {
     pub bookname: Option<String>,
     pub author: Option<String>,
+    pub email: Option<String>,
+    pub website: Option<String>,
     pub description: Option<String>,
     pub date: Option<String>,
 }
@@ -209,6 +213,8 @@ pub fn build_stardict(
         .clone()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| opf.date.clone());
+    let email = options.email.clone().unwrap_or_default();
+    let website = options.website.clone().unwrap_or_default();
     let description = options.description.clone().unwrap_or_default();
 
     let mut ifo = String::new();
@@ -223,14 +229,20 @@ pub fn build_stardict(
     if !author.is_empty() {
         ifo.push_str(&format!("author={}\n", sanitize_ifo_value(&author)));
     }
-    if !date.is_empty() {
-        ifo.push_str(&format!("date={}\n", sanitize_ifo_value(&date)));
+    if !email.is_empty() {
+        ifo.push_str(&format!("email={}\n", sanitize_ifo_value(&email)));
+    }
+    if !website.is_empty() {
+        ifo.push_str(&format!("website={}\n", sanitize_ifo_value(&website)));
     }
     if !description.is_empty() {
         ifo.push_str(&format!(
             "description={}\n",
             sanitize_ifo_value(&description)
         ));
+    }
+    if !date.is_empty() {
+        ifo.push_str(&format!("date={}\n", sanitize_ifo_value(&date)));
     }
     ifo.push_str("sametypesequence=h\n");
     fs::write(&ifo_path, ifo.as_bytes())?;

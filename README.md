@@ -191,16 +191,15 @@ The rule catalog is a single Rust const array in [`src/kdp_rules.rs`](src/kdp_ru
 kindling-cli stardict input.opf                   # writes input-stardict/ next to the input
 kindling-cli stardict input.epub -o my_dict       # explicit output directory
 kindling-cli stardict input.opf -o my_dict --bookname "My Greek Dictionary" --author "Jane Doe" --date 2026-05-07
+kindling-cli stardict input.opf --website "https://example.com/dict" --email "you@example.com" --description "License: CC-BY-SA 4.0."
 ```
 
 `kindling stardict` reads the same OPF or EPUB dictionary input as `kindling build` and emits a four-file StarDict 2.4.2 bundle ready to drop into GoldenDict, GoldenDict-ng, KOReader, sdcv, or any other reader that consumes the format. The output directory contains:
 
-- `<name>.ifo` — UTF-8 manifest with `bookname`, `wordcount`, `idxfilesize`, optional `synwordcount`, `author`, `date`, `description`, and `sametypesequence=h`. Metadata defaults to the OPF's `dc:title` / `dc:creator` / `dc:date`; CLI flags override.
+- `<name>.ifo` — UTF-8 manifest with `bookname`, `wordcount`, `idxfilesize`, optional `synwordcount`, `author`, `email`, `website`, `description`, `date`, and `sametypesequence=h`. `bookname` / `author` / `date` default to the OPF's `dc:title` / `dc:creator` / `dc:date`; CLI flags override. `email`, `website`, and `description` have no OPF counterpart and are emitted only when supplied. StarDict 2.4.2 has no `license` field, so license info is conventionally folded into `description` (use `<br>` for line breaks).
 - `<name>.idx` — concatenation of `(headword\0, offset:u32be, size:u32be)`, sorted by `g_ascii_strcasecmp` (ASCII case-insensitive bytewise) so readers can binary-search.
-- `<name>.dict` — concatenation of per-entry HTML payloads. Each entry's `<idx:entry>` / `<idx:orth>` wrapper is stripped, `<idx:infl>` / `<idx:iform>` blocks are dropped (those forms are surfaced through `.syn` instead), and self-closing `<idx:orth value="X"/>` is rewritten to `<b>X</b>` so the headword stays visible in apps that render entries verbatim.
+- `<name>.dict` — concatenation of per-entry HTML payloads. Each entry's `<idx:entry>` / `<idx:orth>` wrapper is stripped, `<idx:infl>` / `<idx:iform>` blocks are dropped (those forms are surfaced through `.syn` instead), and self-closing `<idx:orth value="X"/>` is rewritten to `<b>X</b>` so the headword stays visible in apps that render entries verbatim. Cross-entry references that target MOBI per-letter HTML (`content_NN.html#hw_X` or same-page `#hw_X`) are rewritten to StarDict's `bword://X` scheme so GoldenDict, GoldenDict-ng, KOReader, and sdcv resolve them as in-dictionary lookups.
 - `<name>.syn` — `(form\0, original_word_index:u32be)` pairs mapping each inflected form to its lemma's row in `.idx`, sorted by the same key as `.idx`. Omitted when the source dictionary has no inflections.
-
-Cross-references that point at MOBI per-letter HTML files (`content_NN.html#hw_…`) are not yet rewritten to StarDict's `bword://` scheme, so cross-entry links in such dictionaries will not resolve in StarDict readers. Headword lookup, definitions, and inflection redirects all work as expected.
 
 ### Repair
 

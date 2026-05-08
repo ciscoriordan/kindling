@@ -246,3 +246,46 @@ fn library_api_returns_consistent_report() {
     assert_eq!(parsed_count, report.wordcount);
     assert!(on_disk > 0);
 }
+
+#[test]
+fn ifo_emits_website_email_description_when_provided() {
+    use kindling::stardict;
+
+    let tmp = std::env::temp_dir().join("kindling_stardict_metadata");
+    let _ = std::fs::remove_dir_all(&tmp);
+    let opf = fixture_dir().join("simple_dict.opf");
+    let options = stardict::StarDictOptions {
+        website: Some("https://example.com/dict".to_string()),
+        email: Some("dict@example.com".to_string()),
+        description: Some("Public-domain test dictionary. License: MIT.".to_string()),
+        ..Default::default()
+    };
+    let report = stardict::build_stardict(&opf, &tmp, &options).expect("build_stardict failed");
+    let ifo = std::fs::read_to_string(&report.ifo_path).unwrap();
+
+    assert_eq!(ifo_get(&ifo, "website"), Some("https://example.com/dict"));
+    assert_eq!(ifo_get(&ifo, "email"), Some("dict@example.com"));
+    assert_eq!(
+        ifo_get(&ifo, "description"),
+        Some("Public-domain test dictionary. License: MIT.")
+    );
+}
+
+#[test]
+fn ifo_omits_metadata_keys_when_blank() {
+    use kindling::stardict;
+
+    let tmp = std::env::temp_dir().join("kindling_stardict_blank_meta");
+    let _ = std::fs::remove_dir_all(&tmp);
+    let opf = fixture_dir().join("simple_dict.opf");
+    let options = stardict::StarDictOptions {
+        website: Some(String::new()),
+        email: None,
+        ..Default::default()
+    };
+    let report = stardict::build_stardict(&opf, &tmp, &options).expect("build_stardict failed");
+    let ifo = std::fs::read_to_string(&report.ifo_path).unwrap();
+
+    assert!(!ifo.contains("\nwebsite="), "blank website should be omitted: {}", ifo);
+    assert!(!ifo.contains("\nemail="), "missing email should be omitted: {}", ifo);
+}
