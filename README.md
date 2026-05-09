@@ -10,9 +10,9 @@ Amazon deprecated *kindlegen* in 2020, leaving no supported way to build Kindle 
 
 For comics, [KCC](https://github.com/ciromattia/kcc) exists but requires Python, PySide6/Qt, Pillow, 7z, mozjpeg, psutil, pymupdf, and more. Installation is painful across platforms, there's no headless mode for CI, and Python image processing is slow. Kindling replaces all of that with a single statically-linked native binary, compiled from Rust.
 
-Kindling also publishes dictionaries to StarDict (`kindling stardict`), producing the four-file `.ifo` / `.idx` / `.dict` / `.syn` bundle consumed by [GoldenDict](http://goldendict.org/), [GoldenDict-ng](https://github.com/xiaoyifang/goldendict-ng), [KOReader](https://github.com/koreader/koreader), [sdcv](https://github.com/Dushistov/sdcv), and other non-Kindle dictionary readers. The same OPF or EPUB you pass to `kindling build` is the input, so one dictionary project can target Kindle, Linux/macOS/Windows desktops, Android, and Kobo/PocketBook e-readers from a single source. Headword and inflection lookup, ASCII case-insensitive index, inflection redirects via `.syn`, and `<idx:orth value="X"/>` headword rewriting all work out of the box; see [StarDict export](#stardict-export) for the format details and current cross-reference caveats.
+Kindling also publishes dictionaries to StarDict (`kindling stardict`), producing the four-file `.ifo` / `.idx` / `.dict` / `.syn` bundle consumed by [GoldenDict](http://goldendict.org/), [GoldenDict-ng](https://github.com/xiaoyifang/goldendict-ng), [KOReader](https://github.com/koreader/koreader), [sdcv](https://github.com/Dushistov/sdcv), and other non-Kindle dictionary readers. The same OPF or EPUB you pass to `kindling build` is the input, so one dictionary project can target Kindle, Linux/macOS/Windows desktops, Android, and Kobo/PocketBook e-readers from a single source. Headword and inflection lookup, ASCII case-insensitive index, inflection redirects via `.syn`, and `<idx:orth value="X"/>` headword rewriting all work without configuration; see [StarDict export](#stardict-export) for the format details and current cross-reference caveats.
 
-Kindling was built by reverse-engineering Amazon's undocumented MOBI format byte by byte, with help from the [MobileRead wiki](https://wiki.mobileread.com/wiki/MOBI).
+Kindling was built by reverse-engineering Amazon's undocumented MOBI format, with help from the [MobileRead wiki](https://wiki.mobileread.com/wiki/MOBI).
 
 Pre-built binaries for Mac (Apple Silicon, Intel), Linux (x86_64), and Windows (x86_64): [Releases](https://github.com/ciscoriordan/kindling/releases)
 
@@ -34,7 +34,7 @@ Pre-built binaries for Mac (Apple Silicon, Intel), Linux (x86_64), and Windows (
 - Drop-in *kindlegen* replacement (same CLI flags, same status codes)
 - Kindle Previewer compatible (EPUB source embedded by default)
 - Usable as both a CLI (`kindling-cli`) and a Rust library crate (`kindling`) with a public API for external consumers (see `src/lib.rs`)
-- Comprehensive test suite with CI on every push (see [Testing](#testing))
+- Test suite with CI on every push (see [Testing](#testing))
 
 ## Installation
 
@@ -108,7 +108,7 @@ kindling-cli build input.epub --no-validate            # skip KDP pre-flight val
 
 Auto-detects dictionary vs book from the OPF's `DictionaryInLanguage` metadata. Book MOBIs include embedded images and an HD image container (for high-DPI Kindle screens). The original EPUB is embedded by default for Kindle Previewer compatibility (`--no-embed-source` to skip).
 
-Non-dictionary builds default to **KF8-only `.azw3`**, because Amazon deprecated MOBI for Send-to-Kindle in August 2022 and modern Kindles prefer KF8-only. Dictionaries continue to build as dual-format MOBI7+KF8 `.mobi`, because Kindle's lookup popup requires the MOBI7 INDX structure and KF8 has no equivalent. Pass `--legacy-mobi` on a book build to opt back into the old dual-format `.mobi` output for pre-2012 Kindles; the flag is a no-op on dictionary builds. If you pass `-o foo.mobi` or `-o foo.azw3` explicitly, kindling respects whatever extension you chose.
+Non-dictionary builds default to KF8-only `.azw3`, because Amazon deprecated MOBI for Send-to-Kindle in August 2022 and modern Kindles prefer KF8-only. Dictionaries continue to build as dual-format MOBI7+KF8 `.mobi`, because Kindle's lookup popup requires the MOBI7 INDX structure and KF8 has no equivalent. Pass `--legacy-mobi` on a book build to opt back into the old dual-format `.mobi` output for pre-2012 Kindles; the flag is a no-op on dictionary builds. If you pass `-o foo.mobi` or `-o foo.azw3` explicitly, kindling respects whatever extension you chose.
 
 Every `build` runs the Kindle Publishing Guidelines validator automatically before writing the MOBI. Findings are printed with severity, rule id, and file:line; the build is aborted on any error (warnings are advisory). Pass `--no-validate` to skip pre-flight entirely.
 
@@ -128,9 +128,9 @@ kindling-cli comic input.cbz --legacy-mobi                      # opt into legac
 kindling-cli comic input.cbz --embed-source                     # embed EPUB source (off by default, see note below)
 ```
 
-Comics default to **KF8-only `.azw3`** for the same reason books do: Amazon deprecated MOBI for Send-to-Kindle in August 2022, and the legacy MOBI7 section in dual-format files is at best wasted bytes on modern Kindles. `--legacy-mobi` is the escape hatch for pre-2012 devices. If you pass `-o foo.mobi` explicitly, kindling respects your extension choice.
+Comics default to KF8-only `.azw3` for the same reason books do: Amazon deprecated MOBI for Send-to-Kindle in August 2022, and the legacy MOBI7 section in dual-format files is at best wasted bytes on modern Kindles. `--legacy-mobi` is the escape hatch for pre-2012 devices. If you pass `-o foo.mobi` explicitly, kindling respects your extension choice.
 
-Comic builds do **not** embed the intermediate EPUB as a SRCS record by default (this changed in v0.7.7). Embedding duplicates every page image as a zipped EPUB inside the MOBI, which for a large comic produces a single PalmDB record over 100 MB. Kindle devices index the resulting file but then fail to open it with "Unable to Open Item". Pass `--embed-source` only when you need to round-trip through Kindle Previewer.
+Comic builds do not embed the intermediate EPUB as a SRCS record by default (this changed in v0.7.7). Embedding duplicates every page image as a zipped EPUB inside the MOBI, which for a large comic produces a single PalmDB record over 100 MB. Kindle devices index the resulting file but then fail to open it with "Unable to Open Item". Pass `--embed-source` only when you need to round-trip through Kindle Previewer.
 
 Converts image folders, CBZ files, CBR files, and EPUB files to Kindle-optimized MOBI with:
 - **Device profiles**: *paperwhite*, *kpw5*, *oasis*, *scribe*, *scribe2025*, *kindle2024*, *basic*, *colorsoft*, *fire-hd-10*
@@ -146,14 +146,14 @@ Converts image folders, CBZ files, CBR files, and EPUB files to Kindle-optimized
 - **ComicInfo.xml**: Auto-reads metadata and manga direction from CBZ and CBR files
 - **Metadata overrides**: `--title`, `--author`, `--language`, `--cover` (page number or file path). Without `--title`, the title is read from ComicInfo.xml or defaults to "Comic".
 
-**Kindle library field mapping** (what the Kindle actually displays for sideloaded content):
+Kindle library field mapping (what the Kindle actually displays for sideloaded content):
 
 | Library field | MOBI source | Notes |
 |---|---|---|
-| **Title** | EXTH 503 (books/dicts) or KF8 Record 0 full_name (comics) | EXTH 503 is emitted for reflowable books and dictionaries. For fixed-layout comics, EXTH 503 is omitted - it breaks Kindle navigation (toolbar/go-home disappear). KCC/kindlegen also omit it for comics. For dual-format `.mobi`, Kindle reads full_name from KF8 Record 0, not KF7. |
-| **Author** | EXTH 100 | Set via `--author` flag or ComicInfo.xml `<Writer>`/`<Penciller>`. Defaults to "kindling". |
-| **Cover** | EXTH 201 (cover image offset in image pool) + EXTH 129 (KF8 cover URI) | Cover offset is 0-based index within image records starting at `first_image`. |
-| **Document type** | EXTH 501 | `PDOC` = Documents shelf (default), `EBOK` = Books shelf. Set via `--doc-type ebok`. |
+| Title | EXTH 503 (books/dicts) or KF8 Record 0 full_name (comics) | EXTH 503 is emitted for reflowable books and dictionaries. For fixed-layout comics, EXTH 503 is omitted - it breaks Kindle navigation (toolbar/go-home disappear). KCC/kindlegen also omit it for comics. For dual-format `.mobi`, Kindle reads full_name from KF8 Record 0, not KF7. |
+| Author | EXTH 100 | Set via `--author` flag or ComicInfo.xml `<Writer>`/`<Penciller>`. Defaults to "kindling". |
+| Cover | EXTH 201 (cover image offset in image pool) + EXTH 129 (KF8 cover URI) | Cover offset is 0-based index within image records starting at `first_image`. |
+| Document type | EXTH 501 | `PDOC` = Documents shelf (default), `EBOK` = Books shelf. Set via `--doc-type ebok`. |
 - **Document type**: `--doc-type ebok` to appear under Books instead of Documents on Kindle (default: `pdoc`)
 - **KF8-only by default**: comics output `.azw3` with only the KF8 section (no MOBI7); pass `--legacy-mobi` for the old dual-format behavior on pre-2012 Kindles
 
@@ -164,7 +164,7 @@ kindling-cli validate input.opf             # print findings, exit 1 on errors
 kindling-cli validate input.opf --strict    # exit 1 on any warning too
 ```
 
-Validation also runs **automatically** as a pre-flight step inside every `kindling build` invocation (including kindlegen-compat mode `kindling input.opf`). Any validation errors abort the build with exit code 1; warnings are printed but do not block the build. Pass `--no-validate` to `build` to skip the pre-flight entirely. Comic builds (`kindling comic`) do not run the validator because comics have different structural requirements that the book-oriented rules do not cover.
+Validation also runs automatically as a pre-flight step inside every `kindling build` invocation (including kindlegen-compat mode `kindling input.opf`). Any validation errors abort the build with exit code 1; warnings are printed but do not block the build. Pass `--no-validate` to `build` to skip the pre-flight entirely. Comic builds (`kindling comic`) do not run the validator because comics have different structural requirements that the book-oriented rules do not cover.
 
 Runs 117 pre-flight checks against the [Amazon Kindle Publishing Guidelines](http://kindlegen.s3.amazonaws.com/AmazonKindlePublishingGuidelines.pdf) (version 2026.1), covering the STEAL-grade subset of w3c/epubcheck plus kindling's own KDP-specific rules. Rules are grouped by KPG section:
 
@@ -196,10 +196,10 @@ kindling-cli stardict input.opf --website "https://example.com/dict" --email "yo
 
 `kindling stardict` reads the same OPF or EPUB dictionary input as `kindling build` and emits a four-file StarDict 2.4.2 bundle ready to drop into GoldenDict, GoldenDict-ng, KOReader, sdcv, or any other reader that consumes the format. The output directory contains:
 
-- `<name>.ifo` — UTF-8 manifest with `bookname`, `wordcount`, `idxfilesize`, optional `synwordcount`, `author`, `email`, `website`, `description`, `date`, and `sametypesequence=h`. `bookname` / `author` / `date` default to the OPF's `dc:title` / `dc:creator` / `dc:date`; CLI flags override. `email`, `website`, and `description` have no OPF counterpart and are emitted only when supplied. StarDict 2.4.2 has no `license` field, so license info is conventionally folded into `description` (use `<br>` for line breaks). When the OPF declares `<DictionaryInLanguage>` and `<DictionaryOutLanguage>` and the bookname does not already contain a 2-3 letter hyphenated pair, kindling appends ` (in-out)` to the bookname so GoldenDict-ng / KOReader can parse the language pair and populate the "Translates from / to" fields (the StarDict spec has no formal source/target language slot, so embedding the codes in the bookname is the de-facto convention).
-- `<name>.idx` — concatenation of `(headword\0, offset:u32be, size:u32be)`, sorted by `g_ascii_strcasecmp` (ASCII case-insensitive bytewise) so readers can binary-search.
-- `<name>.dict` — concatenation of per-entry HTML payloads. Each entry's `<idx:entry>` / `<idx:orth>` wrapper is stripped, `<idx:infl>` / `<idx:iform>` blocks are dropped (those forms are surfaced through `.syn` instead), and self-closing `<idx:orth value="X"/>` is rewritten to `<b>X</b>` so the headword stays visible in apps that render entries verbatim. Cross-entry references that target MOBI per-letter HTML (`content_NN.html#hw_X` or same-page `#hw_X`) are rewritten to StarDict's `bword://X` scheme so GoldenDict, GoldenDict-ng, KOReader, and sdcv resolve them as in-dictionary lookups.
-- `<name>.syn` — `(form\0, original_word_index:u32be)` pairs mapping each inflected form to its lemma's row in `.idx`, sorted by the same key as `.idx`. Omitted when the source dictionary has no inflections.
+- `<name>.ifo`: UTF-8 manifest with `bookname`, `wordcount`, `idxfilesize`, optional `synwordcount`, `author`, `email`, `website`, `description`, `date`, and `sametypesequence=h`. `bookname` / `author` / `date` default to the OPF's `dc:title` / `dc:creator` / `dc:date`; CLI flags override. `email`, `website`, and `description` have no OPF counterpart and are emitted only when supplied. StarDict 2.4.2 has no `license` field, so license info is conventionally folded into `description` (use `<br>` for line breaks). When the OPF declares `<DictionaryInLanguage>` and `<DictionaryOutLanguage>` and the bookname does not already contain a 2-3 letter hyphenated pair, kindling appends ` (in-out)` to the bookname so GoldenDict-ng / KOReader can parse the language pair and populate the "Translates from / to" fields (the StarDict spec has no formal source/target language slot, so embedding the codes in the bookname is the de-facto convention).
+- `<name>.idx`: concatenation of `(headword\0, offset:u32be, size:u32be)`, sorted by `g_ascii_strcasecmp` (ASCII case-insensitive bytewise) so readers can binary-search.
+- `<name>.dict`: concatenation of per-entry HTML payloads. Each entry's `<idx:entry>` / `<idx:orth>` wrapper is stripped, `<idx:infl>` / `<idx:iform>` blocks are dropped (those forms are surfaced through `.syn` instead), and self-closing `<idx:orth value="X"/>` is rewritten to `<b>X</b>` so the headword stays visible in apps that render entries verbatim. Cross-entry references that target MOBI per-letter HTML (`content_NN.html#hw_X` or same-page `#hw_X`) are rewritten to StarDict's `bword://X` scheme so GoldenDict, GoldenDict-ng, KOReader, and sdcv resolve them as in-dictionary lookups.
+- `<name>.syn`: `(form\0, original_word_index:u32be)` pairs mapping each inflected form to its lemma's row in `.idx`, sorted by the same key as `.idx`. Omitted when the source dictionary has no inflections.
 
 ### Repair
 
@@ -217,7 +217,7 @@ kindling-cli repair input.epub --report-json      # full report as JSON on stdou
 3. **Missing `dc:language`**: inject a fallback `en` into OPFs that have no `<dc:language>`, and warn when an existing language is outside Amazon's allowed list.
 4. **Stray `<img>`**: delete `<img>` tags with no `src` attribute, which otherwise show up as broken image placeholders on Kindle.
 
-The pass is **byte-stable on clean input**: if no fixes are needed, the output is a `fs::copy` of the input with identical bytes, so content-hash-based book identity stays the same. It is **idempotent**: running it twice produces the same result as running it once. It **rejects DRM-protected EPUBs** (`META-INF/encryption.xml` or `META-INF/rights.xml`) with exit code 1 and does not touch them; no DRM removal code is linked or referenced.
+The pass is byte-stable on clean input: if no fixes are needed, the output is a `fs::copy` of the input with identical bytes, so content-hash-based book identity stays the same. It is idempotent: running it twice produces the same result as running it once. DRM-protected EPUBs (`META-INF/encryption.xml` or `META-INF/rights.xml`) are rejected with exit code 1 and not touched; no DRM removal code is linked or referenced.
 
 `kindling build` and `kindling validate` do not automatically invoke repair; it is a separate explicit pass. This lets downstream consumers that need reliable EPUB preprocessing run `repair` in their ingest pipeline without affecting the build or validation paths.
 
@@ -233,7 +233,7 @@ kindling-cli rewrite-metadata input.azw3 --title "New Title" --report-json
 
 `kindling rewrite-metadata` updates the EXTH metadata records (and optionally the cover image record) of an existing MOBI/AZW3 file without re-running the EPUB/OPF build pipeline. Supported fields: title (EXTH 503 plus full_name), multi-value author (100), publisher (101), description (103), language (524), ISBN (104), ASIN (504), publication date (106), multi-value subject/tag (105), series name (112), series index (113), and the cover image bytes. Book content records (text, non-cover images, indices, INDX/FLIS/FCIS) are never touched. Multi-value flags like `--author` and `--subject` accept repeats to accumulate values.
 
-The pass is **byte-stable on no-op**: if the requested updates match what is already in the file, or if no field flags are passed at all, the output is a `fs::copy` of the input with identical bytes. Downstream library managers that use content-hash identity for books can therefore call `rewrite-metadata` unconditionally when a user opens the metadata editor and closes it without changes. It is **idempotent**: running with the same updates a second time reports zero changes and produces a byte-identical output. It **rejects DRM-protected files** (PalmDOC encryption byte set, or EXTH 401/402/403 present) with exit code 1 and does not touch them; no DRM removal code is linked or referenced.
+The pass is byte-stable on no-op: if the requested updates match what is already in the file, or if no field flags are passed at all, the output is a `fs::copy` of the input with identical bytes. Downstream library managers that use content-hash identity for books can therefore call `rewrite-metadata` unconditionally when a user opens the metadata editor and closes it without changes. It is idempotent: running with the same updates a second time reports zero changes and produces a byte-identical output. DRM-protected files (PalmDOC encryption byte set, or EXTH 401/402/403 present) are rejected with exit code 1 and not touched; no DRM removal code is linked or referenced.
 
 Unknown EXTH records in the input are preserved unchanged, so tool-specific metadata written by Calibre or kindlegen survives the rewrite pass.
 
@@ -241,7 +241,7 @@ Unknown EXTH records in the input are preserved unchanged, so tool-specific meta
 
 Every `build` and `comic` run now performs an HTML self-check on the assembled MOBI text blob before writing the output file. The check catches regressions like dangling `<body>` / `<mbp:frameset>` tags, `<hr/` corruption, and unclosed attribute quotes that would otherwise reach a user's Kindle as a white screen.
 
-The self-check runs in two passes: once on the full assembled blob (for structural corruption and tag balance at the document level), and once on each individual record after splitting (for per-record HTML balance, catching tag pairs like `<b>...</b>` that would straddle a record boundary and cause bold or italic state to leak). Kindle decodes each text record independently for pagination, so a single unbalanced record can corrupt rendering even when the assembled blob is well-formed. Together the two passes add ~50-200 ms to a large dictionary build. The check **never aborts the build**: when something is wrong, kindling prints a warning block pointing at the issue and writes the MOBI anyway, so you can still inspect the output.
+The self-check runs in two passes: once on the full assembled blob (for structural corruption and tag balance at the document level), and once on each individual record after splitting (for per-record HTML balance, catching tag pairs like `<b>...</b>` that would straddle a record boundary and cause bold or italic state to leak). Kindle decodes each text record independently for pagination, so a single unbalanced record can corrupt rendering even when the assembled blob is well-formed. Together the two passes add ~50-200 ms to a large dictionary build. The check never aborts the build: when something is wrong, kindling prints a warning block pointing at the issue and writes the MOBI anyway, so you can still inspect the output.
 
 ```bash
 kindling-cli build input.opf --no-self-check       # skip the self-check (not recommended)
@@ -390,7 +390,7 @@ EXTH records are type-length-value metadata entries in Record 0, following the M
 | 207 | Creator build | Both | u32 BE | |
 | 300 | Fontsignature | Dicts | 242 bytes | LE USB/CSB bitfields + shifted codepoints. Tells firmware which Unicode ranges the dictionary covers |
 | 307 | Resolution | Books | UTF-8 string | Fixed-layout viewport resolution (e.g. `"1072x1448"`) |
-| 501 | Document type | Books | ASCII string | See table below. **Not written for dictionaries** - *kindlegen* omits it for dicts and Kindle recognizes dicts via orth index + EXTH 547 instead |
+| 501 | Document type | Books | ASCII string | See table below. Not written for dictionaries - *kindlegen* omits it for dicts and Kindle recognizes dicts via orth index + EXTH 547 instead |
 | 524 | Language | Both | UTF-8 string | BCP47/ISO 639 language code |
 | 525 | Writing mode | Both | UTF-8 string | `"horizontal-lr"` or `"horizontal-rl"` |
 | 527 | Page progression | Books | UTF-8 string | Fixed-layout page direction |
@@ -407,7 +407,7 @@ Controls where the content appears on the Kindle home screen.
 
 | Value | Meaning | Notes |
 |-------|---------|-------|
-| `EBOK` | Books shelf | **Warning**: Amazon may auto-delete sideloaded EBOK files when the Kindle connects to WiFi, since it checks whether the ASIN is in the user's purchase history |
+| `EBOK` | Books shelf | Warning: Amazon may auto-delete sideloaded EBOK files when the Kindle connects to WiFi, since it checks whether the ASIN is in the user's purchase history |
 | `PDOC` | Documents shelf | Safe default for sideloaded content |
 
 Dictionaries do NOT use EXTH 501. The Kindle identifies dictionaries by the combination of a valid orth index (MOBI header offset 24), EXTH 531/532 language records, and EXTH 547 `InMemory`. Adding an unrecognized EXTH 501 value (e.g. `"DICT"`) can prevent the Kindle from recognizing the file as a dictionary.
@@ -550,14 +550,14 @@ Kindle firmware 5.19.2 introduced regressions for sideloaded fixed-layout conten
 
 ## Acknowledgements
 
-Thanks to the wider ebook-tooling community whose public documentation and reverse-engineering efforts over many years made a project like this possible. In particular:
+Thanks to the ebook-tooling community whose public documentation and reverse-engineering work made this project possible:
 
 - [w3c/epubcheck](https://github.com/w3c/epubcheck) is the authoritative EPUB conformance validator. Most of kindling's Section 5-11 and 15-16 rules are direct ports of its STEAL-grade diagnostics, adapted to Kindle's constraints. Epubcheck's rule IDs (`OPF_*`, `RSC_*`, `HTM_*`, `NAV_*`, `NCX_*`, `CSS_*`, `MED_*`, `PKG_*`) are preserved in every ported rule's description so they remain discoverable from their source.
 - [w3c/epub-tests](https://github.com/w3c/epub-tests) is the W3C EPUB 3 reading-system conformance corpus. Kindling's optional corpus harness (`tests/epub_tests_corpus.rs`) runs the entire corpus through the validator to surface false positives and measure coverage against real-world EPUB content.
 - [KCC (Kindle Comic Converter)](https://github.com/ciromattia/kcc) by Ciro Mattia Gonano, with earlier work by [AcidWeb](https://github.com/AcidWeb), for pioneering comic-to-Kindle processing. Panel detection, webtoon handling, and device profile data informed kindling's comic pipeline.
 - The [MobileRead wiki](https://wiki.mobileread.com/wiki/MOBI) and Developer's Corner forum for the foundational public documentation of the MOBI format. Dc5e's [KindleComicParser](https://www.mobileread.com/forums/showthread.php?t=192783) thread on fixed-layout binaries filled in gaps the wiki does not cover.
-- Amazon's *kindlegen* (no longer maintained) is used as a reverse-engineering reference: its output files are compared byte by byte against kindling's to understand the MOBI format's undocumented corners.
-- The broader open-source MOBI tooling community whose format notes, sample files, and online discussions have been invaluable references.
+- Amazon's *kindlegen* (no longer maintained) is used as a reverse-engineering reference: its output files are diffed against kindling's to understand the MOBI format's undocumented corners.
+- The broader open-source MOBI tooling community for format notes, sample files, and online discussions.
 
 ## Related projects
 
