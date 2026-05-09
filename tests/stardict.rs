@@ -132,8 +132,10 @@ fn builds_stardict_from_simple_dict_fixture() {
     assert_eq!(ifo_get(&ifo, "sametypesequence"), Some("h"));
     assert_eq!(
         ifo_get(&ifo, "bookname"),
-        Some("Parity Test Dictionary"),
-        "bookname should fall back to dc:title"
+        Some("Parity Test Dictionary (en-en)"),
+        "bookname should fall back to dc:title with (in-out) appended from \
+         <DictionaryInLanguage> / <DictionaryOutLanguage> so GoldenDict-ng \
+         can populate Translates from / to"
     );
     assert_eq!(
         ifo_get(&ifo, "author"),

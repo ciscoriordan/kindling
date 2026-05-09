@@ -191,7 +191,7 @@ pub fn build_stardict(
     }
 
     // .ifo
-    let bookname = options
+    let raw_bookname = options
         .bookname
         .clone()
         .filter(|s| !s.is_empty())
@@ -203,6 +203,11 @@ pub fn build_stardict(
             }
         })
         .unwrap_or_else(|| stem.clone());
+    let bookname = augment_bookname_with_lang_pair(
+        &raw_bookname,
+        &opf.dict_in_language,
+        &opf.dict_out_language,
+    );
     let author = options
         .author
         .clone()
@@ -391,6 +396,51 @@ fn sanitize_ifo_value(s: &str) -> String {
     s.replace(['\n', '\r'], " ")
 }
 
+/// Append ` (in-out)` to the bookname when the OPF declares the dictionary's
+/// in/out languages and the bookname does not already contain a 2–3 letter
+/// hyphen-separated pair.
+///
+/// GoldenDict-ng / GoldenDict / KOReader populate "Translates from / to" by
+/// regex-parsing the `.dict` filename and the `.ifo` `bookname` for a
+/// `xx-yy` or `xxx-yyy` pair (case-insensitive, bounded by non-letters); they
+/// do not read any explicit `.ifo` language field. StarDict 2.4.2 has no
+/// formal slot for source/target languages either, so embedding the codes in
+/// the bookname is the de-facto standard. Auto-augmenting from the OPF means
+/// every dictionary built through kindling renders correctly in those readers
+/// without callers having to remember to bake the codes into `dc:title`.
+fn augment_bookname_with_lang_pair(bookname: &str, in_lang: &str, out_lang: &str) -> String {
+    if in_lang.is_empty() || out_lang.is_empty() {
+        return bookname.to_string();
+    }
+    if bookname_has_detectable_lang_pair(bookname) {
+        return bookname.to_string();
+    }
+    let suffix = format!(
+        "({}-{})",
+        in_lang.to_ascii_lowercase(),
+        out_lang.to_ascii_lowercase()
+    );
+    if bookname.is_empty() {
+        suffix
+    } else {
+        format!("{} {}", bookname, suffix)
+    }
+}
+
+/// Mirror GoldenDict-ng's `LangCoder::findLangIdPairFromName` regex so we
+/// agree on what counts as "already has a language pair". Case-insensitive,
+/// 2–3 ASCII letters on each side of a hyphen, bounded by start/end of
+/// string or a non-letter on both sides. Long names like `Greek-English`
+/// don't match (each side exceeds 3 letters) and so will still get the
+/// suffix appended.
+fn bookname_has_detectable_lang_pair(s: &str) -> bool {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(r"(?i)(^|[^a-zA-Z])[a-zA-Z]{2,3}-[a-zA-Z]{2,3}($|[^a-zA-Z])").unwrap()
+    });
+    re.is_match(s)
+}
+
 fn html_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -500,5 +550,103 @@ mod tests {
         assert_eq!(sanitize_ifo_value("foo\nbar"), "foo bar");
         assert_eq!(sanitize_ifo_value("foo\r\nbar"), "foo  bar");
         assert_eq!(sanitize_ifo_value("plain"), "plain");
+    }
+
+    #[test]
+    fn augment_bookname_appends_pair_when_absent() {
+        assert_eq!(
+            augment_bookname_with_lang_pair("Lemma Greek Dictionary", "el", "en"),
+            "Lemma Greek Dictionary (el-en)"
+        );
+    }
+
+    #[test]
+    fn augment_bookname_appends_for_long_dash_separated_words() {
+        // "Greek-English" looks like a pair but each side is too long for the
+        // 2-3 letter regex, so GoldenDict-ng won't detect it. We still need
+        // to append the codes so language detection works.
+        assert_eq!(
+            augment_bookname_with_lang_pair("Greek-English Dictionary", "el", "en"),
+            "Greek-English Dictionary (el-en)"
+        );
+    }
+
+    #[test]
+    fn augment_bookname_skips_when_pair_already_present() {
+        // Already has a detectable pair in parentheses.
+        assert_eq!(
+            augment_bookname_with_lang_pair("My Dict (en-fr)", "en", "fr"),
+            "My Dict (en-fr)"
+        );
+        // Case-insensitive detection: the existing pair is uppercase.
+        assert_eq!(
+            augment_bookname_with_lang_pair("RU-EN Dict", "ru", "en"),
+            "RU-EN Dict"
+        );
+        // Three-letter codes still count as a pair.
+        assert_eq!(
+            augment_bookname_with_lang_pair("Old Dict (grc-eng)", "grc", "eng"),
+            "Old Dict (grc-eng)"
+        );
+    }
+
+    #[test]
+    fn augment_bookname_skips_when_either_lang_missing() {
+        assert_eq!(
+            augment_bookname_with_lang_pair("My Dict", "", "en"),
+            "My Dict"
+        );
+        assert_eq!(
+            augment_bookname_with_lang_pair("My Dict", "el", ""),
+            "My Dict"
+        );
+        assert_eq!(augment_bookname_with_lang_pair("My Dict", "", ""), "My Dict");
+    }
+
+    #[test]
+    fn augment_bookname_handles_monolingual_pair() {
+        // GoldenDict-ng accepts identical from/to codes; "el-el" renders as
+        // "Translates from: Greek / Translates to: Greek" for a Greek-only
+        // dictionary, which is informative even if redundant.
+        assert_eq!(
+            augment_bookname_with_lang_pair("Lemma Greek Dictionary", "el", "el"),
+            "Lemma Greek Dictionary (el-el)"
+        );
+    }
+
+    #[test]
+    fn augment_bookname_lowercases_codes() {
+        assert_eq!(
+            augment_bookname_with_lang_pair("Dict", "EL", "EN"),
+            "Dict (el-en)"
+        );
+    }
+
+    #[test]
+    fn augment_bookname_handles_three_letter_codes() {
+        assert_eq!(
+            augment_bookname_with_lang_pair("Ancient Greek Dict", "grc", "eng"),
+            "Ancient Greek Dict (grc-eng)"
+        );
+    }
+
+    #[test]
+    fn augment_bookname_synthesises_pair_when_bookname_empty() {
+        assert_eq!(augment_bookname_with_lang_pair("", "el", "en"), "(el-en)");
+    }
+
+    #[test]
+    fn detect_lang_pair_matches_short_codes_only() {
+        assert!(bookname_has_detectable_lang_pair("My Dict (en-fr)"));
+        assert!(bookname_has_detectable_lang_pair("en-fr"));
+        assert!(bookname_has_detectable_lang_pair("EN-FR"));
+        assert!(bookname_has_detectable_lang_pair("Lemma Dict grc-eng v2"));
+        // Long words are not codes.
+        assert!(!bookname_has_detectable_lang_pair("Greek-English Dictionary"));
+        assert!(!bookname_has_detectable_lang_pair("Lemma Greek Dictionary"));
+        // Single-letter words don't qualify.
+        assert!(!bookname_has_detectable_lang_pair("a-b dict"));
+        // Boundary requirement: surrounding letters disqualify.
+        assert!(!bookname_has_detectable_lang_pair("supercala-fragilistic"));
     }
 }
