@@ -1,8 +1,8 @@
 // Section 11: Fixed-layout EPUB rules (R11.1 through R11.9).
 //
 // These rules apply to fixed-layout EPUBs (comic books, textbooks, children's
-// picture books) and port the STEAL-grade subset of epubcheck's HTM_046
-// through HTM_060 and OPF_011 families. They fire only on Profile::Comic or
+// picture books) and port the relevant subset of epubcheck's HTM_046 through
+// HTM_060 and OPF_011 families. They fire only on Profile::Comic or
 // Profile::Textbook so that reflowable books and dictionaries are unaffected.
 //
 //   R11.1 Missing rendition:layout=pre-paginated in OPF when content is FL  (OPF_011)

@@ -56,8 +56,7 @@ impl Check for CssForbiddenChecks {
 
             // R6.13 CSS parse error. lightningcss only returns an `Err` for
             // hard syntax errors; style-level mistakes survive with
-            // `error_recovery` disabled, which is what we want for a
-            // STEAL-grade check.
+            // `error_recovery` disabled, which is what we want here.
             if let Some(err) = &summary.parse_error {
                 report.emit_at(
                     "R6.13",

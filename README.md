@@ -10,7 +10,7 @@ Amazon deprecated *kindlegen* in 2020, leaving no supported way to build Kindle 
 
 For comics, [KCC](https://github.com/ciromattia/kcc) exists but requires Python, PySide6/Qt, Pillow, 7z, mozjpeg, psutil, pymupdf, and more. Installation is painful across platforms, there's no headless mode for CI, and Python image processing is slow. Kindling replaces all of that with a single statically-linked native binary, compiled from Rust.
 
-Kindling also publishes dictionaries to StarDict (`kindling stardict`), producing the four-file `.ifo` / `.idx` / `.dict` / `.syn` bundle consumed by [GoldenDict](http://goldendict.org/), [GoldenDict-ng](https://github.com/xiaoyifang/goldendict-ng), [KOReader](https://github.com/koreader/koreader), [sdcv](https://github.com/Dushistov/sdcv), and other non-Kindle dictionary readers. The same OPF or EPUB you pass to `kindling build` is the input, so one dictionary project can target Kindle, Linux/macOS/Windows desktops, Android, and Kobo/PocketBook e-readers from a single source. Headword and inflection lookup, ASCII case-insensitive index, inflection redirects via `.syn`, and `<idx:orth value="X"/>` headword rewriting all work without configuration; see [StarDict export](#stardict-export) for the format details and current cross-reference caveats.
+Kindling also publishes dictionaries to StarDict (`kindling stardict`), producing the four-file `.ifo` / `.idx` / `.dict` / `.syn` bundle that [GoldenDict](http://goldendict.org/), [GoldenDict-ng](https://github.com/xiaoyifang/goldendict-ng), [KOReader](https://github.com/koreader/koreader), [sdcv](https://github.com/Dushistov/sdcv), and other non-Kindle dictionary readers consume. The same OPF or EPUB you pass to `kindling build` is the input, so one dictionary project can target Kindle, Linux/macOS/Windows desktops, Android, and Kobo/PocketBook e-readers from a single source. Headword lookup, inflection lookup, and case-insensitive matching all work without configuration; see [StarDict export](#stardict-export) for format details and current cross-reference caveats.
 
 Kindling was built by reverse-engineering Amazon's undocumented MOBI format, with help from the [MobileRead wiki](https://wiki.mobileread.com/wiki/MOBI).
 
@@ -44,6 +44,18 @@ Download the latest release for your platform from [Releases](https://github.com
 - **Mac Intel** - `kindling-cli-mac-intel`
 - **Linux** - `kindling-cli-linux`
 - **Windows** - `kindling-cli-windows.exe`
+
+On Linux and BSD, install via [AppMan](https://github.com/ivan-hc/AppMan) (rootless, per-user):
+
+```bash
+appman -i kindling-cli
+```
+
+Or via [AM](https://github.com/ivan-hc/AM) (system-wide):
+
+```bash
+am -i kindling-cli
+```
 
 Or install via Cargo (builds from source, installs `kindling-cli` to `~/.cargo/bin`):
 
@@ -166,7 +178,7 @@ kindling-cli validate input.opf --strict    # exit 1 on any warning too
 
 Validation also runs automatically as a pre-flight step inside every `kindling build` invocation (including kindlegen-compat mode `kindling input.opf`). Any validation errors abort the build with exit code 1; warnings are printed but do not block the build. Pass `--no-validate` to `build` to skip the pre-flight entirely. Comic builds (`kindling comic`) do not run the validator because comics have different structural requirements that the book-oriented rules do not cover.
 
-Runs 117 pre-flight checks against the [Amazon Kindle Publishing Guidelines](http://kindlegen.s3.amazonaws.com/AmazonKindlePublishingGuidelines.pdf) (version 2026.1), covering the STEAL-grade subset of w3c/epubcheck plus kindling's own KDP-specific rules. Rules are grouped by KPG section:
+Runs 117 pre-flight checks against the [Amazon Kindle Publishing Guidelines](http://kindlegen.s3.amazonaws.com/AmazonKindlePublishingGuidelines.pdf) (version 2026.1). Most rules are ports of the corresponding w3c/epubcheck checks; the rest are KDP-specific rules kindling adds on top. Rules are grouped by KPG section:
 
 - **4 Cover image** (5 rules): internal cover must exist via Method 1 (`<item properties="coverimage"/>`) or Method 2 (`<meta name="cover">`), file must exist on disk, shortest side >= 500 px, no duplicate HTML cover page in the spine (`R4.1.1`-`R4.2.4`)
 - **5 Navigation** (13 rules): NCX declared in manifest and referenced from `<spine toc>`, NCX and guide targets must resolve to manifest items, TOC recommended for books > 20 pages, NCX `dtb:uid` must match the OPF unique-identifier, page-list required when `epub:type="pagebreak"` is used, nav entries in spine order, no remote links in nav or NCX (`R5.1`-`R5.11`, epubcheck `NAV_003/010/011`, `NCX_001/004/006`, `OPF_032/050`)
@@ -552,11 +564,11 @@ Kindle firmware 5.19.2 introduced regressions for sideloaded fixed-layout conten
 
 Thanks to the ebook-tooling community whose public documentation and reverse-engineering work made this project possible:
 
-- [w3c/epubcheck](https://github.com/w3c/epubcheck) is the authoritative EPUB conformance validator. Most of kindling's Section 5-11 and 15-16 rules are direct ports of its STEAL-grade diagnostics, adapted to Kindle's constraints. Epubcheck's rule IDs (`OPF_*`, `RSC_*`, `HTM_*`, `NAV_*`, `NCX_*`, `CSS_*`, `MED_*`, `PKG_*`) are preserved in every ported rule's description so they remain discoverable from their source.
+- [w3c/epubcheck](https://github.com/w3c/epubcheck) is the W3C's official EPUB validator. Most of kindling's Section 5-11 and 15-16 rules are direct ports of its checks, adapted to Kindle's constraints. Epubcheck's rule IDs (`OPF_*`, `RSC_*`, `HTM_*`, `NAV_*`, `NCX_*`, `CSS_*`, `MED_*`, `PKG_*`) are preserved in every ported rule's description so they stay traceable back to the source.
 - [w3c/epub-tests](https://github.com/w3c/epub-tests) is the W3C EPUB 3 reading-system conformance corpus. Kindling's optional corpus harness (`tests/epub_tests_corpus.rs`) runs the entire corpus through the validator to surface false positives and measure coverage against real-world EPUB content.
 - [KCC (Kindle Comic Converter)](https://github.com/ciromattia/kcc) by Ciro Mattia Gonano, with earlier work by [AcidWeb](https://github.com/AcidWeb), for pioneering comic-to-Kindle processing. Panel detection, webtoon handling, and device profile data informed kindling's comic pipeline.
 - The [MobileRead wiki](https://wiki.mobileread.com/wiki/MOBI) and Developer's Corner forum for the foundational public documentation of the MOBI format. Dc5e's [KindleComicParser](https://www.mobileread.com/forums/showthread.php?t=192783) thread on fixed-layout binaries filled in gaps the wiki does not cover.
-- Amazon's *kindlegen* (no longer maintained) is used as a reverse-engineering reference: its output files are diffed against kindling's to understand the MOBI format's undocumented corners.
+- Amazon's *kindlegen* (no longer maintained) is used as a reverse-engineering reference: its output files are diffed against kindling's to figure out the parts of the MOBI format Amazon never documented.
 - The broader open-source MOBI tooling community for format notes, sample files, and online discussions.
 
 ## Related projects
