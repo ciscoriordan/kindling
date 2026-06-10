@@ -313,7 +313,7 @@ fn build_dictionary_mobi(
     // default: only base headwords land in orth; inflected forms are
     // routed through the separate infl INDX. Test-mode toggle while we
     eprintln!("Building lookup terms...");
-    let (lookup_terms, ja_ordt) = build_lookup_terms(
+    let (lookup_terms, gen_ordt) = build_lookup_terms(
         &all_entries,
         &entry_positions,
         &text_content,
@@ -333,14 +333,20 @@ fn build_dictionary_mobi(
     // INDX header language: Windows primary language ID of the dictionary
     // input language (8 = Greek, 9 = English, 17 = Japanese), matching
     // kindlegen. The firmware reads this when deciding how to drive
-    // lookups against the index.
-    let index_language = locale_code(&opf.dict_in_language) & 0x3FF;
+    // lookups against the index. One observed kindlegen quirk: Korean
+    // gets the full LCID 0x0412 instead of the primary ID 0x12; mirror
+    // that so our output matches the kindlegen reference on this field.
+    let index_language = if opf.dict_in_language.starts_with("ko") {
+        0x0412
+    } else {
+        locale_code(&opf.dict_in_language) & 0x3FF
+    };
     let indx_records = indx::build_orth_indx(
         &lookup_terms,
         &headword_chars_for_indx,
         strict_accents,
         index_language,
-        ja_ordt.as_ref(),
+        gen_ordt.as_ref(),
     );
     eprintln!("  Orth INDX: {} records", indx_records.len());
 
@@ -2661,9 +2667,10 @@ fn is_entry_boundary(text_bytes: &[u8], bold_pos: usize) -> bool {
 /// headword's text position. Matches lemma v1.0.0 / kindling v0.5.0
 /// behaviour, the last demonstrably on-device-working state.
 ///
-/// For Japanese dictionaries (`dict_lang` = "ja"), labels are encoded as
-/// generated-ORDT symbol sequences and sorted by their collation keys
-/// instead of UTF-16BE byte order; the returned `JaOrdt` must then be
+/// For languages on the generated-ORDT path (Japanese, Chinese, Korean,
+/// Arabic; see `crate::ordt::uses_generated_ordt`), labels are encoded
+/// as ORDT symbol sequences and sorted by their collation keys instead
+/// of UTF-16BE byte order; the returned `OrdtTables` must then be
 /// embedded in the orth primary INDX. See `crate::ordt` and issue #11.
 fn build_lookup_terms(
     entries: &[DictionaryEntry],
@@ -2671,7 +2678,7 @@ fn build_lookup_terms(
     text_bytes: &[u8],
     headwords_only: bool,
     dict_lang: &str,
-) -> (Vec<LookupTerm>, Option<crate::ordt::JaOrdt>) {
+) -> (Vec<LookupTerm>, Option<crate::ordt::OrdtTables>) {
     use std::collections::HashMap;
 
     let mut terms: HashMap<String, (usize, usize, usize, usize)> = HashMap::new();
@@ -2727,8 +2734,8 @@ fn build_lookup_terms(
     }
 
     eprintln!("Encoding {} unique lookup terms...", terms.len());
-    let ja_ordt = if crate::ordt::is_japanese(dict_lang) {
-        Some(crate::ordt::JaOrdt::new(&crate::ordt::used_bytes(
+    let gen_ordt = if crate::ordt::uses_generated_ordt(dict_lang) {
+        Some(crate::ordt::OrdtTables::new(&crate::ordt::used_bytes(
             terms.keys().map(|s| s.as_str()),
         )))
     } else {
@@ -2737,23 +2744,23 @@ fn build_lookup_terms(
 
     let mut label_bytes_map: HashMap<String, Vec<u8>> = HashMap::new();
     for label in terms.keys() {
-        let bytes = match &ja_ordt {
-            Some(ja) => ja.encode_label(label),
+        let bytes = match &gen_ordt {
+            Some(tables) => tables.encode_label(label),
             None => indx::encode_indx_label(label),
         };
         label_bytes_map.insert(label.clone(), bytes);
     }
 
     let mut sorted_labels: Vec<String> = terms.keys().cloned().collect();
-    match &ja_ordt {
-        Some(ja) => {
+    match &gen_ordt {
+        Some(tables) => {
             // Sort by ORDT collation key (the order Kindle's lookup
             // expects); ties broken by encoded bytes for determinism.
             // Equal keys are fine on-device: the firmware scans
             // equal-weight ranges.
             let sort_keys: HashMap<&String, Vec<u32>> = label_bytes_map
                 .iter()
-                .map(|(label, bytes)| (label, ja.sort_key(bytes)))
+                .map(|(label, bytes)| (label, tables.sort_key(bytes)))
                 .collect();
             sorted_labels.sort_by(|a, b| {
                 sort_keys[a]
@@ -2780,7 +2787,7 @@ fn build_lookup_terms(
             }
         })
         .collect();
-    (lookup_terms, ja_ordt)
+    (lookup_terms, gen_ordt)
 }
 
 /// Build record 0: PalmDOC header + MOBI header + EXTH header + full name.

@@ -9,7 +9,7 @@ use std::collections::HashSet;
 
 use rayon::prelude::*;
 
-use crate::ordt::JaOrdt;
+use crate::ordt::OrdtTables;
 use crate::vwi::encode_vwi_inv;
 
 const INDX_HEADER_LENGTH: usize = 192;
@@ -45,19 +45,20 @@ enum OrdtMode<'a> {
     /// No collation tables (sub-indexes 2/3, or `--strict-accents`).
     None,
     /// Static kindlegen-derived Greek ORDT/SPL blob (default for
-    /// non-Japanese dictionaries; see `ORDT_GREEK`).
+    /// dictionaries outside the generated-ORDT path; see `ORDT_GREEK`).
     Greek,
-    /// Per-dictionary generated tables for Japanese (see `crate::ordt`).
+    /// Per-dictionary generated tables for Japanese, Chinese, Korean,
+    /// and Arabic (see `crate::ordt`).
     /// Labels in the data records are ORDT symbol sequences, not
     /// UTF-16BE text.
-    Generated(&'a JaOrdt),
+    Generated(&'a OrdtTables),
 }
 
 /// Encode a label string for use in an INDX entry.
 ///
-/// Labels are written as UTF-16BE (Japanese dictionaries are the
-/// exception: their labels are generated-ORDT symbol sequences, see
-/// `crate::ordt`). The primary INDX header declares encoding `65002`
+/// Labels are written as UTF-16BE (dictionaries on the generated-ORDT
+/// path are the exception: their labels are ORDT symbol sequences, see
+/// `crate::ordt::uses_generated_ordt`). The primary INDX header declares encoding `65002`
 /// (0xFDEA), which downstream parsers (iscc/mobi, KindleUnpack, libmobi)
 /// interpret as a fixed 2-byte-per-character label encoding. Storing
 /// ASCII labels as raw 1-byte-per-char bytes used to work on Kindle
@@ -88,8 +89,8 @@ pub fn encode_indx_label(text: &str) -> Vec<u8> {
 /// Build all INDX records for the orthographic (dictionary) index.
 ///
 /// `index_language` is the Windows primary language ID written to the
-/// INDX header (8 = Greek, 9 = English, 17 = Japanese, ...). `ja_ordt`
-/// selects the generated Japanese collation tables; when set, the
+/// INDX header (8 = Greek, 9 = English, 17 = Japanese, ...). `gen_ordt`
+/// selects the generated collation tables; when set, the
 /// lookup-term `label_bytes` must already be ORDT symbol sequences and
 /// the terms must be sorted by their ORDT sort keys.
 ///
@@ -100,7 +101,7 @@ pub fn build_orth_indx(
     headword_chars: &HashSet<char>,
     strict_accents: bool,
     index_language: u32,
-    ja_ordt: Option<&JaOrdt>,
+    gen_ordt: Option<&OrdtTables>,
 ) -> Vec<Vec<u8>> {
     // --- Sub-index 1: Headword entries ---
     let tag_defs1 = [
@@ -181,8 +182,8 @@ pub fn build_orth_indx(
         last_labels.push(prev_label_bytes);
     }
 
-    let ordt_mode1 = match ja_ordt {
-        Some(ja) => OrdtMode::Generated(ja),
+    let ordt_mode1 = match gen_ordt {
+        Some(tables) => OrdtMode::Generated(tables),
         None if strict_accents => OrdtMode::None,
         None => OrdtMode::Greek,
     };
@@ -418,7 +419,7 @@ fn build_indx_data_record(entry_list: &[Vec<u8>]) -> Vec<u8> {
 /// kindlegen-derived ORDT/SPL blob (diacritic folding), `None` omits it
 /// so Kindle falls back to raw UTF-16BE ordering and exact-accent hits
 /// beat fuzzy ones on-device (`--strict-accents`), and `Generated`
-/// appends per-dictionary Japanese collation tables. Sub-indexes 2 and 3
+/// appends per-dictionary generated collation tables. Sub-indexes 2 and 3
 /// always pass `None`.
 fn build_indx_primary(
     tagx: &[u8],
@@ -493,12 +494,12 @@ fn build_indx_primary(
         record.push(0x00);
     }
 
-    // Append generated Japanese collation tables (see crate::ordt for the
-    // format). Field layout mirrors kindlegen's Japanese output: only
+    // Append generated collation tables (see crate::ordt for the
+    // format). Field layout mirrors kindlegen's generated-ORDT output: only
     // ordt_type/oentries/ordt1/ordt2/name_len are set; the SPL spellcheck
     // fields stay zero.
-    if let OrdtMode::Generated(ja) = ordt_mode {
-        let (t1, t2) = ja.serialize();
+    if let OrdtMode::Generated(tables) = ordt_mode {
+        let (t1, t2) = tables.serialize();
         while record.len() % 4 != 0 {
             record.push(0x00);
         }
@@ -511,7 +512,7 @@ fn build_indx_primary(
         record.extend_from_slice(&t2);
 
         put32(&mut record, 164, 0); // ordt_type = 0 (u16 BE symbol labels)
-        put32(&mut record, 168, ja.count()); // oentries
+        put32(&mut record, 168, tables.count()); // oentries
         put32(&mut record, 172, ordt1_abs as u32); // ORDT1 (weights)
         put32(&mut record, 176, ordt2_abs as u32); // ORDT2 (values)
         put32(&mut record, 184, 7); // name_len ("default")

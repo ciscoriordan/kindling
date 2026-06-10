@@ -16,7 +16,7 @@ use common::*;
 use std::fs;
 use std::path::PathBuf;
 
-use kindling::ordt::{used_bytes, JaOrdt};
+use kindling::ordt::{used_bytes, OrdtTables};
 
 /// All 14 headwords in the simple_dict_ja fixture. Chosen to cover the
 /// interesting byte classes: plain hiragana/katakana (ignorable trail
@@ -137,10 +137,10 @@ fn ja_dict_labels_decode_and_sort_by_collation_key() {
     want.sort_unstable();
     assert_eq!(got, want, "decoded headword set mismatch");
 
-    // Entries must be stored in collation-key order. Rebuilding JaOrdt
+    // Entries must be stored in collation-key order. Rebuilding OrdtTables
     // from the same headword set reproduces the build's symbol table, so
     // its sort_key applies directly to the on-disk label bytes.
-    let ja = JaOrdt::new(&used_bytes(JA_HEADWORDS.iter().copied()));
+    let ja = OrdtTables::new(&used_bytes(JA_HEADWORDS.iter().copied()));
     let keys: Vec<Vec<u32>> = indx.entries.iter().map(|e| ja.sort_key(&e.label)).collect();
     for i in 1..keys.len() {
         assert!(
@@ -194,7 +194,7 @@ fn ja_dict_kindlegen_reference_cross_validation() {
     want.sort_unstable();
     assert_eq!(got, want, "kindlegen decoded headword set mismatch");
 
-    let ja = JaOrdt::new(&used_bytes(decoded.iter().map(|s| s.as_str())));
+    let ja = OrdtTables::new(&used_bytes(decoded.iter().map(|s| s.as_str())));
     let keys: Vec<Vec<u32>> = decoded
         .iter()
         .map(|s| ja.sort_key(&ja.encode_label(s)))

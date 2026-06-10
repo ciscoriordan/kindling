@@ -1,16 +1,25 @@
-//! Generated ORDT collation tables for Japanese dictionary indexes.
+//! Generated ORDT collation tables for dictionary indexes.
 //!
 //! Kindle firmware resolves dictionary lookups by searching the orth INDX
 //! with a collation defined inside the dictionary itself, via a pair of
 //! ORDT tables embedded in the primary INDX record. kindlegen generates
-//! these tables for Japanese input; an index without them (or sorted in a
-//! different order than they imply) fails to resolve lookups on device.
-//! See issue #11.
+//! these tables for every input language; an index without them (or
+//! sorted in a different order than they imply) fails to resolve lookups
+//! on device for languages where the firmware normalizes queries, with
+//! Japanese (kana folding) as the proven case. See issue #11.
+//!
+//! kindling routes Japanese, Chinese, Korean, and Arabic through this
+//! module (see `uses_generated_ordt`). Latin, Greek, and Cyrillic script
+//! dictionaries keep the UTF-16BE label scheme with the static Greek
+//! ORDT/SPL blob, which is verified working on real devices.
 //!
 //! This module replicates kindlegen's scheme, reverse-engineered from
-//! kindlegen 2.9 output across four corpora (12-entry mixed-script,
-//! 173-entry single-kana with two different source orders, 5961-entry
-//! shuffled; all validated with zero sort violations):
+//! kindlegen 2.9 output across four Japanese corpora (12-entry
+//! mixed-script, 173-entry single-kana with two different source orders,
+//! 5961-entry shuffled) plus Chinese, Korean, Russian, Arabic, and
+//! Turkish probes; all validated with zero sort violations. The scheme
+//! is language-independent: only the INDX header language field differs
+//! between kindlegen's outputs for different languages.
 //!
 //! * Labels are stored as sequences of symbols, not raw text. With
 //!   `ordt_type = 0` each symbol is a big-endian u16 in the label bytes.
@@ -44,9 +53,9 @@
 //!   weighted symbol, by raw value.
 //! * The full hiragana block U+3041..=U+3093 is always present as
 //!   character symbols with individually increasing weights after the
-//!   letter groups. Labels never reference them, but kindlegen always
-//!   emits them for Japanese and the firmware may consult them when
-//!   normalizing queries, so we mirror that.
+//!   letter groups. Labels never reference them, but kindlegen emits
+//!   them for every language (not just Japanese) and the firmware may
+//!   consult them when normalizing queries, so we mirror that.
 //!
 //! Entries in the orth INDX must be sorted by their zero-skipped weight
 //! sequences (see `sort_key`); ties may appear in any order because the
@@ -84,7 +93,7 @@ enum WeightClass {
 }
 
 /// Generated ORDT table pair plus the byte-level encoder state.
-pub struct JaOrdt {
+pub struct OrdtTables {
     /// Symbol -> collation weight (0 = ignorable).
     ordt1: Vec<u16>,
     /// Symbol -> value (cp1252 code point of the byte, raw byte for
@@ -178,13 +187,13 @@ fn cp1252_value(b: u8) -> u16 {
     }
 }
 
-impl JaOrdt {
+impl OrdtTables {
     /// Build tables for a dictionary whose labels use the given set of
     /// byte values (`used_bytes[b]` true if byte `b` occurs in any
     /// label's UTF-8 encoding). The printable ASCII range and the
     /// hiragana block are always included so the firmware can encode
     /// arbitrary Latin queries against the same tables.
-    pub fn new(used_bytes: &[bool; 256]) -> JaOrdt {
+    pub fn new(used_bytes: &[bool; 256]) -> OrdtTables {
         let mut ordt1: Vec<u16> = Vec::with_capacity(384);
         let mut ordt2: Vec<u16> = Vec::with_capacity(384);
         let mut byte_enc = [ByteEnc::Unmapped; 256];
@@ -270,7 +279,7 @@ impl JaOrdt {
             add(cp, hira_base + (cp - HIRAGANA_FIRST), &mut ordt1, &mut ordt2);
         }
 
-        JaOrdt {
+        OrdtTables {
             ordt1,
             ordt2,
             byte_enc,
@@ -308,7 +317,7 @@ impl JaOrdt {
                         n += 2;
                     }
                     ByteEnc::Unmapped => {
-                        // Byte missing from the table this JaOrdt was
+                        // Byte missing from the table this OrdtTables was
                         // built from. Degrade to a large literal so the
                         // label still encodes deterministically.
                         debug_assert!(false, "byte 0x{b:02X} not in ORDT alphabet");
@@ -367,9 +376,21 @@ impl JaOrdt {
     }
 }
 
-/// True if a dictionary input language selects the Japanese ORDT path.
-pub fn is_japanese(lang: &str) -> bool {
-    lang == "ja" || lang.starts_with("ja-") || lang.starts_with("ja_")
+/// True if a dictionary input language selects the generated ORDT path.
+///
+/// Covers the scripts where the firmware's lookup pipeline is known or
+/// strongly suspected to normalize queries, which makes the plain
+/// UTF-16BE index order unusable: Japanese (proven, issue #11), Chinese,
+/// Korean, and Arabic. kindlegen emits generated ORDT tables for every
+/// language, but kindling keeps Latin/Greek/Cyrillic dictionaries on the
+/// UTF-16BE path because that path is verified working on real devices.
+pub fn uses_generated_ordt(lang: &str) -> bool {
+    let primary = lang
+        .split(['-', '_'])
+        .next()
+        .unwrap_or(lang)
+        .to_ascii_lowercase();
+    matches!(primary.as_str(), "ja" | "zh" | "ko" | "ar")
 }
 
 /// Collect the set of UTF-8 byte values used across an iterator of
@@ -388,8 +409,8 @@ pub fn used_bytes<'a>(labels: impl Iterator<Item = &'a str>) -> [bool; 256] {
 mod tests {
     use super::*;
 
-    fn ordt_for(labels: &[&str]) -> JaOrdt {
-        JaOrdt::new(&used_bytes(labels.iter().copied()))
+    fn ordt_for(labels: &[&str]) -> OrdtTables {
+        OrdtTables::new(&used_bytes(labels.iter().copied()))
     }
 
     #[test]
@@ -528,12 +549,19 @@ mod tests {
     }
 
     #[test]
-    fn is_japanese_variants() {
-        assert!(is_japanese("ja"));
-        assert!(is_japanese("ja-JP"));
-        assert!(is_japanese("ja_JP"));
-        assert!(!is_japanese("el"));
-        assert!(!is_japanese("en"));
-        assert!(!is_japanese("jam")); // Jamaican Creole, not Japanese
+    fn generated_ordt_language_gate() {
+        assert!(uses_generated_ordt("ja"));
+        assert!(uses_generated_ordt("ja-JP"));
+        assert!(uses_generated_ordt("ja_JP"));
+        assert!(uses_generated_ordt("zh"));
+        assert!(uses_generated_ordt("zh-TW"));
+        assert!(uses_generated_ordt("ko"));
+        assert!(uses_generated_ordt("ar"));
+        assert!(!uses_generated_ordt("el"));
+        assert!(!uses_generated_ordt("en"));
+        assert!(!uses_generated_ordt("fr"));
+        assert!(!uses_generated_ordt("ru"));
+        assert!(!uses_generated_ordt("tr"));
+        assert!(!uses_generated_ordt("jam")); // Jamaican Creole, not Japanese
     }
 }
