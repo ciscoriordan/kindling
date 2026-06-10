@@ -104,17 +104,17 @@ Japanese, Chinese, Korean, and Arabic dictionaries (`<DictionaryInLanguage>` of 
 
 Languages exercised by the test suite, with their index layout and how far each has been verified:
 
-| Language | Code | Index collation | Verified |
-|---|---|---|---|
-| <img src="https://raw.githubusercontent.com/ciscoriordan/svg-flags/main/circle/languages/el.svg" width="20" alt=""/> Greek | `el` | UTF-16BE + accent-folding blob | On device (production dictionaries) and structural tests |
-| <img src="https://raw.githubusercontent.com/ciscoriordan/svg-flags/main/circle/languages/en.svg" width="20" alt=""/> English | `en` | UTF-16BE + accent-folding blob | On device (community use) and structural tests |
-| <img src="https://raw.githubusercontent.com/ciscoriordan/svg-flags/main/circle/languages/fr.svg" width="20" alt=""/> French | `fr` | UTF-16BE + accent-folding blob | Structural tests |
-| <img src="https://raw.githubusercontent.com/ciscoriordan/svg-flags/main/circle/languages/ru.svg" width="20" alt=""/> Russian | `ru` | UTF-16BE + accent-folding blob | Structural tests |
-| <img src="https://raw.githubusercontent.com/ciscoriordan/svg-flags/main/circle/languages/tr.svg" width="20" alt=""/> Turkish | `tr` | UTF-16BE + accent-folding blob | Structural tests |
-| <img src="https://raw.githubusercontent.com/ciscoriordan/svg-flags/main/circle/languages/ja.svg" width="20" alt=""/> Japanese | `ja` | Generated ORDT tables | Structural parity with kindlegen output; on-device confirmation tracked in issue #11 |
-| <img src="https://raw.githubusercontent.com/ciscoriordan/svg-flags/main/circle/languages/zh.svg" width="20" alt=""/> Chinese | `zh` | Generated ORDT tables | Structural parity with kindlegen output |
-| <img src="https://raw.githubusercontent.com/ciscoriordan/svg-flags/main/circle/languages/ko.svg" width="20" alt=""/> Korean | `ko` | Generated ORDT tables | Structural parity with kindlegen output |
-| <img src="https://raw.githubusercontent.com/ciscoriordan/svg-flags/main/circle/languages/ar.svg" width="20" alt=""/> Arabic | `ar` | Generated ORDT tables | Structural parity with kindlegen output |
+| Language | Code | Flag | Index collation | Verified |
+|---|---|---|---|---|
+| Greek | `el` | <img src="https://raw.githubusercontent.com/ciscoriordan/svg-flags/main/circle/languages/el.svg" width="20" alt="Greek flag"/> | UTF-16BE + accent-folding blob | On device (production dictionaries) and structural tests |
+| English | `en` | <img src="https://raw.githubusercontent.com/ciscoriordan/svg-flags/main/circle/languages/en.svg" width="20" alt="English flag"/> | UTF-16BE + accent-folding blob | On device (community use) and structural tests |
+| French | `fr` | <img src="https://raw.githubusercontent.com/ciscoriordan/svg-flags/main/circle/languages/fr.svg" width="20" alt="French flag"/> | UTF-16BE + accent-folding blob | Structural tests |
+| Russian | `ru` | <img src="https://raw.githubusercontent.com/ciscoriordan/svg-flags/main/circle/languages/ru.svg" width="20" alt="Russian flag"/> | UTF-16BE + accent-folding blob | Structural tests |
+| Turkish | `tr` | <img src="https://raw.githubusercontent.com/ciscoriordan/svg-flags/main/circle/languages/tr.svg" width="20" alt="Turkish flag"/> | UTF-16BE + accent-folding blob | Structural tests |
+| Japanese | `ja` | <img src="https://raw.githubusercontent.com/ciscoriordan/svg-flags/main/circle/languages/ja.svg" width="20" alt="Japanese flag"/> | Generated ORDT tables | Structural parity with kindlegen output; on-device confirmation tracked in issue #11 |
+| Chinese | `zh` | <img src="https://raw.githubusercontent.com/ciscoriordan/svg-flags/main/circle/languages/zh.svg" width="20" alt="Chinese flag"/> | Generated ORDT tables | Structural parity with kindlegen output |
+| Korean | `ko` | <img src="https://raw.githubusercontent.com/ciscoriordan/svg-flags/main/circle/languages/ko.svg" width="20" alt="Korean flag"/> | Generated ORDT tables | Structural parity with kindlegen output |
+| Arabic | `ar` | <img src="https://raw.githubusercontent.com/ciscoriordan/svg-flags/main/circle/languages/ar.svg" width="20" alt="Arabic flag"/> | Generated ORDT tables | Structural parity with kindlegen output |
 
 The structural tests (`tests/dict_languages.rs`, `tests/ja_dict.rs`) build a dictionary per language and assert the language ids, label encoding, entry sort order, and embedded collation tables; for the generated-ORDT languages they also cross-validate kindling's collation against committed kindlegen reference builds of the same content. Languages not listed still build, using the UTF-16BE layout and the correct language ids, but have no test coverage; if you ship a dictionary in one and lookups misbehave on device, please open an issue.
 
