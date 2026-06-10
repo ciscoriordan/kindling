@@ -23,7 +23,7 @@ Pre-built binaries for Mac (Apple Silicon, Intel), Linux (x86_64), and Windows (
 
 ## Features
 
-- **Dictionaries**: Full orth index with headword + inflection lookup, ORDT/SPL sort tables, fontsignature
+- **Dictionaries**: Full orth index with headword + inflection lookup, ORDT/SPL sort tables, generated Japanese collation tables, fontsignature
 - **Books**: EPUB or OPF input, embedded images, KF8-only (.azw3) by default with legacy dual-format (MOBI7+KF8) available via `--legacy-mobi`, HD image container, fixed-layout support
 - **Comics**: Image folder, CBZ, CBR, or EPUB input, device-specific resizing, spread splitting, margin cropping, auto-contrast, moire correction for color e-ink, manga RTL, webtoon with overlap fallback, Panel View, KF8-only (.azw3) by default, metadata overrides
 - **StarDict export**: `kindling stardict` builds a four-file StarDict bundle (`.ifo` / `.idx` / `.dict` / `.syn`) from the same OPF or EPUB dictionary input as `kindling build`, for use with GoldenDict, GoldenDict-ng, KOReader, sdcv, and other non-Kindle dictionary readers (see [StarDict export](#stardict-export))
@@ -97,6 +97,8 @@ kindling-cli build input.opf -o output.mobi --strict-accents  # exact accent mat
 The input OPF must reference HTML files with `<idx:entry>`, `<idx:orth>`, and `<idx:iform>` markup following the [Amazon Kindle Publishing Guidelines](http://kindlegen.s3.amazonaws.com/AmazonKindlePublishingGuidelines.pdf). Both headwords and inflected forms are indexed so that looking up any form on the Kindle finds the correct dictionary entry.
 
 By default, dictionaries embed the kindlegen-derived ORDT/SPL collation tables in the orth index so Kindle folds diacritics at lookup time: looking up `meme` finds `même`, `mere` finds `mère`, etc. This matches kindlegen's behaviour and is what most users want. Pass `--strict-accents` to omit the collation blob; Kindle then uses raw UTF-16BE ordering so exact-accent headwords always beat unaccented homographs when both exist in the dictionary (e.g. `même` returns the `même` entry, not the `meme` entry). The flag has no effect on book builds.
+
+Japanese dictionaries (`<DictionaryInLanguage>ja</DictionaryInLanguage>`) instead get per-dictionary generated ORDT collation tables, replicating what kindlegen emits for Japanese input: index labels are stored as collation symbols rather than UTF-16BE text, and entries are sorted by their collation weights, which is the order Kindle's lookup binary search expects. Without these tables Japanese lookups fail on device even though the index looks well formed (see issue #11). The INDX header language field also follows the declared input language for every dictionary (Japanese 17, English 9, Greek 8, matching kindlegen). `--strict-accents` has no effect on Japanese builds.
 
 If the OPF references a cover image (Method 1 `<item properties="coverimage"/>` or Method 2 `<meta name="cover">`), Kindling embeds it in the dictionary MOBI via EXTH 201 so it shows up on the Kindle home screen next to regular books and comics.
 
@@ -349,7 +351,8 @@ Much of the foundational MOBI format knowledge comes from the [MobileRead wiki](
 - **Inverted VWI**: Tag values use "high bit = stop" encoding (opposite of standard VWI).
 - **SRCS record**: Must have 16-byte header (`SRCS` + length + size + count), pointed to by MOBI header offset 208. Required for Kindle Previewer.
 - **Skeleton and fragment INDX (KF8)**: KF8 HTML is split into a "skeleton" per source file and one fragment per `<aid>` insert point. Skeleton entries carry a byte offset, length, and fragment count; fragment entries use a numeric decimal label (parsed as an integer) plus insert position, file number, sequence, and length.
-- **Orth INDX header**: The orth INDX primary header declares index encoding `65002` (0xFDEA) and routing-entry labels are UTF-16BE. `ocnt`/`oentries` in the header tail are set to zero so the label reader decodes the UTF-16BE bytes directly instead of translating them through a small embedded ORDT2 table (which cannot cover non-trivial scripts).
+- **Orth INDX header**: The orth INDX primary header declares index encoding `65002` (0xFDEA) and carries the input language's Windows primary LCID at offset 32. For non-Japanese dictionaries labels are UTF-16BE: `ocnt`/`oentries` in the header tail are set so the label reader decodes the UTF-16BE bytes directly instead of translating them through a small embedded ORDT2 table (which cannot cover non-trivial scripts).
+- **Generated Japanese ORDT tables**: For Japanese dictionaries, labels are sequences of big-endian u16 symbols indexing a generated ORDT table pair appended to the primary record (`ordt_type` 0 at offset 164, count at 168, table offsets at 172/176). ORDT2 maps each symbol to its value: the Windows-1252 reading of one UTF-8 byte of the headword, with three expansion escapes (control values 1/2/4 for bytes 0x8C/0x9C/0xE6) and two out-of-table literals (U+20AC for 0x80, U+2122 for 0x99). ORDT1 maps each symbol to a collation weight; weight 0 is ignorable and skipped during comparison, which is what folds kana variants onto a shared key. Entries are sorted by their zero-skipped weight sequences, and the firmware scans equal-weight ranges to disambiguate. This replicates kindlegen's Japanese output (reverse-engineered across four corpora with zero sort violations; see `src/ordt.rs`).
 - **Routing entries**: Each primary-INDX routing entry is `[1 byte label length][label bytes][2 byte big-endian record entry count]`. The trailing count is what lets Kindle's binary search pick the right data record for a lookup.
 - **Dictionary links**: Anchor links work when browsing the dictionary as a book, but are disabled in the lookup popup. See the [Amazon Kindle Publishing Guidelines](http://kindlegen.s3.amazonaws.com/AmazonKindlePublishingGuidelines.pdf), section 15.6.1.
 
@@ -439,6 +442,7 @@ kindling/
 │   ├── mobi_rewrite.rs          # In-place MOBI/AZW3 metadata and cover rewrite
 │   ├── kf8.rs                   # KF8 section, BOUNDARY, FDST, skeleton/fragment indexes
 │   ├── indx.rs                  # Orthographic INDX records for dictionaries (ORDT/SPL sort tables)
+│   ├── ordt.rs                  # Generated Japanese ORDT collation tables and label encoding
 │   ├── palmdoc.rs               # PalmDOC LZ77 compression
 │   ├── exth.rs                  # EXTH record encoding
 │   ├── vwi.rs                   # Variable-width integer encoding
@@ -458,6 +462,7 @@ kindling/
 ├── tests/
 │   ├── cli.rs                   # CLI smoke tests for validate, repair, rewrite-metadata, build, comic
 │   ├── kindlegen_parity.rs      # Byte/field parity vs committed kindlegen reference .mobi files
+│   ├── ja_dict.rs               # Japanese dictionary ORDT structure + kindlegen collation cross-validation
 │   ├── roundtrip.rs             # Structural round-trip of kindling output via inline MOBI reader
 │   ├── common/                  # Inline MOBI reader used by roundtrip and parity tests
 │   └── fixtures/                # One fixture per rule cluster plus the parity/ subtree
@@ -474,7 +479,7 @@ cargo test -- --show-output   # include println! output
 cargo test --test cli         # CLI smoke tests only
 ```
 
-The suite currently contains around 710 tests spanning unit tests in `src/tests.rs` and per-cluster tests in `src/checks/`, CLI integration tests in `tests/cli.rs` that invoke the compiled `kindling-cli` binary against OPF/EPUB/MOBI fixtures under `tests/fixtures/`, structural round-trip tests in `tests/roundtrip.rs`, and kindlegen parity tests in `tests/kindlegen_parity.rs`. An opt-in corpus harness in `tests/epub_tests_corpus.rs` runs every test in a local [w3c/epub-tests](https://github.com/w3c/epub-tests) checkout through the validator to surface false positives and measure coverage; set `KINDLING_CORPUS_DIR` to the checkout path and run `cargo test --release --test epub_tests_corpus -- --ignored --nocapture`.
+The suite currently contains around 780 tests spanning unit tests in `src/tests.rs` and per-cluster tests in `src/checks/`, CLI integration tests in `tests/cli.rs` that invoke the compiled `kindling-cli` binary against OPF/EPUB/MOBI fixtures under `tests/fixtures/`, structural round-trip tests in `tests/roundtrip.rs`, Japanese dictionary collation tests in `tests/ja_dict.rs`, and kindlegen parity tests in `tests/kindlegen_parity.rs`. An opt-in corpus harness in `tests/epub_tests_corpus.rs` runs every test in a local [w3c/epub-tests](https://github.com/w3c/epub-tests) checkout through the validator to surface false positives and measure coverage; set `KINDLING_CORPUS_DIR` to the checkout path and run `cargo test --release --test epub_tests_corpus -- --ignored --nocapture`.
 
 - **PalmDB and MOBI structure**: PalmDB header fields, record count and offset tables, MOBI header (magic, version, encoding, language, capability marker 0x50 vs 0x4850), text record count, image record ranges, boundary records, FLIS/FCIS/EOF/SRCS records, trailing byte order
 - **Record 0 cross-checks**: MOBI header offsets are internally consistent with the PalmDOC header, EXTH block, full name, and image/INDX record indexes
@@ -490,6 +495,7 @@ The suite currently contains around 710 tests spanning unit tests in `src/tests.
 - **Regression tests**: Dictionary capability marker (0x50 vs 0x4850), JFIF density patching, RTL spread cover selection, dictionary text record trailing byte order
 - **Structural round-trip tests** (`tests/roundtrip.rs`): build each of the three parity fixtures with `kindling-cli`, parse the result back with a minimal inline MOBI reader in `tests/common/mod.rs`, and assert the PalmDB header, MOBI header, EXTH, INDX / SKEL / FRAG records, and decompressed text blob have the exact shape we expect. These catch format-level regressions where libmobi would happily accept an output that does not round-trip.
 - **kindlegen byte/field parity tests** (`tests/kindlegen_parity.rs`): build the same inputs with `kindling-cli` and diff the output field-by-field against a committed kindlegen reference `.mobi`. Timestamp/UID fields (EXTH 112, 113, 204-207, etc.) are compared by presence only; core metadata (EXTH 100, 101, 524) must match exactly. Divergences are reported in a readable table via `cargo test -- --nocapture`.
+- **Japanese dictionary collation tests** (`tests/ja_dict.rs`): build the `simple_dict_ja` fixture with `kindling-cli`, assert the generated ORDT tables and the collation-key entry order, decode every label back to its headword, and cross-validate against the committed kindlegen reference: kindlegen's physical entry order for the same fixture must be non-decreasing under kindling's sort keys, pinning kindling's byte folding and escape handling to kindlegen's.
 
 ### kindlegen parity setup
 
@@ -574,6 +580,10 @@ Thanks to the ebook-tooling community whose public documentation and reverse-eng
 ## Related projects
 
 - [Lemma](https://github.com/ciscoriordan/lemma) - Greek-English Kindle dictionary built with Kindling
+
+## AI policy
+
+AI-assisted contributions are welcome: issues, investigations, and pull requests drafted with AI tools are all fine, and several of this project's own features were built that way. The one hard rule is that AI-generated code must be reviewed by a human before it is submitted. Read the diff, understand what it does, and be ready to answer questions about it in review. "The model wrote it" is not a substitute for a contributor who understands their own patch.
 
 ## Stargazers over time
 

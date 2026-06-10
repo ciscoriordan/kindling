@@ -15,6 +15,7 @@ pub mod mobi_check;
 pub mod mobi_dump;
 pub mod mobi_rewrite;
 pub mod opf;
+pub mod ordt;
 pub mod profile;
 pub mod repair;
 pub mod stardict;

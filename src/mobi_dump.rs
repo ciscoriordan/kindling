@@ -687,7 +687,7 @@ fn dump_indx_record(
     rec_idx: usize,
     rec: &[u8],
     paired_schema: Option<&TagxSchema>,
-    paired_ordt2: Option<&[u32]>,
+    paired_ordt: Option<&OrdtInfo>,
 ) {
     let label = format!("indx[{}]", rec_idx);
     if rec.len() < 192 || &rec[..4] != b"INDX" {
@@ -750,33 +750,17 @@ fn dump_indx_record(
     let _ = writeln!(out, "{}.ordt2_offset = {}", label, ordt2_offset);
     let _ = writeln!(out, "{}.tagx_offset_field = {}", label, tagx_offset);
 
-    // ORDT2 codepoint table decoding. libmobi's `mobi_parse_ordt` reads
-    // N u16 BE codepoints starting at ordt2_offset + 4 (skipping the
-    // ORDT2 magic). kindling places the ORDT2 magic directly at
-    // ordt2_offset so we skip 4 bytes.
-    let ordt2: Option<Vec<u32>> = if ordt_type == 1 && ordt_entries_count > 0 {
-        let start = ordt2_offset as usize + 4;
-        let end = start + 2 * ordt_entries_count as usize;
-        if end <= rec.len() {
-            let mut cps = Vec::with_capacity(ordt_entries_count as usize);
-            for i in 0..ordt_entries_count as usize {
-                let cp = read_u16_be(rec, start + 2 * i).unwrap_or(0) as u32;
-                cps.push(cp);
-            }
-            Some(cps)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    if let Some(cps) = &ordt2 {
-        let _ = writeln!(out, "{}.ordt2_entries = {}", label, cps.len());
-        // Emit one line per codepoint so a diff can see exactly which
-        // codepoint moved where in the table.
-        for (i, cp) in cps.iter().enumerate() {
+    // ORDT tables (see `parse_ordt_info` for the layout).
+    let ordt = parse_ordt_info(rec);
+    if let Some(info) = &ordt {
+        let _ = writeln!(out, "{}.ordt2_entries = {}", label, info.values.len());
+        // Emit one line per value/weight pair so a diff can see exactly
+        // which symbol moved where in the tables.
+        for (i, cp) in info.values.iter().enumerate() {
             let _ = writeln!(out, "{}.ordt2[{}] = U+{:04X}", label, i, cp);
+        }
+        for (i, w) in info.weights.iter().enumerate() {
+            let _ = writeln!(out, "{}.ordt1[{}] = {}", label, i, w);
         }
     }
 
@@ -845,7 +829,7 @@ fn dump_indx_record(
     // Label decoding uses this record's own ORDT2 table when present;
     // data records don't carry their own ORDT2, so we fall back to the
     // paired primary's table.
-    let effective_ordt2 = ordt2.as_deref().or(paired_ordt2);
+    let effective_ordt = ordt.as_ref().or(paired_ordt);
     let effective_schema = if gen_number == 0 {
         own_schema.as_ref()
     } else {
@@ -863,7 +847,7 @@ fn dump_indx_record(
         }
         let entry = &rec[off..end];
         let decoded =
-            decode_indx_entry(entry, gen_number, effective_ordt2, effective_schema);
+            decode_indx_entry(entry, gen_number, effective_ordt, effective_schema);
         let _ = writeln!(out, "{}.entries[{}] = {}", label, i, decoded);
     }
 }
@@ -873,17 +857,17 @@ fn dump_indx_record(
 /// (generation=1) the layout is [u8 byte0 = prefix_len<<5 | new_len]
 /// [label_bytes][u8 control_byte(s)][VWI-encoded tag values...].
 ///
-/// When `ordt2` is Some and the record uses ORDT2 encoding (ordt_type=1),
-/// each label byte is looked up in the codepoint table to produce UTF-8.
-/// Otherwise we try UTF-16BE, then fall back to hex. When a data record
-/// has a paired TAGX `schema`, the tag bytes are decoded into explicit
+/// When `ordt` is Some, label bytes are ORDT symbol sequences and are
+/// decoded through the value table (see `decode_label`). Otherwise we
+/// try UTF-16BE, then fall back to hex. When a data record has a paired
+/// TAGX `schema`, the tag bytes are decoded into explicit
 /// `tag[N] = [values]` fragments; when decoding fails (truncated /
 /// schema mismatch), we fall back to raw hex with a `# decode_failed`
 /// trailing comment.
 fn decode_indx_entry(
     entry: &[u8],
     generation: u32,
-    ordt2: Option<&[u32]>,
+    ordt: Option<&OrdtInfo>,
     schema: Option<&TagxSchema>,
 ) -> String {
     if entry.is_empty() {
@@ -897,7 +881,7 @@ fn decode_indx_entry(
             return format!("(truncated routing, raw={})", to_hex(entry));
         }
         let label_bytes = &entry[1..1 + label_len];
-        let label = decode_label(label_bytes, ordt2);
+        let label = decode_label(label_bytes, ordt);
         let count_bytes = &entry[1 + label_len..];
         let count = if count_bytes.len() >= 2 {
             u16::from_be_bytes([count_bytes[0], count_bytes[1]]) as u32
@@ -920,7 +904,7 @@ fn decode_indx_entry(
             return format!("(truncated data, raw={})", to_hex(entry));
         }
         let label_bytes = &entry[1..1 + new_len];
-        let label = decode_label(label_bytes, ordt2);
+        let label = decode_label(label_bytes, ordt);
 
         let control_byte_count = schema.map(|s| s.control_byte_count as usize).unwrap_or(1);
         let control_start = 1 + new_len;
@@ -981,34 +965,198 @@ fn decode_indx_entry(
     }
 }
 
-/// Decode INDX label bytes to a displayable string.
+/// Parsed ORDT tables from a primary INDX record.
 ///
-/// When an ORDT2 table is provided, each byte is treated as an index into
-/// the codepoint list. When no ORDT2 is present, we try UTF-16BE (the
-/// historical kindlegen encoding for non-dict sub-indexes). If both fail
-/// we return `hex:0x...` so the diff still shows bytes.
-fn decode_label(bytes: &[u8], ordt2: Option<&[u32]>) -> String {
-    if let Some(table) = ordt2 {
-        let mut out = String::with_capacity(bytes.len());
-        let mut all_ok = true;
+/// Layout (both kindlegen output and kindling's generated Japanese
+/// tables): header offset 164 is the ORDT type (1 = labels are 1-byte
+/// symbols; any other value with valid table pointers = u16 BE symbols),
+/// 168 is the entry count, 172/176 point at the ORDT1 (weights) and
+/// ORDT2 (values) blocks, each "ORDT" magic + entries. ORDT1 entries are
+/// 1 byte for type 1, u16 BE otherwise; ORDT2 entries are always u16 BE.
+struct OrdtInfo {
+    /// Symbol width in label bytes: 1 or 2.
+    sym_width: u8,
+    /// ORDT2 value table: cp1252 code point of a UTF-8 byte, a raw byte
+    /// value, a character code point, or a control code (1/2/4) marking
+    /// a two-symbol expansion escape.
+    values: Vec<u32>,
+    /// ORDT1 collation weight table (0 = ignorable). Empty when the
+    /// ORDT1 pointer fails validation.
+    weights: Vec<u32>,
+}
+
+/// Parse the ORDT table pair out of a primary INDX record, if present.
+fn parse_ordt_info(rec: &[u8]) -> Option<OrdtInfo> {
+    let ordt_type = read_u32_be(rec, 164).unwrap_or(0);
+    let count = read_u32_be(rec, 168).unwrap_or(0) as usize;
+    let ordt1_off = read_u32_be(rec, 172).unwrap_or(0) as usize;
+    let ordt2_off = read_u32_be(rec, 176).unwrap_or(0) as usize;
+    if count == 0 || count > 0x2000 || ordt2_off < 192 {
+        return None;
+    }
+    if ordt2_off + 4 + 2 * count > rec.len() || &rec[ordt2_off..ordt2_off + 4] != b"ORDT" {
+        return None;
+    }
+    let mut values = Vec::with_capacity(count);
+    for i in 0..count {
+        values.push(read_u16_be(rec, ordt2_off + 4 + 2 * i).unwrap_or(0) as u32);
+    }
+    let w_width = if ordt_type == 1 { 1 } else { 2 };
+    let mut weights = Vec::new();
+    if ordt1_off >= 192
+        && ordt1_off + 4 + w_width * count <= rec.len()
+        && &rec[ordt1_off..ordt1_off + 4] == b"ORDT"
+    {
+        for i in 0..count {
+            let w = if w_width == 1 {
+                rec[ordt1_off + 4 + i] as u32
+            } else {
+                read_u16_be(rec, ordt1_off + 4 + 2 * i).unwrap_or(0) as u32
+            };
+            weights.push(w);
+        }
+    }
+    Some(OrdtInfo {
+        sym_width: if ordt_type == 1 { 1 } else { 2 },
+        values,
+        weights,
+    })
+}
+
+/// Map a cp1252 code point back to its byte, if it has one. Values at or
+/// below 0xFF map to themselves (covers Latin-1 and the raw byte values
+/// kindlegen stores for the five cp1252-undefined bytes).
+fn cp1252_byte(v: u32) -> Option<u8> {
+    match v {
+        0x20AC => Some(0x80),
+        0x201A => Some(0x82),
+        0x0192 => Some(0x83),
+        0x201E => Some(0x84),
+        0x2026 => Some(0x85),
+        0x2020 => Some(0x86),
+        0x2021 => Some(0x87),
+        0x02C6 => Some(0x88),
+        0x2030 => Some(0x89),
+        0x0160 => Some(0x8A),
+        0x2039 => Some(0x8B),
+        0x0152 => Some(0x8C),
+        0x017D => Some(0x8E),
+        0x2018 => Some(0x91),
+        0x2019 => Some(0x92),
+        0x201C => Some(0x93),
+        0x201D => Some(0x94),
+        0x2022 => Some(0x95),
+        0x2013 => Some(0x96),
+        0x2014 => Some(0x97),
+        0x02DC => Some(0x98),
+        0x2122 => Some(0x99),
+        0x0161 => Some(0x9A),
+        0x203A => Some(0x9B),
+        0x0153 => Some(0x9C),
+        0x017E => Some(0x9E),
+        0x0178 => Some(0x9F),
+        v if v <= 0xFF => Some(v as u8),
+        _ => None,
+    }
+}
+
+/// Decode ORDT-encoded label bytes: symbols -> values via the table
+/// (out-of-range symbols are literals, matching libmobi's
+/// `mobi_ordt_lookup` fallback), then values -> text.
+///
+/// Two value interpretations are attempted. First, values as cp1252
+/// bytes of a UTF-8 string, with control values 1/2/4 decoding the
+/// two-symbol expansion escapes for bytes 0x8C/0x9C/0xE6 (this is the
+/// kindlegen/kindling dictionary label encoding). If that fails, values
+/// are treated as UTF-16 code units directly (kindling's plain UTF-16BE
+/// labels parse this way: every code unit lands in the literal range).
+fn decode_label_ordt(bytes: &[u8], ordt: &OrdtInfo) -> Option<String> {
+    let mut values: Vec<u32> = Vec::new();
+    if ordt.sym_width == 1 {
         for &b in bytes {
-            match table.get(b as usize).copied() {
-                Some(cp) => {
-                    if let Some(c) = char::from_u32(cp) {
-                        out.push(c);
-                    } else {
-                        all_ok = false;
-                        break;
-                    }
+            let s = b as usize;
+            values.push(if s < ordt.values.len() {
+                ordt.values[s]
+            } else {
+                s as u32
+            });
+        }
+    } else {
+        if bytes.len() % 2 != 0 {
+            return None;
+        }
+        for chunk in bytes.chunks_exact(2) {
+            let s = u16::from_be_bytes([chunk[0], chunk[1]]) as usize;
+            values.push(if s < ordt.values.len() {
+                ordt.values[s]
+            } else {
+                s as u32
+            });
+        }
+    }
+
+    // Attempt 1: cp1252 bytes of UTF-8, with expansion escapes.
+    let mut utf8: Vec<u8> = Vec::with_capacity(values.len());
+    let mut ok = true;
+    let mut i = 0;
+    while i < values.len() {
+        match values[i] {
+            0x0001 => {
+                utf8.push(0x8C);
+                i += 2; // skip the expansion tail symbol
+            }
+            0x0002 => {
+                utf8.push(0x9C);
+                i += 2;
+            }
+            0x0004 => {
+                utf8.push(0xE6);
+                i += 2;
+            }
+            v => match cp1252_byte(v) {
+                Some(b) => {
+                    utf8.push(b);
+                    i += 1;
                 }
                 None => {
-                    all_ok = false;
+                    ok = false;
                     break;
                 }
+            },
+        }
+    }
+    if ok && !utf8.is_empty() {
+        if let Ok(s) = String::from_utf8(utf8) {
+            if s.chars().all(|c| !c.is_control() || c == ' ') {
+                return Some(s);
             }
         }
-        if all_ok {
-            return out;
+    }
+
+    // Attempt 2: values as UTF-16 code units.
+    if values.iter().all(|&v| v <= 0xFFFF) {
+        let units: Vec<u16> = values.iter().map(|&v| v as u16).collect();
+        if let Ok(s) = String::from_utf16(&units) {
+            if !s.is_empty() && s.chars().all(|c| !c.is_control() || c == ' ') {
+                return Some(s);
+            }
+        }
+    }
+    None
+}
+
+/// Decode INDX label bytes to a displayable string.
+///
+/// When ORDT tables are provided, labels are symbol sequences and are
+/// decoded through the value table (see `decode_label_ordt`). When no
+/// ORDT is present (or symbol decoding fails), we try UTF-16BE (the
+/// encoding kindling writes for non-Japanese dictionaries and all
+/// sub-index 2/3 labels). If both fail we return `hex:0x...` so the
+/// diff still shows bytes.
+fn decode_label(bytes: &[u8], ordt: Option<&OrdtInfo>) -> String {
+    if let Some(info) = ordt {
+        if let Some(s) = decode_label_ordt(bytes, info) {
+            return s;
         }
     }
 
@@ -1090,7 +1238,7 @@ pub fn dump_mobi(path: &Path) -> io::Result<String> {
         }
     }
 
-    let mut primary_info: Vec<(usize, Option<TagxSchema>, Option<Vec<u32>>)> = Vec::new();
+    let mut primary_info: Vec<(usize, Option<TagxSchema>, Option<OrdtInfo>)> = Vec::new();
     for &i in &indx_records {
         let rec = match palmdb.record(&data, i) {
             Some(r) => r,
@@ -1102,25 +1250,7 @@ pub fn dump_mobi(path: &Path) -> io::Result<String> {
             continue;
         }
         let schema = parse_tagx(rec, header_length as usize).map(|(s, _)| s);
-        let ordt_type = read_u32_be(rec, 164).unwrap_or(0);
-        let ordt_entries_count = read_u32_be(rec, 168).unwrap_or(0);
-        let ordt2_offset = read_u32_be(rec, 176).unwrap_or(0);
-        let ordt2 = if ordt_type == 1 && ordt_entries_count > 0 {
-            let start = ordt2_offset as usize + 4;
-            let end = start + 2 * ordt_entries_count as usize;
-            if end <= rec.len() {
-                let mut cps = Vec::with_capacity(ordt_entries_count as usize);
-                for k in 0..ordt_entries_count as usize {
-                    cps.push(read_u16_be(rec, start + 2 * k).unwrap_or(0) as u32);
-                }
-                Some(cps)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        primary_info.push((i, schema, ordt2));
+        primary_info.push((i, schema, parse_ordt_info(rec)));
     }
 
     for &i in &indx_records {
@@ -1129,11 +1259,11 @@ pub fn dump_mobi(path: &Path) -> io::Result<String> {
             None => continue,
         };
         let generation = read_u32_be(rec, 12).unwrap_or(0);
-        let (schema, ordt2) = if generation == 0 {
+        let (schema, ordt) = if generation == 0 {
             (None, None)
         } else {
             // Find the nearest preceding primary.
-            let mut best: Option<&(usize, Option<TagxSchema>, Option<Vec<u32>>)> = None;
+            let mut best: Option<&(usize, Option<TagxSchema>, Option<OrdtInfo>)> = None;
             for pi in &primary_info {
                 if pi.0 < i {
                     best = Some(pi);
@@ -1142,11 +1272,11 @@ pub fn dump_mobi(path: &Path) -> io::Result<String> {
                 }
             }
             match best {
-                Some((_, s, o)) => (s.as_ref(), o.as_deref()),
+                Some((_, s, o)) => (s.as_ref(), o.as_ref()),
                 None => (None, None),
             }
         };
-        dump_indx_record(&mut out, i, rec, schema, ordt2);
+        dump_indx_record(&mut out, i, rec, schema, ordt);
     }
 
     Ok(out)

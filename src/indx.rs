@@ -9,6 +9,7 @@ use std::collections::HashSet;
 
 use rayon::prelude::*;
 
+use crate::ordt::JaOrdt;
 use crate::vwi::encode_vwi_inv;
 
 const INDX_HEADER_LENGTH: usize = 192;
@@ -38,15 +39,31 @@ struct TagDef {
     mask: u8,
 }
 
+/// Which collation tables (if any) a primary INDX record embeds.
+#[derive(Clone, Copy)]
+enum OrdtMode<'a> {
+    /// No collation tables (sub-indexes 2/3, or `--strict-accents`).
+    None,
+    /// Static kindlegen-derived Greek ORDT/SPL blob (default for
+    /// non-Japanese dictionaries; see `ORDT_GREEK`).
+    Greek,
+    /// Per-dictionary generated tables for Japanese (see `crate::ordt`).
+    /// Labels in the data records are ORDT symbol sequences, not
+    /// UTF-16BE text.
+    Generated(&'a JaOrdt),
+}
+
 /// Encode a label string for use in an INDX entry.
 ///
-/// Labels are always written as UTF-16BE. The primary INDX header declares
-/// encoding `65002` (0xFDEA), which downstream parsers (iscc/mobi,
-/// KindleUnpack, libmobi) interpret as a fixed 2-byte-per-character label
-/// encoding. Storing ASCII labels as raw 1-byte-per-char bytes used to work
-/// on Kindle firmware but crashed iscc/mobi whenever a label had an odd
-/// byte count (e.g. "charlie" → 7 bytes), because the parser tried to
-/// decode the trailing byte as a UTF-16BE code unit. See issue #5.
+/// Labels are written as UTF-16BE (Japanese dictionaries are the
+/// exception: their labels are generated-ORDT symbol sequences, see
+/// `crate::ordt`). The primary INDX header declares encoding `65002`
+/// (0xFDEA), which downstream parsers (iscc/mobi, KindleUnpack, libmobi)
+/// interpret as a fixed 2-byte-per-character label encoding. Storing
+/// ASCII labels as raw 1-byte-per-char bytes used to work on Kindle
+/// firmware but crashed iscc/mobi whenever a label had an odd byte count
+/// (e.g. "charlie" → 7 bytes), because the parser tried to decode the
+/// trailing byte as a UTF-16BE code unit. See issue #5.
 pub fn encode_indx_label(text: &str) -> Vec<u8> {
     let mut result = Vec::with_capacity(text.len() * 2);
     for c in text.chars() {
@@ -70,12 +87,20 @@ pub fn encode_indx_label(text: &str) -> Vec<u8> {
 
 /// Build all INDX records for the orthographic (dictionary) index.
 ///
+/// `index_language` is the Windows primary language ID written to the
+/// INDX header (8 = Greek, 9 = English, 17 = Japanese, ...). `ja_ordt`
+/// selects the generated Japanese collation tables; when set, the
+/// lookup-term `label_bytes` must already be ORDT symbol sequences and
+/// the terms must be sorted by their ORDT sort keys.
+///
 /// Returns a list of record byte vectors:
 /// [primary1, data1_1, ..., primary2, data2_1, primary3, data3_1]
 pub fn build_orth_indx(
     lookup_terms: &[LookupTerm],
     headword_chars: &HashSet<char>,
     strict_accents: bool,
+    index_language: u32,
+    ja_ordt: Option<&JaOrdt>,
 ) -> Vec<Vec<u8>> {
     // --- Sub-index 1: Headword entries ---
     let tag_defs1 = [
@@ -156,7 +181,20 @@ pub fn build_orth_indx(
         last_labels.push(prev_label_bytes);
     }
 
-    let primary1 = build_indx_primary(&tagx1, data_records.len(), lookup_terms.len(), &last_labels, 199, strict_accents);
+    let ordt_mode1 = match ja_ordt {
+        Some(ja) => OrdtMode::Generated(ja),
+        None if strict_accents => OrdtMode::None,
+        None => OrdtMode::Greek,
+    };
+    let primary1 = build_indx_primary(
+        &tagx1,
+        data_records.len(),
+        lookup_terms.len(),
+        &last_labels,
+        199,
+        index_language,
+        ordt_mode1,
+    );
 
     let mut sub1 = vec![primary1];
     sub1.extend(data_records);
@@ -197,7 +235,15 @@ pub fn build_orth_indx(
         vec![]
     };
 
-    let char_primary = build_indx_primary(&tagx2, 1, chars.len(), &[last_char_label], 192, false);
+    let char_primary = build_indx_primary(
+        &tagx2,
+        1,
+        chars.len(),
+        &[last_char_label],
+        192,
+        index_language,
+        OrdtMode::None,
+    );
     let sub2 = vec![char_primary, char_data_rec];
 
     // --- Sub-index 3: "default" index name ---
@@ -212,7 +258,15 @@ pub fn build_orth_indx(
     let tag_values3 = vec![(1u8, 0u32)];
     let default_entry = encode_indx_entry(&default_label, &[], &tag_values3, &tag_defs3);
     let default_data_rec = build_indx_data_record(&[default_entry]);
-    let default_primary = build_indx_primary(&tagx3, 1, 1, &[default_label], 192, false);
+    let default_primary = build_indx_primary(
+        &tagx3,
+        1,
+        1,
+        &[default_label],
+        192,
+        index_language,
+        OrdtMode::None,
+    );
     let sub3 = vec![default_primary, default_data_rec];
 
     let total_sub1 = sub1.len();
@@ -360,17 +414,20 @@ fn build_indx_data_record(entry_list: &[Vec<u8>]) -> Vec<u8> {
 /// For sub-index 1 (headwords), header_length=199 includes the embedded
 /// "default" string. For sub-indexes 2 and 3, header_length=192.
 ///
-/// `strict_accents` only matters for sub-index 1: when true, the ORDT/SPL
-/// collation blob is omitted so Kindle falls back to raw UTF-16BE
-/// ordering and exact-accent hits beat fuzzy ones on-device. Sub-indexes
-/// 2 and 3 always pass false; they never embed the blob regardless.
+/// `ordt_mode` only matters for sub-index 1: `Greek` embeds the static
+/// kindlegen-derived ORDT/SPL blob (diacritic folding), `None` omits it
+/// so Kindle falls back to raw UTF-16BE ordering and exact-accent hits
+/// beat fuzzy ones on-device (`--strict-accents`), and `Generated`
+/// appends per-dictionary Japanese collation tables. Sub-indexes 2 and 3
+/// always pass `None`.
 fn build_indx_primary(
     tagx: &[u8],
     num_data_records: usize,
     total_entries: usize,
     last_labels: &[Vec<u8>],
     header_length: usize,
-    strict_accents: bool,
+    index_language: u32,
+    ordt_mode: OrdtMode<'_>,
 ) -> Vec<u8> {
     let embed_default = header_length == 199;
     let default_str: &[u8] = if embed_default { b"default" } else { b"" };
@@ -385,7 +442,7 @@ fn build_indx_primary(
     // offset 20: IDXT offset (set below)
     put32(&mut header, 24, num_data_records as u32); // routing entry count
     put32(&mut header, 28, 0xFDEA); // index encoding
-    put32(&mut header, 32, 8); // index language
+    put32(&mut header, 32, index_language); // index language (Windows primary LCID)
     put32(&mut header, 36, total_entries as u32); // total entry count
 
     // offset 180 = 0xC0 (192, the fixed header portion)
@@ -436,11 +493,36 @@ fn build_indx_primary(
         record.push(0x00);
     }
 
+    // Append generated Japanese collation tables (see crate::ordt for the
+    // format). Field layout mirrors kindlegen's Japanese output: only
+    // ordt_type/oentries/ordt1/ordt2/name_len are set; the SPL spellcheck
+    // fields stay zero.
+    if let OrdtMode::Generated(ja) = ordt_mode {
+        let (t1, t2) = ja.serialize();
+        while record.len() % 4 != 0 {
+            record.push(0x00);
+        }
+        let ordt1_abs = record.len();
+        record.extend_from_slice(&t1);
+        while record.len() % 4 != 0 {
+            record.push(0x00);
+        }
+        let ordt2_abs = record.len();
+        record.extend_from_slice(&t2);
+
+        put32(&mut record, 164, 0); // ordt_type = 0 (u16 BE symbol labels)
+        put32(&mut record, 168, ja.count()); // oentries
+        put32(&mut record, 172, ordt1_abs as u32); // ORDT1 (weights)
+        put32(&mut record, 176, ordt2_abs as u32); // ORDT2 (values)
+        put32(&mut record, 184, 7); // name_len ("default")
+        return record;
+    }
+
     // Append ORDT/SPL sort tables for the main headword sub-index (hdr=199).
-    // `strict_accents` suppresses the embed so Kindle reverts to plain
-    // UTF-16BE collation; exact-accented headwords then beat fuzzy matches
-    // at lookup time (see the --strict-accents CLI flag).
-    if embed_default && !strict_accents && !ORDT_GREEK.is_empty() {
+    // `OrdtMode::None` (--strict-accents) suppresses the embed so Kindle
+    // reverts to plain UTF-16BE collation; exact-accented headwords then
+    // beat fuzzy matches at lookup time (see the --strict-accents CLI flag).
+    if embed_default && matches!(ordt_mode, OrdtMode::Greek) && !ORDT_GREEK.is_empty() {
         let ordt_start = record.len();
         record.extend_from_slice(ORDT_GREEK);
 

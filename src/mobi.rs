@@ -313,11 +313,12 @@ fn build_dictionary_mobi(
     // default: only base headwords land in orth; inflected forms are
     // routed through the separate infl INDX. Test-mode toggle while we
     eprintln!("Building lookup terms...");
-    let lookup_terms = build_lookup_terms(
+    let (lookup_terms, ja_ordt) = build_lookup_terms(
         &all_entries,
         &entry_positions,
         &text_content,
         headwords_only,
+        &opf.dict_in_language,
     );
 
     eprintln!("Building INDX records...");
@@ -329,7 +330,18 @@ fn build_dictionary_mobi(
             }
         }
     }
-    let indx_records = indx::build_orth_indx(&lookup_terms, &headword_chars_for_indx, strict_accents);
+    // INDX header language: Windows primary language ID of the dictionary
+    // input language (8 = Greek, 9 = English, 17 = Japanese), matching
+    // kindlegen. The firmware reads this when deciding how to drive
+    // lookups against the index.
+    let index_language = locale_code(&opf.dict_in_language) & 0x3FF;
+    let indx_records = indx::build_orth_indx(
+        &lookup_terms,
+        &headword_chars_for_indx,
+        strict_accents,
+        index_language,
+        ja_ordt.as_ref(),
+    );
     eprintln!("  Orth INDX: {} records", indx_records.len());
 
     // Build FLIS, FCIS, EOF records
@@ -2648,12 +2660,18 @@ fn is_entry_boundary(text_bytes: &[u8], bold_pos: usize) -> bool {
 /// where every form is a direct orth INDX entry pointing at its
 /// headword's text position. Matches lemma v1.0.0 / kindling v0.5.0
 /// behaviour, the last demonstrably on-device-working state.
+///
+/// For Japanese dictionaries (`dict_lang` = "ja"), labels are encoded as
+/// generated-ORDT symbol sequences and sorted by their collation keys
+/// instead of UTF-16BE byte order; the returned `JaOrdt` must then be
+/// embedded in the orth primary INDX. See `crate::ordt` and issue #11.
 fn build_lookup_terms(
     entries: &[DictionaryEntry],
     positions: &[(usize, usize)],
     text_bytes: &[u8],
     headwords_only: bool,
-) -> Vec<LookupTerm> {
+    dict_lang: &str,
+) -> (Vec<LookupTerm>, Option<crate::ordt::JaOrdt>) {
     use std::collections::HashMap;
 
     let mut terms: HashMap<String, (usize, usize, usize, usize)> = HashMap::new();
@@ -2709,15 +2727,46 @@ fn build_lookup_terms(
     }
 
     eprintln!("Encoding {} unique lookup terms...", terms.len());
+    let ja_ordt = if crate::ordt::is_japanese(dict_lang) {
+        Some(crate::ordt::JaOrdt::new(&crate::ordt::used_bytes(
+            terms.keys().map(|s| s.as_str()),
+        )))
+    } else {
+        None
+    };
+
     let mut label_bytes_map: HashMap<String, Vec<u8>> = HashMap::new();
     for label in terms.keys() {
-        label_bytes_map.insert(label.clone(), indx::encode_indx_label(label));
+        let bytes = match &ja_ordt {
+            Some(ja) => ja.encode_label(label),
+            None => indx::encode_indx_label(label),
+        };
+        label_bytes_map.insert(label.clone(), bytes);
     }
 
     let mut sorted_labels: Vec<String> = terms.keys().cloned().collect();
-    sorted_labels.sort_by(|a, b| label_bytes_map[a].cmp(&label_bytes_map[b]));
+    match &ja_ordt {
+        Some(ja) => {
+            // Sort by ORDT collation key (the order Kindle's lookup
+            // expects); ties broken by encoded bytes for determinism.
+            // Equal keys are fine on-device: the firmware scans
+            // equal-weight ranges.
+            let sort_keys: HashMap<&String, Vec<u32>> = label_bytes_map
+                .iter()
+                .map(|(label, bytes)| (label, ja.sort_key(bytes)))
+                .collect();
+            sorted_labels.sort_by(|a, b| {
+                sort_keys[a]
+                    .cmp(&sort_keys[b])
+                    .then_with(|| label_bytes_map[a].cmp(&label_bytes_map[b]))
+            });
+        }
+        None => {
+            sorted_labels.sort_by(|a, b| label_bytes_map[a].cmp(&label_bytes_map[b]));
+        }
+    }
 
-    sorted_labels
+    let lookup_terms = sorted_labels
         .into_iter()
         .map(|label| {
             let (start_pos, text_len, hw_display_len, source_ordinal) = terms[&label];
@@ -2730,7 +2779,8 @@ fn build_lookup_terms(
                 source_ordinal,
             }
         })
-        .collect()
+        .collect();
+    (lookup_terms, ja_ordt)
 }
 
 /// Build record 0: PalmDOC header + MOBI header + EXTH header + full name.

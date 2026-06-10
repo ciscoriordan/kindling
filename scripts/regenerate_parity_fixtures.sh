@@ -77,6 +77,7 @@ run_kg() {
 }
 
 run_kg simple_dict simple_dict.opf
+run_kg simple_dict_ja simple_dict_ja.opf
 run_kg simple_book simple_book.opf
 run_kg simple_comic simple_comic.epub
 

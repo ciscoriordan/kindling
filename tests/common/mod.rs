@@ -677,11 +677,13 @@ pub fn parse_indx_ordt2(primary_rec: &[u8]) -> Option<Ordt2Info> {
     let entries_count = u32_be(primary_rec, 168) as usize;
     let ordt1_off = u32_be(primary_rec, 172) as usize;
     let ordt2_off = u32_be(primary_rec, 176) as usize;
-    // Reject obvious "no ORDT" values. kindlegen-style dicts without an
-    // ORDT table tend to leave 164..180 as zeros or 0xFFFFFFFF, in which
-    // case we bail out early rather than try to follow garbage pointers.
-    if ordt_type == 0
-        || ordt_type > 2
+    // Reject obvious "no ORDT" values: dicts without an ORDT table tend
+    // to leave 164..180 as zeros or 0xFFFFFFFF, in which case we bail
+    // out early rather than try to follow garbage pointers. Note that
+    // ordt_type 0 with valid table pointers is real: kindlegen writes 0
+    // for its Japanese dictionaries (and kindling's generated Japanese
+    // tables mirror that), with u16 BE label symbols like type 2.
+    if ordt_type > 2
         || entries_count == 0
         || entries_count > 4096
         || ordt2_off < 192
@@ -704,9 +706,99 @@ pub fn parse_indx_ordt2(primary_rec: &[u8]) -> Option<Ordt2Info> {
         codepoints.push(u16_be(primary_rec, table_start + i * 2) as u32);
     }
     Some(Ordt2Info {
-        ordt_type,
+        // Normalize type 0 to the documented "2-byte indices" semantics.
+        ordt_type: if ordt_type == 1 { 1 } else { 2 },
         codepoints,
     })
+}
+
+/// Decode ORDT-encoded dictionary label bytes back to headword text.
+///
+/// Unlike `decode_indx_label_ordt2` (which returns the raw table VALUES
+/// as chars, libmobi-style), this implements the full kindlegen/kindling
+/// dictionary label encoding: table values are the Windows-1252
+/// interpretations of the headword's UTF-8 bytes, control values 1/2/4
+/// open two-symbol expansion escapes for bytes 0x8C/0x9C/0xE6, and
+/// out-of-table symbols are literal values. Returns None when the bytes
+/// don't decode cleanly under that model.
+pub fn decode_indx_label_ordt_text(label_bytes: &[u8], ordt: &Ordt2Info) -> Option<String> {
+    fn cp1252_byte(v: u32) -> Option<u8> {
+        match v {
+            0x20AC => Some(0x80),
+            0x201A => Some(0x82),
+            0x0192 => Some(0x83),
+            0x201E => Some(0x84),
+            0x2026 => Some(0x85),
+            0x2020 => Some(0x86),
+            0x2021 => Some(0x87),
+            0x02C6 => Some(0x88),
+            0x2030 => Some(0x89),
+            0x0160 => Some(0x8A),
+            0x2039 => Some(0x8B),
+            0x0152 => Some(0x8C),
+            0x017D => Some(0x8E),
+            0x2018 => Some(0x91),
+            0x2019 => Some(0x92),
+            0x201C => Some(0x93),
+            0x201D => Some(0x94),
+            0x2022 => Some(0x95),
+            0x2013 => Some(0x96),
+            0x2014 => Some(0x97),
+            0x02DC => Some(0x98),
+            0x2122 => Some(0x99),
+            0x0161 => Some(0x9A),
+            0x203A => Some(0x9B),
+            0x0153 => Some(0x9C),
+            0x017E => Some(0x9E),
+            0x0178 => Some(0x9F),
+            v if v <= 0xFF => Some(v as u8),
+            _ => None,
+        }
+    }
+
+    let step = if ordt.ordt_type == 2 { 2 } else { 1 };
+    if label_bytes.len() % step != 0 {
+        return None;
+    }
+    let mut values: Vec<u32> = Vec::with_capacity(label_bytes.len() / step);
+    let mut i = 0;
+    while i < label_bytes.len() {
+        let sym: u32 = if step == 2 {
+            ((label_bytes[i] as u32) << 8) | label_bytes[i + 1] as u32
+        } else {
+            label_bytes[i] as u32
+        };
+        i += step;
+        values.push(if (sym as usize) < ordt.codepoints.len() {
+            ordt.codepoints[sym as usize]
+        } else {
+            sym
+        });
+    }
+
+    let mut utf8: Vec<u8> = Vec::with_capacity(values.len());
+    let mut i = 0;
+    while i < values.len() {
+        match values[i] {
+            0x0001 => {
+                utf8.push(0x8C);
+                i += 2; // skip the expansion tail symbol
+            }
+            0x0002 => {
+                utf8.push(0x9C);
+                i += 2;
+            }
+            0x0004 => {
+                utf8.push(0xE6);
+                i += 2;
+            }
+            v => {
+                utf8.push(cp1252_byte(v)?);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(utf8).ok()
 }
 
 /// Decode a run of INDX label bytes into a UTF-8 string using an ORDT2
@@ -894,7 +986,11 @@ pub fn parse_indx(parsed: &ParsedMobi, primary_idx: usize) -> Result<ParsedIndx,
     }
     let num_data_records = u32_be(primary, 24) as usize;
     let total_entries = u32_be(primary, 36);
-    let tagx_offset = u32_be(primary, 180) as usize;
+    // TAGX sits right after the declared header, which for the dict orth
+    // primary (header_length 199) includes the embedded "default" string.
+    // KF8 SKEL/FRAG primaries have header_length 192, same as the value
+    // at offset 180 this parser used to read.
+    let tagx_offset = u32_be(primary, 4) as usize;
     if tagx_offset + 12 > primary.len() || &primary[tagx_offset..tagx_offset + 4] != b"TAGX" {
         return Err(format!(
             "INDX primary {primary_idx}: TAGX magic missing at offset {tagx_offset}"
