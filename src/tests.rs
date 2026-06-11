@@ -6076,10 +6076,14 @@ mod tests {
         let (_, _, offsets) = parse_palmdb(&data);
         let rec0 = get_record(&data, &offsets, 0);
 
-        // Offset 76: language code - should be non-zero for "en"
+        // Offset 76: language code. kindlegen writes the neutral (primary)
+        // LCID here, not the sublanguage-tagged full LCID -- the firmware's
+        // per-language query normalization is keyed on it (see
+        // mobi_locale_code; Arabic lookups break with the full LCID). "en"
+        // primary is 0x09.
         let lang = read_u32_be(rec0, 16 + 76);
         assert_ne!(lang, 0, "Dict language code should be non-zero");
-        assert_eq!(lang, 0x0409, "Dict language code for 'en' should be 0x0409 (Windows LCID), got 0x{:X}", lang);
+        assert_eq!(lang, 0x09, "Dict language code for 'en' should be primary LCID 0x09, got 0x{:X}", lang);
         println!("  \u{2713} Dict language code: {}", lang);
     }
 
@@ -6309,9 +6313,11 @@ mod tests {
         let (_, _, offsets) = parse_palmdb(&data);
         let rec0 = get_record(&data, &offsets, 0);
 
+        // kindlegen writes the neutral (primary) LCID, not the full
+        // sublanguage-tagged one (confirmed against kindlegen book output).
         let lang = read_u32_be(rec0, 16 + 76);
         assert_ne!(lang, 0, "Book language code should be non-zero for 'en'");
-        assert_eq!(lang, 0x0409, "Book language code for 'en' should be 0x0409 (Windows LCID), got 0x{:X}", lang);
+        assert_eq!(lang, 0x09, "Book language code for 'en' should be primary LCID 0x09, got 0x{:X}", lang);
         println!("  \u{2713} Book language code: {}", lang);
     }
 
@@ -6479,8 +6485,12 @@ mod tests {
     }
 
     #[test]
-    fn test_kf8_language_uses_lcid() {
-        // Language code must be Windows LCID (0x0409 for en), not primary ID (0x09).
+    fn test_kf8_language_uses_primary_lcid() {
+        // The MOBI-header locale is the neutral (primary) LCID, 0x09 for en,
+        // matching kindlegen's output for KF8 books and dictionaries alike.
+        // (This previously asserted the full sublanguage-tagged LCID; the
+        // firmware's per-language normalization is keyed on the primary form,
+        // and a full LCID breaks dictionary lookups -- see mobi_locale_code.)
         let dir = TempDir::new("kf8_lcid");
         let jpeg = make_test_jpeg();
         let opf = create_book_fixture(dir.path(), Some(&jpeg));
@@ -6488,8 +6498,8 @@ mod tests {
         let (_, _, offsets) = parse_palmdb(&data);
         let rec0 = get_record(&data, &offsets, 0);
         let lang = read_u32_be(rec0, 16 + 76);
-        assert!(lang > 0xFF,
-            "Language should be Windows LCID (>0xFF), got 0x{:X}", lang);
+        assert_eq!(lang, 0x09,
+            "KF8 book language should be primary LCID 0x09, got 0x{:X}", lang);
     }
 
     // -----------------------------------------------------------------------

@@ -2622,6 +2622,18 @@ fn is_entry_boundary(text_bytes: &[u8], bold_pos: usize) -> bool {
         end -= 1;
     }
 
+    // First content entry: the dictionary body opens with `<mbp:frameset>`,
+    // and the first headword follows it directly. When the book has front
+    // matter (a usage/about page before the entries), this first `<b>` is
+    // past the 200-byte shortcut above and is preceded by `<mbp:frameset>`
+    // rather than an `<hr/>`/`<h5>` separator. Without this the very first
+    // entry of every such dictionary is never located and renders as a
+    // blank lookup page. 14 bytes, so use a window wide enough to hold it.
+    let frameset_start = if end >= 14 { end - 14 } else { 0 };
+    if text_bytes[frameset_start..end].ends_with(b"<mbp:frameset>") {
+        return true;
+    }
+
     // Look backward from the <b> position for the preceding context.
     // Entry headings can be preceded by any of:
     //   <h5><b>  (the block-level headword wrapper inserted by strip_idx_markup)
@@ -2683,6 +2695,11 @@ fn build_lookup_terms(
 
     let mut terms: HashMap<String, (usize, usize, usize, usize)> = HashMap::new();
     let mut headwords: HashSet<String> = HashSet::new();
+    // Labels in document (first-appearance) order. The generated-ORDT
+    // symbol table is numbered in this order (symbol 3 is the first
+    // label's lead byte; trailing high-byte symbols follow first
+    // appearance), so it must match kindlegen's scan order. See crate::ordt.
+    let mut ordered_labels: Vec<String> = Vec::new();
 
     for (entry_ordinal, (entry, &(start_pos, text_len))) in
         entries.iter().zip(positions.iter()).enumerate()
@@ -2702,6 +2719,9 @@ fn build_lookup_terms(
             }
         }
 
+        if !terms.contains_key(hw) {
+            ordered_labels.push(hw.clone());
+        }
         terms.insert(
             hw.clone(),
             (start_pos, text_len, hw_display_len, entry_ordinal),
@@ -2724,6 +2744,7 @@ fn build_lookup_terms(
                     } else {
                         3 + iform.as_bytes().len() + 4 + 1
                     };
+                    ordered_labels.push(iform.clone());
                     terms.insert(
                         iform.clone(),
                         (start_pos, text_len, hw_display_len, entry_ordinal),
@@ -2735,9 +2756,8 @@ fn build_lookup_terms(
 
     eprintln!("Encoding {} unique lookup terms...", terms.len());
     let gen_ordt = if crate::ordt::uses_generated_ordt(dict_lang) {
-        Some(crate::ordt::OrdtTables::new(&crate::ordt::used_bytes(
-            terms.keys().map(|s| s.as_str()),
-        )))
+        let refs: Vec<&str> = ordered_labels.iter().map(|s| s.as_str()).collect();
+        Some(crate::ordt::OrdtTables::new(&refs))
     } else {
         None
     };
@@ -2873,9 +2893,9 @@ fn build_record0(
     }
     put32(&mut mobi, 64, first_non_book_record as u32);
 
-    put32(&mut mobi, 76, locale_code(&opf.language));
-    put32(&mut mobi, 80, locale_code(&opf.dict_in_language));
-    put32(&mut mobi, 84, locale_code(&opf.dict_out_language));
+    put32(&mut mobi, 76, mobi_locale_code(&opf.language));
+    put32(&mut mobi, 80, mobi_locale_code(&opf.dict_in_language));
+    put32(&mut mobi, 84, mobi_locale_code(&opf.dict_out_language));
     put32(&mut mobi, 88, version); // min version = same as file version
     put32(&mut mobi, 92, first_image_record as u32); // first image record
     put32(&mut mobi, 96, 0); // huffman record
@@ -3081,7 +3101,7 @@ fn build_kf8_record0(
     }
     put32(&mut mobi, 64, first_non_book_record as u32);
 
-    put32(&mut mobi, 76, locale_code(&opf.language));
+    put32(&mut mobi, 76, mobi_locale_code(&opf.language));
     put32(&mut mobi, 80, 0); // no dict_in for KF8
     put32(&mut mobi, 84, 0); // no dict_out for KF8
     put32(&mut mobi, 88, 8); // min version = 8
@@ -3367,6 +3387,24 @@ fn build_palmdb(title: &str, records: &[Vec<u8>]) -> Vec<u8> {
 /// Map a language tag to a Windows LCID (locale identifier).
 /// KCC/kindlegen uses full LCIDs (e.g., 0x0409 for en-US), not just the
 /// primary language ID (0x09). Using primary IDs causes Kindle to reject files.
+/// MOBI-header Locale / input / output language code, matching kindlegen.
+///
+/// kindlegen writes the *neutral* (primary) LCID for most languages, e.g.
+/// Arabic 0x0001 (not 0x0401 Arabic-Saudi), English 0x0009, Japanese
+/// 0x0011. The firmware's per-language query normalization is keyed on this
+/// field; a sublanguage-tagged LCID makes it skip normalization, which
+/// silently breaks lookups (the Arabic regression in issue #11: water
+/// resolved to sky). A couple of languages keep their full LCID in
+/// kindlegen's output (Korean 0x0412, French 0x040C), so we mirror that.
+fn mobi_locale_code(lang: &str) -> u32 {
+    let full = locale_code(lang);
+    let primary = lang.split(['-', '_']).next().unwrap_or(lang);
+    match primary {
+        "ko" | "fr" => full, // kindlegen keeps the full LCID for these
+        _ => full & 0x3FF,   // neutral primary LCID
+    }
+}
+
 fn locale_code(lang: &str) -> u32 {
     match lang {
         "en" | "en-US" => 0x0409,

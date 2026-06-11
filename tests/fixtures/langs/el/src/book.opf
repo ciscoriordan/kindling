@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookId">
+<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+<dc:title>Kindling Greek Lookup Test</dc:title>
+<dc:language>el</dc:language>
+<dc:creator>Kindling</dc:creator>
+<dc:identifier id="BookId">KindlingLookupTest-el</dc:identifier>
+</metadata>
+<manifest>
+<item id="content" href="book.html" media-type="application/xhtml+xml"/>
+</manifest>
+<spine><itemref idref="content"/></spine>
+</package>

@@ -511,7 +511,7 @@ fn build_indx_primary(
         let ordt2_abs = record.len();
         record.extend_from_slice(&t2);
 
-        put32(&mut record, 164, 0); // ordt_type = 0 (u16 BE symbol labels)
+        put32(&mut record, 164, tables.ordt_type()); // 0 = u16 labels, 1 = byte labels
         put32(&mut record, 168, tables.count()); // oentries
         put32(&mut record, 172, ordt1_abs as u32); // ORDT1 (weights)
         put32(&mut record, 176, ordt2_abs as u32); // ORDT2 (values)
