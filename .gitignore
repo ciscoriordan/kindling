@@ -8,3 +8,8 @@ decompiled_*/
 # Parity test fixtures must ship even though they are .mobi/.epub.
 !tests/fixtures/parity/**/*.mobi
 !tests/fixtures/parity/**/*.epub
+
+# Per-language dict tests compare against committed kindlegen reference
+# builds; these must ship too (the kindling builds and books are regenerated
+# by generate.py, so only the references are tracked).
+!tests/fixtures/langs/**/*-kindlegen.mobi
