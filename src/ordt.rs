@@ -34,16 +34,31 @@
 //! The hiragana block U+3041..=U+3093 and the katakana block
 //! U+30A1..=U+30F6 are always present as character symbols, so the firmware
 //! can encode and fold arbitrary kana queries. Katakana fold onto the
-//! matching hiragana weight (ア and あ share weight). Collation weights are
-//! kindlegen's gojuon order (see `HIRA_WEIGHTS`).
+//! matching hiragana weight (ア and あ share weight); ヴ ヵ ヶ collate as
+//! their base kana う か け. Collation weights are kindlegen's gojuon order
+//! (see `HIRA_WEIGHTS`).
+//!
+//! # The prolonged sound mark ー (U+30FC)
+//!
+//! ー is not a literal: the firmware normalizes a tapped ー onto the
+//! preceding vowel before searching, and kindlegen does the same when it
+//! builds the index, so the stored label must match. ー folds to a
+//! vowel-specific marker (a→U+3095, i→U+3096, u→U+3097, e→U+3098,
+//! o→U+309F) carrying that vowel's collation weight; the fold propagates
+//! across consecutive ー. With no preceding vowel (word start, after ん/ン)
+//! it stays as the ignorable mark. The middle dot ・ and the iteration
+//! marks are likewise kept as weight-0 (ignorable) symbols. See
+//! `label_codepoints`. A raw-ー label (kindling through 0.18.0) never
+//! resolved on device; this is the post-0.18.0 follow-up to issue #11.
 //!
 //! # Label width (`ordt_type`)
 //!
 //! Labels are two-byte big-endian elements (`ordt_type = 0`) whenever a
 //! literal is present (a literal code point exceeds one byte) or the table
-//! exceeds 256 symbols; otherwise one byte (`ordt_type = 1`). Any
-//! dictionary with kanji/Hangul/Arabic, and any with the kana blocks
-//! present, comes out two-byte.
+//! exceeds 256 symbols; otherwise one byte (`ordt_type = 1`). A dictionary
+//! with kanji/Hangul/Arabic comes out two-byte; a pure-kana dictionary
+//! (every ー folded, so no literals remain) comes out one-byte, matching
+//! kindlegen.
 //!
 //! Entries in the orth INDX must be sorted by their zero-skipped weight
 //! sequences (see `sort_key`); ties may appear in any order because the
@@ -78,19 +93,113 @@ const MAX_LABEL_BYTES_2: usize = 30;
 const MAX_LABEL_BYTES_1: usize = 31;
 
 /// Collation weight for a kana code point, folding katakana onto hiragana.
-/// Returns None for non-kana (and the few katakana with no hiragana form,
-/// which `new` weights separately).
+/// Returns None for non-kana. ヴ ヵ ヶ (and the hiragana ゔ ゕ ゖ) sit just
+/// past ん in Unicode; kindlegen collates them as their base kana う か け,
+/// so they do too (verified on device via the kindlegen reference).
 fn kana_weight(cp: u32) -> Option<u16> {
-    if (HIRAGANA_FIRST..=HIRAGANA_LAST).contains(&cp) {
-        return Some(HIRA_WEIGHTS[(cp - HIRAGANA_FIRST) as usize]);
+    // Fold katakana onto hiragana (ヴ→ゔ, ヵ→ゕ, ヶ→ゖ, ン→ん all land here).
+    let h = if (HIRAGANA_FIRST..=0x3096).contains(&cp) {
+        cp
+    } else if (KATAKANA_FIRST..=KATAKANA_LAST).contains(&cp) {
+        cp - 0x60
+    } else {
+        return None;
+    };
+    let weight_of = |base: u32| HIRA_WEIGHTS[(base - HIRAGANA_FIRST) as usize];
+    match h {
+        _ if (HIRAGANA_FIRST..=HIRAGANA_LAST).contains(&h) => Some(weight_of(h)),
+        0x3094 => Some(weight_of(0x3046)), // ゔ / ヴ collate as う
+        0x3095 => Some(weight_of(0x304B)), // ゕ / ヵ collate as か
+        0x3096 => Some(weight_of(0x3051)), // ゖ / ヶ collate as け
+        _ => None,
     }
-    if (KATAKANA_FIRST..=KATAKANA_LAST).contains(&cp) {
-        let folded = cp - 0x60; // katakana -> hiragana
-        if (HIRAGANA_FIRST..=HIRAGANA_LAST).contains(&folded) {
-            return Some(HIRA_WEIGHTS[(folded - HIRAGANA_FIRST) as usize]);
+}
+
+/// The katakana-hiragana prolonged sound mark ー.
+const PROLONGED: u32 = 0x30FC;
+
+/// kindlegen's vowel-specific markers for a folded prolonged sound mark,
+/// indexed by vowel class (0=a, 1=i, 2=u, 3=e, 4=o). The firmware
+/// normalizes a tapped ー to one of these before searching the index, so
+/// the stored label must use the same marker (a raw ー never resolves).
+/// U+3097/U+3098 are unassigned Unicode scalars but still valid `char`s,
+/// so they round-trip through the table like any other symbol.
+const LONG_FOLD: [u32; 5] = [0x3095, 0x3096, 0x3097, 0x3098, 0x309F];
+
+/// Katakana marks that collate as ignorable (weight 0) yet stay in the
+/// label as in-table symbols, matching kindlegen: an unfoldable prolonged
+/// mark (word-initial or after ん/ン), the middle dot, and the katakana/
+/// hiragana iteration marks.
+const IGNORABLE_MARKS: [u32; 6] = [0x30FC, 0x30FB, 0x30FD, 0x30FE, 0x309D, 0x309E];
+
+/// Vowel class (0=a, 1=i, 2=u, 3=e, 4=o) of each hiragana in
+/// U+3041..=U+3096, or 255 for ん (no inherent vowel). Katakana fold onto
+/// this table by code point. Small tsu っ/ッ takes vowel u (it is small
+/// つ); ゔ/ヴ take u; ゕ/ヵ take a; ゖ/ヶ take e.
+const HIRA_VOWEL: [u8; 86] = [
+    0, 0, 1, 1, 2, 2, 3, 3, 4, 4, // ぁあぃいぅうぇえぉお
+    0, 0, 1, 1, 2, 2, 3, 3, 4, 4, // かがきぎくぐけげこご
+    0, 0, 1, 1, 2, 2, 3, 3, 4, 4, // さざしじすずせぜそぞ
+    0, 0, 1, 1, 2, 2, 2, 3, 3, 4, 4, // ただちぢっつづてでとど
+    0, 1, 2, 3, 4, // なにぬねの
+    0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, // はばぱひびぴふぶぷへべぺほぼぽ
+    0, 1, 2, 3, 4, // まみむめも
+    0, 0, 2, 2, 4, 4, // ゃやゅゆょよ
+    0, 1, 2, 3, 4, // らりるれろ
+    0, 0, 1, 3, 4, 255, 2, 0, 3, // ゎわゐゑをん ゔゕゖ
+];
+
+/// Vowel class of a kana code point, folding katakana onto hiragana.
+/// `None` for ん/ン, the prolonged mark, and non-kana. Drives the fold of
+/// a following prolonged sound mark ー onto the preceding vowel.
+fn kana_vowel(cp: u32) -> Option<usize> {
+    // ヴ→ゔ, ヵ→ゕ, ヶ→ゖ, ン→ん all land inside the hiragana range.
+    let h = if (KATAKANA_FIRST..=KATAKANA_LAST).contains(&cp) {
+        cp - 0x60
+    } else {
+        cp
+    };
+    if (HIRAGANA_FIRST..=0x3096).contains(&h) {
+        let v = HIRA_VOWEL[(h - HIRAGANA_FIRST) as usize];
+        if v != 255 {
+            return Some(v as usize);
         }
     }
     None
+}
+
+/// Plain-vowel (あいうえお) collation weight for vowel class `v`; the
+/// long-vowel fold markers carry it so ー sorts as the long vowel.
+fn vowel_weight(v: usize) -> u16 {
+    const VOWEL_HIRA: [u32; 5] = [0x3042, 0x3044, 0x3046, 0x3048, 0x304A];
+    HIRA_WEIGHTS[(VOWEL_HIRA[v] - HIRAGANA_FIRST) as usize]
+}
+
+/// Rewrite a headword into the code-point sequence actually encoded into
+/// its index label. The prolonged sound mark ー (U+30FC) folds to a
+/// vowel-specific marker based on the preceding vowel sound, propagating
+/// across consecutive ー; with no preceding vowel it stays as the literal
+/// mark (an ignorable symbol). Every other character passes through. This
+/// mirrors kindlegen, whose folded labels resolve on real devices while
+/// raw-ー labels do not (the firmware normalizes a tapped ー the same way).
+fn label_codepoints(text: &str) -> Vec<u32> {
+    let mut out = Vec::with_capacity(text.len());
+    let mut vowel: Option<usize> = None;
+    for ch in text.chars() {
+        let cp = ch as u32;
+        if cp == PROLONGED {
+            // A following ー keeps folding onto the same vowel, so leave
+            // `vowel` untouched here.
+            out.push(match vowel {
+                Some(v) => LONG_FOLD[v],
+                None => PROLONGED,
+            });
+        } else {
+            out.push(cp);
+            vowel = kana_vowel(cp);
+        }
+    }
+    out
 }
 
 /// Generated ORDT table pair plus the character-level encoder state.
@@ -114,11 +223,17 @@ impl OrdtTables {
     /// never be mistaken for a literal; everything else is a literal code
     /// point at encode time.
     pub fn new(labels: &[&str]) -> OrdtTables {
+        // The code points actually encoded into each label: the prolonged
+        // sound mark ー is folded onto the preceding vowel here, so the
+        // table is built from (and sized for) the folded forms, exactly
+        // like the labels `encode_label` later produces.
+        let label_cps: Vec<Vec<u32>> = labels.iter().map(|s| label_codepoints(s)).collect();
+
         let mut ordt1: Vec<u16> = Vec::with_capacity(256);
         let mut ordt2: Vec<u16> = Vec::with_capacity(256);
         let mut sym_of: HashMap<char, u16> = HashMap::new();
 
-        let mut add = |cp: u32, weight: u16, o1: &mut Vec<u16>, o2: &mut Vec<u16>, m: &mut HashMap<char, u16>| {
+        let add = |cp: u32, weight: u16, o1: &mut Vec<u16>, o2: &mut Vec<u16>, m: &mut HashMap<char, u16>| {
             let sym = o2.len() as u16;
             o2.push(cp as u16);
             o1.push(weight);
@@ -149,16 +264,28 @@ impl OrdtTables {
             for cp in HIRAGANA_FIRST..=HIRAGANA_LAST {
                 add(cp, kana_weight(cp).unwrap(), &mut ordt1, &mut ordt2, &mut sym_of);
             }
-            // Full katakana block, folded onto hiragana weights. The handful
-            // with no hiragana form (ヴ ヵ ヶ) get weights just past the block.
-            let mut extra = HIRA_WEIGHTS[HIRA_WEIGHTS.len() - 1] + 1;
+            // Full katakana block, folded onto hiragana weights (ヴ ヵ ヶ
+            // collate as う か け, like kindlegen).
             for cp in KATAKANA_FIRST..=KATAKANA_LAST {
-                let w = kana_weight(cp).unwrap_or_else(|| {
-                    let w = extra;
-                    extra += 1;
-                    w
-                });
-                add(cp, w, &mut ordt1, &mut ordt2, &mut sym_of);
+                add(cp, kana_weight(cp).unwrap(), &mut ordt1, &mut ordt2, &mut sym_of);
+            }
+
+            // Long-vowel fold markers for ー, each carrying its plain
+            // vowel's collation weight so ー sorts as a long vowel. Added
+            // only for the vowels that folding actually produced.
+            for (v, &fold_cp) in LONG_FOLD.iter().enumerate() {
+                if label_cps.iter().flatten().any(|&cp| cp == fold_cp) {
+                    add(fold_cp, vowel_weight(v), &mut ordt1, &mut ordt2, &mut sym_of);
+                }
+            }
+            // Ignorable katakana marks (unfoldable ー, middle dot, iteration
+            // marks): kept in the label as weight-0 symbols, like kindlegen,
+            // so they neither become high-sorting literals nor are dropped.
+            for &mark in &IGNORABLE_MARKS {
+                let c = char::from_u32(mark).unwrap();
+                if !sym_of.contains_key(&c) && label_cps.iter().flatten().any(|&cp| cp == mark) {
+                    add(mark, 0, &mut ordt1, &mut ordt2, &mut sym_of);
+                }
             }
         }
 
@@ -167,9 +294,10 @@ impl OrdtTables {
         // a symbol index when stored as a literal. Pull such characters in
         // as symbols. Iterate because each addition grows the table. This
         // does not fire for ordinary kana+kanji dictionaries.
-        let mut used: Vec<char> = labels
+        let mut used: Vec<char> = label_cps
             .iter()
-            .flat_map(|s| s.chars())
+            .flatten()
+            .filter_map(|&cp| char::from_u32(cp))
             .filter(|c| !sym_of.contains_key(c))
             .collect();
         used.sort_unstable();
@@ -194,16 +322,17 @@ impl OrdtTables {
             }
         }
 
-        // A character is a literal exactly when it has no table symbol;
-        // the safety loop above guarantees every such character's code
-        // point is >= the table size, so literals never collide with
-        // symbol indices. Two-byte labels are needed when any literal is
-        // present (literal code points exceed one byte) or the table
-        // itself exceeds 256 symbols.
-        let has_literal = labels
-            .iter()
-            .flat_map(|s| s.chars())
-            .any(|c| !sym_of.contains_key(&c));
+        // A code point is a literal exactly when it has no table symbol;
+        // the safety loop above guarantees every such code point is >= the
+        // table size, so literals never collide with symbol indices.
+        // Two-byte labels are needed when any literal is present (literal
+        // code points exceed one byte) or the table exceeds 256 symbols.
+        // Pure-kana dictionaries have no literals once ー is folded, so
+        // they come out one-byte, matching kindlegen.
+        let has_literal = label_cps.iter().flatten().any(|&cp| match char::from_u32(cp) {
+            Some(c) => !sym_of.contains_key(&c),
+            None => true,
+        });
         let two_byte = has_literal || ordt2.len() > 256;
 
         OrdtTables {
@@ -239,8 +368,10 @@ impl OrdtTables {
     }
 
     /// Encode a label as ORDT elements: one per character, the symbol index
-    /// for table characters and the raw code point for literals. Truncated
-    /// to the 5-bit length limit at a character boundary.
+    /// for table characters and the raw code point for literals. The
+    /// prolonged sound mark ー is folded onto the preceding vowel first (see
+    /// `label_codepoints`). Truncated to the 5-bit length limit at a
+    /// character boundary.
     pub fn encode_label(&self, text: &str) -> Vec<u8> {
         let max_bytes = if self.two_byte {
             MAX_LABEL_BYTES_2
@@ -249,18 +380,18 @@ impl OrdtTables {
         };
         let elem_bytes = if self.two_byte { 2 } else { 1 };
         let mut out: Vec<u8> = Vec::new();
-        for ch in text.chars() {
+        for cp in label_codepoints(text) {
             if out.len() + elem_bytes > max_bytes {
                 break;
             }
-            match self.sym_of.get(&ch) {
+            match char::from_u32(cp).and_then(|c| self.sym_of.get(&c)) {
                 Some(&sym) => self.push_elem(&mut out, sym),
                 None => {
-                    // Literal code point. BMP only (supplementary planes do
-                    // not occur in dictionary headwords we target); skip if
-                    // it would collide with the symbol-index range.
-                    let cp = ch as u32;
-                    if cp <= 0xFFFF && cp >= self.count() {
+                    // Out-of-table literal code point. Representable only in
+                    // two-byte labels (a one-byte table is built only when no
+                    // literals are present); BMP only, and skipped if it would
+                    // collide with the symbol-index range.
+                    if self.two_byte && cp <= 0xFFFF && cp >= self.count() {
                         self.push_elem(&mut out, cp as u16);
                     }
                     // else: unrepresentable; drop the character.
@@ -276,7 +407,7 @@ impl OrdtTables {
     pub fn sort_key(&self, label_bytes: &[u8]) -> Vec<u32> {
         let cnt = self.ordt1.len();
         let mut key = Vec::with_capacity(label_bytes.len());
-        let mut push = |v: usize, key: &mut Vec<u32>| {
+        let push = |v: usize, key: &mut Vec<u32>| {
             if v < cnt {
                 let w = self.ordt1[v];
                 if w != 0 {
@@ -380,6 +511,95 @@ mod tests {
         // が (voiced) sorts right after か, before き.
         assert!(k("か") < k("が"));
         assert!(k("が") < k("き"));
+    }
+
+    #[test]
+    fn prolonged_mark_folds_onto_preceding_vowel() {
+        // The post-0.18.0 report: katakana names with ー did not resolve on
+        // device because kindling stored ー as an out-of-table literal. It
+        // now folds onto the preceding vowel, like kindlegen.
+        let o = OrdtTables::new(&["ローゼマイン", "ヴィルフリート"]);
+        assert!(!o.sym_of.contains_key(&'ー'), "foldable ー is never a symbol");
+
+        // ローゼマイン: ロ ー ゼ マ イ ン — ー after ロ (o) -> U+309F.
+        let e = elems(&o, &o.encode_label("ローゼマイン"));
+        assert_eq!(e.len(), 6, "ー folds in place; no literal expansion");
+        assert!(e.iter().all(|&s| (s as u32) < o.count()), "all table symbols");
+        assert_eq!(o.ordt2[e[1] as usize], 0x309F, "ー after ロ -> o-marker");
+        assert_eq!(
+            o.ordt1[e[1] as usize],
+            o.ordt1[o.sym_of[&'お'] as usize],
+            "the o-marker carries お's weight"
+        );
+
+        // ヴィルフリート: ヴ ィ ル フ リ ー ト — ー after リ (i) -> U+3096.
+        let e = elems(&o, &o.encode_label("ヴィルフリート"));
+        assert_eq!(o.ordt2[e[5] as usize], 0x3096, "ー after リ -> i-marker");
+        assert_eq!(o.ordt1[e[5] as usize], o.ordt1[o.sym_of[&'い'] as usize]);
+    }
+
+    #[test]
+    fn prolonged_fold_collates_as_long_vowel() {
+        let o = OrdtTables::new(&["カ", "カー", "カイ", "キー"]);
+        let k = |s: &str| o.sort_key(&o.encode_label(s));
+        assert!(k("カ") < k("カー"), "カ is a prefix of カー");
+        assert!(k("カー") < k("カイ"), "long-a (あ weight) sorts before イ");
+        assert!(k("カー") < k("キー"), "fold by vowel: カー (a) < キー (i)");
+    }
+
+    #[test]
+    fn vu_collates_as_u() {
+        // ヴ (U+30F4) collates as ウ rather than sorting past the kana block,
+        // matching kindlegen; this is why ヴィルフリート now lands early.
+        let o = OrdtTables::new(&["ア", "ウ", "ヴ", "エ"]);
+        assert_eq!(
+            o.ordt1[o.sym_of[&'ヴ'] as usize],
+            o.ordt1[o.sym_of[&'ウ'] as usize],
+            "ヴ has ウ's weight"
+        );
+        let k = |s: &str| o.sort_key(&o.encode_label(s));
+        assert!(k("ア") < k("ヴ") && k("ヴ") < k("エ"), "あ < ヴ(=う) < え");
+    }
+
+    #[test]
+    fn unfoldable_prolonged_mark_is_ignorable() {
+        // ー with no preceding vowel (word start or after ン) stays as the
+        // literal mark with weight 0: kept in the label but ignored in
+        // collation, like kindlegen.
+        let o = OrdtTables::new(&["ンー", "ン"]);
+        assert!(o.sym_of.contains_key(&'ー'), "unfoldable ー is an in-table symbol");
+        assert_eq!(o.ordt1[o.sym_of[&'ー'] as usize], 0, "ー is collation-ignorable");
+        assert_eq!(
+            o.sort_key(&o.encode_label("ンー")),
+            o.sort_key(&o.encode_label("ン")),
+            "trailing ー contributes nothing to the key"
+        );
+    }
+
+    #[test]
+    fn sokuon_and_double_mark_fold() {
+        // Small tsu ッ collates as u (it is small つ), so a following ー folds
+        // to the u-marker; and consecutive ー keep the first one's vowel.
+        let o = OrdtTables::new(&["ッー", "カーー"]);
+        let e = elems(&o, &o.encode_label("ッー"));
+        assert_eq!(o.ordt2[e[1] as usize], 0x3097, "ー after ッ -> u-marker");
+        let e = elems(&o, &o.encode_label("カーー"));
+        assert_eq!(o.ordt2[e[1] as usize], 0x3095, "first ー -> a-marker");
+        assert_eq!(o.ordt2[e[2] as usize], 0x3095, "second ー keeps the a-marker");
+    }
+
+    #[test]
+    fn middle_dot_is_ignorable() {
+        // ・ (U+30FB) stays in the label as a weight-0 symbol, like kindlegen,
+        // so a name like ナカ・マ collates as ナカマ instead of sorting past
+        // every kana (which a high-weight literal would do).
+        let o = OrdtTables::new(&["ナカ・マ", "ナカマ"]);
+        assert!(!o.two_byte, "・ is an in-table symbol, not a literal");
+        assert_eq!(o.ordt1[o.sym_of[&'・'] as usize], 0, "・ is collation-ignorable");
+        assert_eq!(
+            o.sort_key(&o.encode_label("ナカ・マ")),
+            o.sort_key(&o.encode_label("ナカマ")),
+        );
     }
 
     #[test]

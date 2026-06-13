@@ -153,14 +153,24 @@ fn check_generated_ordt(code: &str, c: &Lang, parsed: &ParsedMobi, idx: usize, p
     let indx = parse_indx(parsed, idx).unwrap();
     let hw = headwords(code); // document order
 
-    // Labels decode back to exactly the fixture's headword set.
+    // The rebuilt tables (same headwords, same document order) are identical
+    // to the file's, so encoding a headword and decoding the result is the
+    // round-trip the firmware performs. For Japanese the prolonged sound
+    // mark ー folds onto the preceding vowel, so a label decodes to the
+    // fold-normalized headword (ケーキ → ケ + the え-marker), not the raw
+    // headword; compare against that rather than the literal headword set.
+    let refs: Vec<&str> = hw.iter().map(|s| s.as_str()).collect();
+    let tables = OrdtTables::new(&refs);
     let decoded: BTreeSet<String> = indx
         .entries
         .iter()
         .map(|e| decode_percharacter(&e.label, &ordt.codepoints, two_byte))
         .collect();
-    let want: BTreeSet<String> = hw.iter().cloned().collect();
-    assert_eq!(decoded, want, "{code}: decoded headword set");
+    let want: BTreeSet<String> = hw
+        .iter()
+        .map(|h| decode_percharacter(&tables.encode_label(h), &ordt.codepoints, two_byte))
+        .collect();
+    assert_eq!(decoded, want, "{code}: decoded headword set (fold-normalized)");
 
     // Byte parity with the committed kindlegen build: identical ORDT table
     // and identical headword-label set for the all-literal scripts; for
@@ -185,9 +195,7 @@ fn check_generated_ordt(code: &str, c: &Lang, parsed: &ParsedMobi, idx: usize, p
     }
 
     // Entries are in non-decreasing collation order under the rebuilt table
-    // (built from the same headwords in document order).
-    let refs: Vec<&str> = hw.iter().map(|s| s.as_str()).collect();
-    let tables = OrdtTables::new(&refs);
+    // (built above from the same headwords in document order).
     let keys: Vec<Vec<u32>> = indx.entries.iter().map(|e| tables.sort_key(&e.label)).collect();
     for i in 1..keys.len() {
         assert!(keys[i - 1] <= keys[i], "{code}: entries out of collation order at {i}");
