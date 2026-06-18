@@ -1,0 +1,6 @@
+# Bulk reformats and other mechanical, no-behavior-change commits.
+# Tell git to skip these in blame: git config blame.ignoreRevsFile .git-blame-ignore-revs
+# (GitHub applies this file automatically.)
+
+# Format codebase with rustfmt and enforce it in CI
+314ac5fde5aa39d56428a2cff963a7fce3b20f22
