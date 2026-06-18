@@ -1,11 +1,10 @@
+use quick_xml::Reader;
 /// EPUB extraction support.
 ///
 /// An EPUB is a ZIP archive containing an OPF file and HTML/CSS/image content.
 /// This module extracts an EPUB to a temporary directory and locates the OPF
 /// root file via META-INF/container.xml.
-
 use quick_xml::events::Event;
-use quick_xml::Reader;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -100,8 +99,7 @@ fn parse_container_xml(path: &Path) -> Result<String, Box<dyn std::error::Error>
                 if name == "rootfile" || name.ends_with(":rootfile") {
                     for attr in e.attributes().flatten() {
                         if attr.key.as_ref() == b"full-path" {
-                            let path_str =
-                                String::from_utf8_lossy(&attr.value).to_string();
+                            let path_str = String::from_utf8_lossy(&attr.value).to_string();
                             return Ok(path_str);
                         }
                     }
@@ -156,7 +154,12 @@ pub fn create_epub_from_dir(dir: &Path) -> Result<Vec<u8>, Box<dyn std::error::E
         .compression_method(zip::CompressionMethod::Deflated);
 
     // Walk directory and add all files
-    fn add_dir(zip: &mut zip::ZipWriter<std::io::Cursor<Vec<u8>>>, base: &Path, dir: &Path, options: zip::write::SimpleFileOptions) -> Result<(), Box<dyn std::error::Error>> {
+    fn add_dir(
+        zip: &mut zip::ZipWriter<std::io::Cursor<Vec<u8>>>,
+        base: &Path,
+        dir: &Path,
+        options: zip::write::SimpleFileOptions,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
@@ -181,7 +184,11 @@ pub fn create_epub_from_dir(dir: &Path) -> Result<Vec<u8>, Box<dyn std::error::E
 pub fn cleanup_temp_dir(temp_dir: &Path) {
     if temp_dir.exists() {
         if let Err(e) = fs::remove_dir_all(temp_dir) {
-            eprintln!("Warning: failed to clean up temp dir {}: {}", temp_dir.display(), e);
+            eprintln!(
+                "Warning: failed to clean up temp dir {}: {}",
+                temp_dir.display(),
+                e
+            );
         }
     }
 }

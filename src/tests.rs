@@ -57,9 +57,7 @@ mod tests {
     fn parse_exth_records(record0: &[u8]) -> HashMap<u32, Vec<Vec<u8>>> {
         let mut results: HashMap<u32, Vec<Vec<u8>>> = HashMap::new();
         // Find EXTH magic in record 0
-        let exth_pos = record0
-            .windows(4)
-            .position(|w| w == b"EXTH");
+        let exth_pos = record0.windows(4).position(|w| w == b"EXTH");
         if let Some(pos) = exth_pos {
             let exth_len = read_u32_be(record0, pos + 4) as usize;
             let rec_count = read_u32_be(record0, pos + 8);
@@ -112,10 +110,7 @@ mod tests {
 
     /// Create a minimal dictionary OPF + HTML in a temp dir with given entries.
     /// Each entry is (headword, &[inflections]).
-    fn create_dict_fixture(
-        dir: &Path,
-        entries: &[(&str, &[&str])],
-    ) -> PathBuf {
+    fn create_dict_fixture(dir: &Path, entries: &[(&str, &[&str])]) -> PathBuf {
         // Build HTML content with idx:entry markup
         let mut html_body = String::new();
         for (hw, iforms) in entries {
@@ -168,10 +163,7 @@ mod tests {
 
     /// Create a minimal book OPF + HTML in a temp dir. If `image_data` is Some,
     /// include an image in the manifest.
-    fn create_book_fixture(
-        dir: &Path,
-        include_image: Option<&[u8]>,
-    ) -> PathBuf {
+    fn create_book_fixture(dir: &Path, include_image: Option<&[u8]>) -> PathBuf {
         let img_tag = if include_image.is_some() {
             r#"<img src="test.jpg"/>"#
         } else {
@@ -226,9 +218,7 @@ mod tests {
 
     /// Generate a minimal valid JPEG image (10x10 pixels, grayscale).
     fn make_test_jpeg() -> Vec<u8> {
-        let img = image::GrayImage::from_fn(10, 10, |x, y| {
-            image::Luma([((x + y) * 12) as u8])
-        });
+        let img = image::GrayImage::from_fn(10, 10, |x, y| image::Luma([((x + y) * 12) as u8]));
         let dyn_img = image::DynamicImage::ImageLuma8(img);
         let mut buf = Vec::new();
         let mut cursor = std::io::Cursor::new(&mut buf);
@@ -291,17 +281,18 @@ mod tests {
         let opf = create_dict_fixture(dir.path(), &[("test", &[])]);
         let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
         let (_, record_count, _) = parse_palmdb(&data);
-        assert!(record_count > 0, "Record count should be > 0, got {}", record_count);
+        assert!(
+            record_count > 0,
+            "Record count should be > 0, got {}",
+            record_count
+        );
         println!("  \u{2713} Record count: {}", record_count);
     }
 
     #[test]
     fn test_palmdb_offsets_monotonic_and_in_bounds() {
         let dir = TempDir::new("palmdb_offsets");
-        let opf = create_dict_fixture(
-            dir.path(),
-            &[("alpha", &[]), ("beta", &[]), ("gamma", &[])],
-        );
+        let opf = create_dict_fixture(dir.path(), &[("alpha", &[]), ("beta", &[]), ("gamma", &[])]);
         let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
         let (_, _, offsets) = parse_palmdb(&data);
 
@@ -323,7 +314,10 @@ mod tests {
                 data.len()
             );
         }
-        println!("  \u{2713} {} offsets monotonic and in bounds", offsets.len());
+        println!(
+            "  \u{2713} {} offsets monotonic and in bounds",
+            offsets.len()
+        );
     }
 
     #[test]
@@ -338,12 +332,11 @@ mod tests {
 
         // Effective name (before first null) must be <= 31 bytes
         let name_len = name_bytes.iter().position(|&b| b == 0).unwrap_or(32);
-        assert!(
-            name_len <= 31,
-            "PalmDB name too long: {} bytes",
+        assert!(name_len <= 31, "PalmDB name too long: {} bytes", name_len);
+        println!(
+            "  \u{2713} PalmDB name null-terminated, length={}",
             name_len
         );
-        println!("  \u{2713} PalmDB name null-terminated, length={}", name_len);
     }
 
     // =======================================================================
@@ -359,7 +352,11 @@ mod tests {
         let rec0 = get_record(&data, &offsets, 0);
 
         // MOBI magic starts at offset 16 in record 0 (after PalmDOC header)
-        assert_eq!(&rec0[16..20], b"MOBI", "MOBI magic not found at expected position");
+        assert_eq!(
+            &rec0[16..20],
+            b"MOBI",
+            "MOBI magic not found at expected position"
+        );
         println!("  \u{2713} MOBI magic at rec0 offset 16");
     }
 
@@ -372,7 +369,11 @@ mod tests {
         let rec0 = get_record(&data, &offsets, 0);
 
         let header_len = read_u32_be(rec0, 20); // offset 16+4 in rec0 = MOBI header length
-        assert_eq!(header_len, 264, "MOBI header length should be 264, got {}", header_len);
+        assert_eq!(
+            header_len, 264,
+            "MOBI header length should be 264, got {}",
+            header_len
+        );
         println!("  \u{2713} MOBI header length: {}", header_len);
     }
 
@@ -385,7 +386,11 @@ mod tests {
         let rec0 = get_record(&data, &offsets, 0);
 
         let encoding = read_u32_be(rec0, 28); // PalmDOC(16) + "MOBI"(4) + len(4) + type(4) + encoding(4)
-        assert_eq!(encoding, 65001, "Encoding should be 65001 (UTF-8), got {}", encoding);
+        assert_eq!(
+            encoding, 65001,
+            "Encoding should be 65001 (UTF-8), got {}",
+            encoding
+        );
         println!("  \u{2713} MOBI encoding: {} (UTF-8)", encoding);
     }
 
@@ -481,7 +486,10 @@ mod tests {
 
         // Orth index record at MOBI header offset 24 (record0 offset 16+24 = 40)
         let orth_idx = read_u32_be(rec0, 40);
-        assert_ne!(orth_idx, 0xFFFFFFFF, "Dictionary should have orth_index != 0xFFFFFFFF");
+        assert_ne!(
+            orth_idx, 0xFFFFFFFF,
+            "Dictionary should have orth_index != 0xFFFFFFFF"
+        );
         println!("  \u{2713} Dict orth_index: {}", orth_idx);
     }
 
@@ -501,7 +509,11 @@ mod tests {
         let rec0 = get_record(&data, &offsets, 0);
 
         let orth_idx = read_u32_be(rec0, 40) as usize;
-        assert!(orth_idx < offsets.len(), "Orth index record {} out of range", orth_idx);
+        assert!(
+            orth_idx < offsets.len(),
+            "Orth index record {} out of range",
+            orth_idx
+        );
 
         // Check that the INDX record starts with "INDX" magic
         let indx_rec = get_record(&data, &offsets, orth_idx);
@@ -516,18 +528,24 @@ mod tests {
     #[test]
     fn test_dict_exth_531_532_547() {
         let dir = TempDir::new("dict_exth");
-        let opf = create_dict_fixture(
-            dir.path(),
-            &[("word", &["words"])],
-        );
+        let opf = create_dict_fixture(dir.path(), &[("word", &["words"])]);
         let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
         let (_, _, offsets) = parse_palmdb(&data);
         let rec0 = get_record(&data, &offsets, 0);
         let exth = parse_exth_records(rec0);
 
-        assert!(exth.contains_key(&531), "Dictionary EXTH should contain record 531 (DictionaryInLanguage)");
-        assert!(exth.contains_key(&532), "Dictionary EXTH should contain record 532 (DictionaryOutLanguage)");
-        assert!(exth.contains_key(&547), "Dictionary EXTH should contain record 547 (InMemory)");
+        assert!(
+            exth.contains_key(&531),
+            "Dictionary EXTH should contain record 531 (DictionaryInLanguage)"
+        );
+        assert!(
+            exth.contains_key(&532),
+            "Dictionary EXTH should contain record 532 (DictionaryOutLanguage)"
+        );
+        assert!(
+            exth.contains_key(&547),
+            "Dictionary EXTH should contain record 547 (InMemory)"
+        );
         println!("  \u{2713} Dict EXTH has 531, 532, 547");
     }
 
@@ -569,7 +587,8 @@ mod tests {
             );
             let output = dir.join("output.mobi");
             mobi::build_mobi(
-                &opf, &output, true, false, None, false, false, false, false, None, false, false, false, strict,
+                &opf, &output, true, false, None, false, false, false, false, None, false, false,
+                false, strict,
             )
             .expect("build_mobi failed");
             fs::read(&output).unwrap()
@@ -658,7 +677,10 @@ mod tests {
 
         // first_image_record is at MOBI header offset 92 (rec0 offset 16+92 = 108)
         let first_img = read_u32_be(rec0, 108) as usize;
-        assert_ne!(first_img, 0xFFFFFFFF_u32 as usize, "Book with image should have first_image set");
+        assert_ne!(
+            first_img, 0xFFFFFFFF_u32 as usize,
+            "Book with image should have first_image set"
+        );
 
         // Verify the image record starts with JPEG magic
         let img_rec = get_record(&data, &offsets, first_img);
@@ -666,7 +688,10 @@ mod tests {
             img_rec.len() >= 2 && img_rec[0] == 0xFF && img_rec[1] == 0xD8,
             "Image record should start with JPEG magic (FF D8)"
         );
-        println!("  \u{2713} Image record at index {}, starts with JPEG magic FF D8", first_img);
+        println!(
+            "  \u{2713} Image record at index {}, starts with JPEG magic FF D8",
+            first_img
+        );
     }
 
     #[test]
@@ -686,7 +711,10 @@ mod tests {
                 break;
             }
         }
-        assert!(found_boundary, "Book MOBI should contain a BOUNDARY record for KF8 dual format");
+        assert!(
+            found_boundary,
+            "Book MOBI should contain a BOUNDARY record for KF8 dual format"
+        );
         println!("  \u{2713} BOUNDARY record found in dual-format book");
     }
 
@@ -719,8 +747,16 @@ mod tests {
 
         // KF8 version should be 8
         let kf8_version = read_u32_be(kf8_rec0, 36);
-        assert_eq!(kf8_version, 8, "KF8 version should be 8, got {}", kf8_version);
-        println!("  \u{2713} KF8 section after BOUNDARY at idx {}, version={}", boundary_idx + 1, kf8_version);
+        assert_eq!(
+            kf8_version, 8,
+            "KF8 version should be 8, got {}",
+            kf8_version
+        );
+        println!(
+            "  \u{2713} KF8 section after BOUNDARY at idx {}, version={}",
+            boundary_idx + 1,
+            kf8_version
+        );
     }
 
     // =======================================================================
@@ -728,10 +764,7 @@ mod tests {
     // =======================================================================
 
     /// Build a KF8-only MOBI from an OPF path and return the raw bytes.
-    fn build_kf8_only_mobi_bytes(
-        opf_path: &Path,
-        output_dir: &Path,
-    ) -> Vec<u8> {
+    fn build_kf8_only_mobi_bytes(opf_path: &Path, output_dir: &Path) -> Vec<u8> {
         let output_path = output_dir.join("output.azw3");
         mobi::build_mobi(
             opf_path,
@@ -771,8 +804,15 @@ mod tests {
 
         // Min version at MOBI header offset 88 (rec0 offset 104)
         let min_version = read_u32_be(rec0, 104);
-        assert_eq!(min_version, 8, "KF8-only min_version should be 8, got {}", min_version);
-        println!("  \u{2713} KF8-only rec0: version={}, min_version={}", version, min_version);
+        assert_eq!(
+            min_version, 8,
+            "KF8-only min_version should be 8, got {}",
+            min_version
+        );
+        println!(
+            "  \u{2713} KF8-only rec0: version={}, min_version={}",
+            version, min_version
+        );
     }
 
     #[test]
@@ -791,7 +831,8 @@ mod tests {
                 let next_rec = get_record(&data, &offsets, i + 1);
                 assert!(
                     next_rec.len() < 20 || &next_rec[16..20] != b"MOBI",
-                    "KF8-only should not have a BOUNDARY separating KF7/KF8 sections (found at index {})", i
+                    "KF8-only should not have a BOUNDARY separating KF7/KF8 sections (found at index {})",
+                    i
                 );
             }
         }
@@ -801,7 +842,10 @@ mod tests {
         assert_eq!(&rec0[16..20], b"MOBI");
         let version = read_u32_be(rec0, 36);
         assert_eq!(version, 8, "The sole Record 0 should be version 8 (KF8)");
-        println!("  \u{2713} KF8-only: no KF7/KF8 BOUNDARY, sole rec0 version={}", version);
+        println!(
+            "  \u{2713} KF8-only: no KF7/KF8 BOUNDARY, sole rec0 version={}",
+            version
+        );
     }
 
     #[test]
@@ -834,8 +878,7 @@ mod tests {
         // first_image_record at MOBI header offset 92 (rec0 offset 108)
         let first_img = read_u32_be(rec0, 108) as usize;
         assert_ne!(
-            first_img,
-            0xFFFFFFFF_u32 as usize,
+            first_img, 0xFFFFFFFF_u32 as usize,
             "KF8-only with image should have first_image set"
         );
 
@@ -845,7 +888,10 @@ mod tests {
             img_rec.len() >= 2 && img_rec[0] == 0xFF && img_rec[1] == 0xD8,
             "Image record should start with JPEG magic (FF D8)"
         );
-        println!("  \u{2713} KF8-only: image at index {}, JPEG magic ok", first_img);
+        println!(
+            "  \u{2713} KF8-only: image at index {}, JPEG magic ok",
+            first_img
+        );
     }
 
     #[test]
@@ -903,7 +949,11 @@ mod tests {
             kf8_data.len(),
             dual_data.len()
         );
-        println!("  \u{2713} KF8-only {} bytes < dual {} bytes", kf8_data.len(), dual_data.len());
+        println!(
+            "  \u{2713} KF8-only {} bytes < dual {} bytes",
+            kf8_data.len(),
+            dual_data.len()
+        );
     }
 
     #[test]
@@ -964,7 +1014,10 @@ mod tests {
         let rec0 = get_record(&data, &offsets, 0);
         let exth = parse_exth_records(rec0);
 
-        assert!(exth.contains_key(&547), "Book EXTH should contain 547 (InMemory)");
+        assert!(
+            exth.contains_key(&547),
+            "Book EXTH should contain 547 (InMemory)"
+        );
         println!("  \u{2713} Book EXTH 547 (InMemory) present");
     }
 
@@ -980,7 +1033,11 @@ mod tests {
 
         let exth535 = exth.get(&535).expect("EXTH 535 should exist");
         let value = std::str::from_utf8(&exth535[0]).unwrap();
-        assert_eq!(value, "0730-890adc2", "Default EXTH 535 should be '0730-890adc2', got '{}'", value);
+        assert_eq!(
+            value, "0730-890adc2",
+            "Default EXTH 535 should be '0730-890adc2', got '{}'",
+            value
+        );
         println!("  \u{2713} EXTH 535 = '{}'", value);
     }
 
@@ -1052,12 +1109,19 @@ mod tests {
             input.as_slice(),
             "Roundtrip failed for short input"
         );
-        println!("  \u{2713} Short input roundtrip: {} -> {} -> {} bytes", input.len(), compressed.len(), decompressed.len());
+        println!(
+            "  \u{2713} Short input roundtrip: {} -> {} -> {} bytes",
+            input.len(),
+            compressed.len(),
+            decompressed.len()
+        );
     }
 
     #[test]
     fn test_compress_roundtrip_exact_4096() {
-        let input: Vec<u8> = (0..4096).map(|i| b"abcdefghijklmnopqrstuvwxyz"[i % 26]).collect();
+        let input: Vec<u8> = (0..4096)
+            .map(|i| b"abcdefghijklmnopqrstuvwxyz"[i % 26])
+            .collect();
         let compressed = palmdoc::compress(&input);
         let decompressed = palmdoc_decompress(&compressed);
         assert_eq!(
@@ -1065,7 +1129,10 @@ mod tests {
             input.as_slice(),
             "Roundtrip failed for 4096-byte input"
         );
-        println!("  \u{2713} 4096-byte roundtrip: compressed to {} bytes", compressed.len());
+        println!(
+            "  \u{2713} 4096-byte roundtrip: compressed to {} bytes",
+            compressed.len()
+        );
     }
 
     #[test]
@@ -1081,7 +1148,11 @@ mod tests {
             input.as_slice(),
             "Roundtrip failed for multi-record input"
         );
-        println!("  \u{2713} Multi-record roundtrip: {} -> {} bytes", input.len(), compressed.len());
+        println!(
+            "  \u{2713} Multi-record roundtrip: {} -> {} bytes",
+            input.len(),
+            compressed.len()
+        );
     }
 
     #[test]
@@ -1094,7 +1165,11 @@ mod tests {
             input,
             "Roundtrip failed for UTF-8 input"
         );
-        println!("  \u{2713} UTF-8 roundtrip: {} -> {} bytes", input.len(), compressed.len());
+        println!(
+            "  \u{2713} UTF-8 roundtrip: {} -> {} bytes",
+            input.len(),
+            compressed.len()
+        );
     }
 
     // =======================================================================
@@ -1132,7 +1207,10 @@ mod tests {
         // Data length at offset 8
         let data_len = read_u32_be(srcs_rec, 8) as usize;
         assert_eq!(data_len, fake_epub.len(), "SRCS data length mismatch");
-        println!("  \u{2713} SRCS at index {}, header_len={}, data_len={}", srcs_idx, header_len, data_len);
+        println!(
+            "  \u{2713} SRCS at index {}, header_len={}, data_len={}",
+            srcs_idx, header_len, data_len
+        );
     }
 
     #[test]
@@ -1155,8 +1233,15 @@ mod tests {
 
         // Verify it actually points to a record starting with "SRCS"
         let srcs_rec = get_record(&data, &offsets, srcs_from_header as usize);
-        assert_eq!(&srcs_rec[0..4], b"SRCS", "Record pointed to by MOBI header offset 208 should be SRCS");
-        println!("  \u{2713} MOBI header offset 208 -> SRCS record {}", srcs_from_header);
+        assert_eq!(
+            &srcs_rec[0..4],
+            b"SRCS",
+            "Record pointed to by MOBI header offset 208 should be SRCS"
+        );
+        println!(
+            "  \u{2713} MOBI header offset 208 -> SRCS record {}",
+            srcs_from_header
+        );
     }
 
     // =======================================================================
@@ -1174,7 +1259,11 @@ mod tests {
         // Create 3 small test images using the image crate
         for i in 0..3 {
             let img = image::RgbImage::from_fn(100, 150, |x, y| {
-                image::Rgb([(x as u8).wrapping_add(i * 50), (y as u8).wrapping_add(i * 30), 128])
+                image::Rgb([
+                    (x as u8).wrapping_add(i * 50),
+                    (y as u8).wrapping_add(i * 30),
+                    128,
+                ])
             });
             let dyn_img = image::DynamicImage::ImageRgb8(img);
             let path = images_dir.join(format!("page_{:03}.jpg", i));
@@ -1183,8 +1272,7 @@ mod tests {
 
         let output_path = dir.path().join("comic.mobi");
         let profile = comic::get_profile("paperwhite").unwrap();
-        comic::build_comic(&images_dir, &output_path, &profile)
-            .expect("build_comic failed");
+        comic::build_comic(&images_dir, &output_path, &profile).expect("build_comic failed");
 
         // Verify output exists and is a valid MOBI
         let data = fs::read(&output_path).expect("could not read comic MOBI");
@@ -1199,10 +1287,15 @@ mod tests {
 
         // Check for EXTH 122 = "true" (fixed-layout flag)
         let exth = parse_exth_records(rec0);
-        let exth122 = exth.get(&122).expect("Comic EXTH should contain record 122 (fixed-layout)");
+        let exth122 = exth
+            .get(&122)
+            .expect("Comic EXTH should contain record 122 (fixed-layout)");
         let value = std::str::from_utf8(&exth122[0]).unwrap();
         assert_eq!(value, "true", "EXTH 122 should be 'true' for fixed-layout");
-        println!("  \u{2713} Comic pipeline: {} bytes, EXTH 122=true", data.len());
+        println!(
+            "  \u{2713} Comic pipeline: {} bytes, EXTH 122=true",
+            data.len()
+        );
     }
 
     // =======================================================================
@@ -1213,10 +1306,13 @@ mod tests {
     fn test_spread_detection_landscape() {
         use crate::comic;
         // Landscape image (wider than tall) should be detected as a spread
-        let wide = image::DynamicImage::ImageRgb8(
-            image::RgbImage::from_fn(200, 100, |_, _| image::Rgb([128, 128, 128])),
+        let wide = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(200, 100, |_, _| {
+            image::Rgb([128, 128, 128])
+        }));
+        assert!(
+            comic::is_double_page_spread(&wide),
+            "200x100 should be detected as spread"
         );
-        assert!(comic::is_double_page_spread(&wide), "200x100 should be detected as spread");
         println!("  \u{2713} 200x100 landscape detected as spread");
     }
 
@@ -1224,10 +1320,13 @@ mod tests {
     fn test_spread_detection_portrait() {
         use crate::comic;
         // Portrait image (taller than wide) should not be a spread
-        let tall = image::DynamicImage::ImageRgb8(
-            image::RgbImage::from_fn(100, 200, |_, _| image::Rgb([128, 128, 128])),
+        let tall = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(100, 200, |_, _| {
+            image::Rgb([128, 128, 128])
+        }));
+        assert!(
+            !comic::is_double_page_spread(&tall),
+            "100x200 should not be detected as spread"
         );
-        assert!(!comic::is_double_page_spread(&tall), "100x200 should not be detected as spread");
         println!("  \u{2713} 100x200 portrait not a spread");
     }
 
@@ -1235,10 +1334,13 @@ mod tests {
     fn test_spread_detection_square() {
         use crate::comic;
         // Square image should not be a spread (width == height, not >)
-        let square = image::DynamicImage::ImageRgb8(
-            image::RgbImage::from_fn(100, 100, |_, _| image::Rgb([128, 128, 128])),
+        let square = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(100, 100, |_, _| {
+            image::Rgb([128, 128, 128])
+        }));
+        assert!(
+            !comic::is_double_page_spread(&square),
+            "100x100 should not be detected as spread"
         );
-        assert!(!comic::is_double_page_spread(&square), "100x100 should not be detected as spread");
         println!("  \u{2713} 100x100 square not a spread");
     }
 
@@ -1247,22 +1349,34 @@ mod tests {
         use crate::comic;
         use image::GenericImageView;
         // Split a 200x100 landscape image into two ~100x100 halves
-        let wide = image::DynamicImage::ImageRgb8(
-            image::RgbImage::from_fn(200, 100, |x, _| {
-                // Left half is dark, right half is bright
-                if x < 100 { image::Rgb([50, 50, 50]) } else { image::Rgb([200, 200, 200]) }
-            }),
-        );
+        let wide = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(200, 100, |x, _| {
+            // Left half is dark, right half is bright
+            if x < 100 {
+                image::Rgb([50, 50, 50])
+            } else {
+                image::Rgb([200, 200, 200])
+            }
+        }));
 
         let (left, right) = comic::split_spread(&wide);
         assert_eq!(left.dimensions(), (100, 100), "Left half should be 100x100");
-        assert_eq!(right.dimensions(), (100, 100), "Right half should be 100x100");
+        assert_eq!(
+            right.dimensions(),
+            (100, 100),
+            "Right half should be 100x100"
+        );
 
         // Verify content: left half should be dark, right half bright
         let left_rgb = left.to_rgb8();
         let right_rgb = right.to_rgb8();
-        assert!(left_rgb.get_pixel(50, 50).0[0] < 100, "Left half should be dark");
-        assert!(right_rgb.get_pixel(50, 50).0[0] > 100, "Right half should be bright");
+        assert!(
+            left_rgb.get_pixel(50, 50).0[0] < 100,
+            "Left half should be dark"
+        );
+        assert!(
+            right_rgb.get_pixel(50, 50).0[0] > 100,
+            "Right half should be bright"
+        );
         println!("  \u{2713} Spread split: 200x100 -> two 100x100 halves, content correct");
     }
 
@@ -1272,15 +1386,13 @@ mod tests {
         use image::GenericImageView;
         // Create 100x100 image with thick white border (10% on each side)
         // and dark content in the center
-        let img = image::DynamicImage::ImageLuma8(
-            image::GrayImage::from_fn(100, 100, |x, y| {
-                if x >= 10 && x < 90 && y >= 10 && y < 90 {
-                    image::Luma([50]) // dark content
-                } else {
-                    image::Luma([255]) // white border
-                }
-            }),
-        );
+        let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(100, 100, |x, y| {
+            if x >= 10 && x < 90 && y >= 10 && y < 90 {
+                image::Luma([50]) // dark content
+            } else {
+                image::Luma([255]) // white border
+            }
+        }));
 
         let cropped = comic::crop_borders(&img);
         let (w, h) = cropped.dimensions();
@@ -1289,7 +1401,11 @@ mod tests {
         assert!(h < 100, "Cropped height ({}) should be less than 100", h);
         // The content area is 80x80 (from 10..90), so cropped should be close to that
         assert!(w >= 70 && w <= 85, "Cropped width should be ~80, got {}", w);
-        assert!(h >= 70 && h <= 85, "Cropped height should be ~80, got {}", h);
+        assert!(
+            h >= 70 && h <= 85,
+            "Cropped height should be ~80, got {}",
+            h
+        );
         println!("  \u{2713} White border crop: 100x100 -> {}x{}", w, h);
     }
 
@@ -1298,15 +1414,13 @@ mod tests {
         use crate::comic;
         use image::GenericImageView;
         // Image with black borders (common in scanned manga)
-        let img = image::DynamicImage::ImageLuma8(
-            image::GrayImage::from_fn(100, 100, |x, y| {
-                if x >= 10 && x < 90 && y >= 10 && y < 90 {
-                    image::Luma([200]) // light content
-                } else {
-                    image::Luma([0]) // black border
-                }
-            }),
-        );
+        let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(100, 100, |x, y| {
+            if x >= 10 && x < 90 && y >= 10 && y < 90 {
+                image::Luma([200]) // light content
+            } else {
+                image::Luma([0]) // black border
+            }
+        }));
 
         let cropped = comic::crop_borders(&img);
         let (w, h) = cropped.dimensions();
@@ -1320,11 +1434,9 @@ mod tests {
         use crate::comic;
         use image::GenericImageView;
         // Image with no uniform border - should not be cropped
-        let img = image::DynamicImage::ImageLuma8(
-            image::GrayImage::from_fn(100, 100, |x, y| {
-                image::Luma([((x * 3 + y * 7) % 256) as u8])
-            }),
-        );
+        let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(100, 100, |x, y| {
+            image::Luma([((x * 3 + y * 7) % 256) as u8])
+        }));
 
         let cropped = comic::crop_borders(&img);
         let (w, h) = cropped.dimensions();
@@ -1339,15 +1451,13 @@ mod tests {
         use image::GenericImageView;
         // Image with border < 2% of dimension - should NOT be cropped
         // 1000x1000 image, border of 15 pixels (1.5%) on each side
-        let img = image::DynamicImage::ImageLuma8(
-            image::GrayImage::from_fn(1000, 1000, |x, y| {
-                if x >= 15 && x < 985 && y >= 15 && y < 985 {
-                    image::Luma([100])
-                } else {
-                    image::Luma([255])
-                }
-            }),
-        );
+        let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(1000, 1000, |x, y| {
+            if x >= 15 && x < 985 && y >= 15 && y < 985 {
+                image::Luma([100])
+            } else {
+                image::Luma([255])
+            }
+        }));
 
         let cropped = comic::crop_borders(&img);
         let (w, h) = cropped.dimensions();
@@ -1362,20 +1472,18 @@ mod tests {
         use image::GenericImageView;
         // 500x1000 image: white background, dark content panel from y=50..930,
         // and a small "page number" cluster at the bottom (y=960..980, x=230..270).
-        let img = image::DynamicImage::ImageLuma8(
-            image::GrayImage::from_fn(500, 1000, |x, y| {
-                if y >= 50 && y < 930 && x >= 20 && x < 480 {
-                    // Main content panel (dark)
-                    image::Luma([40])
-                } else if y >= 960 && y < 980 && x >= 230 && x < 270 {
-                    // Small page number cluster at bottom
-                    image::Luma([30])
-                } else {
-                    // White background
-                    image::Luma([255])
-                }
-            }),
-        );
+        let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(500, 1000, |x, y| {
+            if y >= 50 && y < 930 && x >= 20 && x < 480 {
+                // Main content panel (dark)
+                image::Luma([40])
+            } else if y >= 960 && y < 980 && x >= 230 && x < 270 {
+                // Small page number cluster at bottom
+                image::Luma([30])
+            } else {
+                // White background
+                image::Luma([255])
+            }
+        }));
 
         let cropped = comic::crop_page_numbers(&img);
         let (w, h) = cropped.dimensions();
@@ -1393,10 +1501,7 @@ mod tests {
             "Expected height around 940 after bottom crop, got {}",
             h,
         );
-        println!(
-            "  - Bottom page-number crop: 500x1000 -> {}x{}",
-            w, h
-        );
+        println!("  - Bottom page-number crop: 500x1000 -> {}x{}", w, h);
     }
 
     #[test]
@@ -1405,17 +1510,15 @@ mod tests {
         use image::GenericImageView;
         // 500x1000 image: white background, content from y=80..950,
         // and a small page number at the top (y=15..35, x=220..260).
-        let img = image::DynamicImage::ImageLuma8(
-            image::GrayImage::from_fn(500, 1000, |x, y| {
-                if y >= 80 && y < 950 && x >= 20 && x < 480 {
-                    image::Luma([40])
-                } else if y >= 15 && y < 35 && x >= 220 && x < 260 {
-                    image::Luma([30])
-                } else {
-                    image::Luma([255])
-                }
-            }),
-        );
+        let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(500, 1000, |x, y| {
+            if y >= 80 && y < 950 && x >= 20 && x < 480 {
+                image::Luma([40])
+            } else if y >= 15 && y < 35 && x >= 220 && x < 260 {
+                image::Luma([30])
+            } else {
+                image::Luma([255])
+            }
+        }));
 
         let cropped = comic::crop_page_numbers(&img);
         let (w, h) = cropped.dimensions();
@@ -1425,10 +1528,7 @@ mod tests {
             "Page number strip at top should be cropped, but height is still {}",
             h,
         );
-        println!(
-            "  - Top page-number crop: 500x1000 -> {}x{}",
-            w, h
-        );
+        println!("  - Top page-number crop: 500x1000 -> {}x{}", w, h);
     }
 
     #[test]
@@ -1438,26 +1538,21 @@ mod tests {
         // 500x1000 image: content fills the entire image (no blank strips at
         // top or bottom that could be mistaken for a page number strip).
         // Alternate dark and light rows to simulate varied comic content.
-        let img = image::DynamicImage::ImageLuma8(
-            image::GrayImage::from_fn(500, 1000, |x, y| {
-                // Dense content everywhere: alternating block pattern
-                let block = ((x / 20) + (y / 20)) % 3;
-                match block {
-                    0 => image::Luma([30]),
-                    1 => image::Luma([128]),
-                    _ => image::Luma([220]),
-                }
-            }),
-        );
+        let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(500, 1000, |x, y| {
+            // Dense content everywhere: alternating block pattern
+            let block = ((x / 20) + (y / 20)) % 3;
+            match block {
+                0 => image::Luma([30]),
+                1 => image::Luma([128]),
+                _ => image::Luma([220]),
+            }
+        }));
 
         let cropped = comic::crop_page_numbers(&img);
         let (w, h) = cropped.dimensions();
         assert_eq!(w, 500, "Full-content image width should be unchanged");
         assert_eq!(h, 1000, "Full-content image height should be unchanged");
-        println!(
-            "  - Full-content image not cropped: {}x{}",
-            w, h
-        );
+        println!("  - Full-content image not cropped: {}x{}", w, h);
     }
 
     #[test]
@@ -1466,20 +1561,18 @@ mod tests {
         use image::GenericImageView;
         // 500x1000 image with dark/black background (common in manga).
         // Content panel from y=60..920, small light page number at bottom.
-        let img = image::DynamicImage::ImageLuma8(
-            image::GrayImage::from_fn(500, 1000, |x, y| {
-                if y >= 60 && y < 920 && x >= 20 && x < 480 {
-                    // Content panel (lighter than background)
-                    image::Luma([200])
-                } else if y >= 960 && y < 980 && x >= 230 && x < 270 {
-                    // Small page number (white text on dark background)
-                    image::Luma([240])
-                } else {
-                    // Dark/black background
-                    image::Luma([5])
-                }
-            }),
-        );
+        let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(500, 1000, |x, y| {
+            if y >= 60 && y < 920 && x >= 20 && x < 480 {
+                // Content panel (lighter than background)
+                image::Luma([200])
+            } else if y >= 960 && y < 980 && x >= 230 && x < 270 {
+                // Small page number (white text on dark background)
+                image::Luma([240])
+            } else {
+                // Dark/black background
+                image::Luma([5])
+            }
+        }));
 
         let cropped = comic::crop_page_numbers(&img);
         let (w, h) = cropped.dimensions();
@@ -1489,10 +1582,7 @@ mod tests {
             "Dark-background page number strip should be cropped, but height is still {}",
             h,
         );
-        println!(
-            "  - Dark-bg page-number crop: 500x1000 -> {}x{}",
-            w, h
-        );
+        println!("  - Dark-bg page-number crop: 500x1000 -> {}x{}", w, h);
     }
 
     #[test]
@@ -1503,18 +1593,16 @@ mod tests {
         // block at the bottom spanning >35% of width. This should NOT be
         // cropped because it looks like real content (a footer, caption, etc.),
         // not a small page number.
-        let img = image::DynamicImage::ImageLuma8(
-            image::GrayImage::from_fn(500, 1000, |x, y| {
-                if y >= 50 && y < 920 && x >= 20 && x < 480 {
-                    image::Luma([40])
-                } else if y >= 960 && y < 980 && x >= 50 && x < 350 {
-                    // Wide text block at bottom (60% of width)
-                    image::Luma([30])
-                } else {
-                    image::Luma([255])
-                }
-            }),
-        );
+        let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(500, 1000, |x, y| {
+            if y >= 50 && y < 920 && x >= 20 && x < 480 {
+                image::Luma([40])
+            } else if y >= 960 && y < 980 && x >= 50 && x < 350 {
+                // Wide text block at bottom (60% of width)
+                image::Luma([30])
+            } else {
+                image::Luma([255])
+            }
+        }));
 
         let cropped = comic::crop_page_numbers(&img);
         let (w, h) = cropped.dimensions();
@@ -1524,21 +1612,16 @@ mod tests {
             "Wide bottom content should NOT be cropped (not a page number), but height is {}",
             h,
         );
-        println!(
-            "  - Wide bottom content preserved: {}x{}",
-            w, h
-        );
+        println!("  - Wide bottom content preserved: {}x{}", w, h);
     }
 
     #[test]
     fn test_enhance_expands_histogram() {
         use crate::comic;
         // Create a low-contrast image (pixel values 100..150)
-        let img = image::DynamicImage::ImageLuma8(
-            image::GrayImage::from_fn(100, 100, |x, y| {
-                image::Luma([(100 + ((x + y) % 50)) as u8])
-            }),
-        );
+        let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(100, 100, |x, y| {
+            image::Luma([(100 + ((x + y) % 50)) as u8])
+        }));
 
         let enhanced = comic::enhance_image(&img);
         let gray = enhanced.to_luma8();
@@ -1548,14 +1631,27 @@ mod tests {
         let mut max_val = 0u8;
         for pixel in gray.pixels() {
             let v = pixel.0[0];
-            if v < min_val { min_val = v; }
-            if v > max_val { max_val = v; }
+            if v < min_val {
+                min_val = v;
+            }
+            if v > max_val {
+                max_val = v;
+            }
         }
 
         // The range should be significantly expanded from the original 50
         let range = max_val as i32 - min_val as i32;
-        assert!(range > 100, "Enhanced image range should be > 100, got {} (min={}, max={})", range, min_val, max_val);
-        println!("  \u{2713} Histogram expanded: range {} (min={}, max={})", range, min_val, max_val);
+        assert!(
+            range > 100,
+            "Enhanced image range should be > 100, got {} (min={}, max={})",
+            range,
+            min_val,
+            max_val
+        );
+        println!(
+            "  \u{2713} Histogram expanded: range {} (min={}, max={})",
+            range, min_val, max_val
+        );
     }
 
     #[test]
@@ -1563,13 +1659,17 @@ mod tests {
         use crate::comic;
         use image::GenericImageView;
         // A completely uniform image should not be changed (high == low guard)
-        let img = image::DynamicImage::ImageLuma8(
-            image::GrayImage::from_fn(50, 50, |_, _| image::Luma([128])),
-        );
+        let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(50, 50, |_, _| {
+            image::Luma([128])
+        }));
 
         let enhanced = comic::enhance_image(&img);
         let (w, h) = enhanced.dimensions();
-        assert_eq!((w, h), (50, 50), "Uniform image dimensions should not change");
+        assert_eq!(
+            (w, h),
+            (50, 50),
+            "Uniform image dimensions should not change"
+        );
         println!("  \u{2713} Uniform image unchanged at {}x{}", w, h);
     }
 
@@ -1594,9 +1694,14 @@ mod tests {
         assert_eq!(meta.writers, vec!["John Writer"]);
         assert_eq!(meta.pencillers, vec!["Jane Artist"]);
         assert_eq!(meta.inkers, vec!["Bob Inker"]);
-        assert_eq!(meta.summary.as_deref(), Some("A thrilling adventure story."));
+        assert_eq!(
+            meta.summary.as_deref(),
+            Some("A thrilling adventure story.")
+        );
         assert!(!meta.manga_rtl, "Should not be manga by default");
-        println!("  \u{2713} ComicInfo parsed: title, series, number, writers, pencillers, inkers, summary");
+        println!(
+            "  \u{2713} ComicInfo parsed: title, series, number, writers, pencillers, inkers, summary"
+        );
     }
 
     #[test]
@@ -1688,9 +1793,10 @@ mod tests {
         // Page 0 = dark, Page 1 = medium, Page 2 = bright
         for i in 0..3u8 {
             let brightness = 50 + i * 80; // 50, 130, 210
-            let img = image::DynamicImage::ImageLuma8(
-                image::GrayImage::from_fn(100, 150, |_, _| image::Luma([brightness])),
-            );
+            let img =
+                image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(100, 150, |_, _| {
+                    image::Luma([brightness])
+                }));
             let path = images_dir.join(format!("page_{:03}.jpg", i));
             img.save(&path).unwrap();
         }
@@ -1705,7 +1811,8 @@ mod tests {
             webtoon: false,
             panel_view: false, // disable for simpler test
             jpeg_quality: 85,
-            max_height: 65536, embed_source: false,
+            max_height: 65536,
+            embed_source: false,
             ..Default::default()
         };
         comic::build_comic_with_options(&images_dir, &output_path, &profile, &options)
@@ -1727,7 +1834,11 @@ mod tests {
         // Verify EXTH 525 = "horizontal-rl" (writing-mode)
         let exth525 = exth.get(&525).expect("RTL comic should have EXTH 525");
         let wm = std::str::from_utf8(&exth525[0]).unwrap();
-        assert_eq!(wm, "horizontal-rl", "EXTH 525 should be 'horizontal-rl', got '{}'", wm);
+        assert_eq!(
+            wm, "horizontal-rl",
+            "EXTH 525 should be 'horizontal-rl', got '{}'",
+            wm
+        );
         println!("  \u{2713} RTL comic: EXTH 527=rtl, EXTH 525=horizontal-rl");
     }
 
@@ -1739,9 +1850,9 @@ mod tests {
         let images_dir = dir.path().join("images");
         fs::create_dir_all(&images_dir).unwrap();
 
-        let img = image::DynamicImage::ImageLuma8(
-            image::GrayImage::from_fn(100, 150, |_, _| image::Luma([128])),
-        );
+        let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(100, 150, |_, _| {
+            image::Luma([128])
+        }));
         img.save(images_dir.join("page_001.jpg")).unwrap();
 
         let output_path = dir.path().join("ltr_comic.mobi");
@@ -1755,7 +1866,11 @@ mod tests {
 
         let exth525 = exth.get(&525).expect("LTR comic should have EXTH 525");
         let wm = std::str::from_utf8(&exth525[0]).unwrap();
-        assert_eq!(wm, "horizontal-lr", "EXTH 525 should be 'horizontal-lr' for LTR, got '{}'", wm);
+        assert_eq!(
+            wm, "horizontal-lr",
+            "EXTH 525 should be 'horizontal-lr' for LTR, got '{}'",
+            wm
+        );
         println!("  \u{2713} LTR comic: EXTH 525=horizontal-lr");
     }
 
@@ -1768,11 +1883,13 @@ mod tests {
         fs::create_dir_all(&images_dir).unwrap();
 
         // Create a single landscape image (wider than tall)
-        let img = image::DynamicImage::ImageRgb8(
-            image::RgbImage::from_fn(300, 150, |x, _| {
-                if x < 150 { image::Rgb([50, 50, 50]) } else { image::Rgb([200, 200, 200]) }
-            }),
-        );
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(300, 150, |x, _| {
+            if x < 150 {
+                image::Rgb([50, 50, 50])
+            } else {
+                image::Rgb([200, 200, 200])
+            }
+        }));
         img.save(images_dir.join("spread_001.jpg")).unwrap();
 
         let output_path = dir.path().join("spread_comic.mobi");
@@ -1785,7 +1902,8 @@ mod tests {
             webtoon: false,
             panel_view: false,
             jpeg_quality: 85,
-            max_height: 65536, embed_source: false,
+            max_height: 65536,
+            embed_source: false,
             ..Default::default()
         };
         comic::build_comic_with_options(&images_dir, &output_path, &profile, &options)
@@ -1796,7 +1914,10 @@ mod tests {
 
         // Verify we got a valid MOBI (the spread should have been split into 2 pages)
         assert_eq!(&data[60..64], b"BOOK");
-        println!("  \u{2713} Spread split pipeline: {} bytes, valid MOBI", data.len());
+        println!(
+            "  \u{2713} Spread split pipeline: {} bytes, valid MOBI",
+            data.len()
+        );
     }
 
     #[test]
@@ -1814,15 +1935,13 @@ mod tests {
         fs::create_dir_all(&images_dir).unwrap();
 
         // Create a landscape image: left half is dark (50), right half is bright (200)
-        let img = image::DynamicImage::ImageLuma8(
-            image::GrayImage::from_fn(300, 150, |x, _| {
-                if x < 150 {
-                    image::Luma([50])   // left half: dark
-                } else {
-                    image::Luma([200])  // right half: bright
-                }
-            }),
-        );
+        let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(300, 150, |x, _| {
+            if x < 150 {
+                image::Luma([50]) // left half: dark
+            } else {
+                image::Luma([200]) // right half: bright
+            }
+        }));
         img.save(images_dir.join("spread_001.jpg")).unwrap();
 
         let output_path = dir.path().join("rtl_spread_cover.mobi");
@@ -1834,7 +1953,7 @@ mod tests {
             enhance: false,
             webtoon: false,
             panel_view: false,
-            jpeg_quality: 95,  // high quality to preserve pixel values
+            jpeg_quality: 95, // high quality to preserve pixel values
             max_height: 65536,
             embed_source: false,
             ..Default::default()
@@ -1848,31 +1967,36 @@ mod tests {
 
         // Find the first image record
         let first_img_idx = read_u32_be(rec0, 108) as usize;
-        assert_ne!(first_img_idx, 0xFFFFFFFF_u32 as usize,
-            "Should have a first image record set");
+        assert_ne!(
+            first_img_idx, 0xFFFFFFFF_u32 as usize,
+            "Should have a first image record set"
+        );
 
         // The cover is the first image record (EXTH 201 = cover_offset = 0)
         let cover_rec = get_record(&data, &offsets, first_img_idx);
-        assert!(cover_rec.len() > 2 && cover_rec[0] == 0xFF && cover_rec[1] == 0xD8,
-            "Cover record should be a JPEG (FF D8 magic)");
+        assert!(
+            cover_rec.len() > 2 && cover_rec[0] == 0xFF && cover_rec[1] == 0xD8,
+            "Cover record should be a JPEG (FF D8 magic)"
+        );
 
         // Decode the cover JPEG and check average brightness
-        let cover_img = image::load_from_memory(cover_rec)
-            .expect("Failed to decode cover JPEG from MOBI");
+        let cover_img =
+            image::load_from_memory(cover_rec).expect("Failed to decode cover JPEG from MOBI");
         let gray = cover_img.to_luma8();
         let (w, h) = (gray.width(), gray.height());
-        let avg_brightness: f64 = gray.pixels()
-            .map(|p| p.0[0] as f64)
-            .sum::<f64>() / (w as f64 * h as f64);
+        let avg_brightness: f64 =
+            gray.pixels().map(|p| p.0[0] as f64).sum::<f64>() / (w as f64 * h as f64);
 
         // The right half of the original was bright (~200). After grayscale
         // conversion and JPEG compression, the average should be well above 150.
         // The left half was dark (~50). If the wrong half were used, avg would be < 100.
-        assert!(avg_brightness > 150.0,
+        assert!(
+            avg_brightness > 150.0,
             "RTL cover should be the RIGHT (bright) half of the spread, \
              but average brightness was {:.1} (expected > 150). \
              This suggests the LEFT (dark) half was incorrectly used as the cover.",
-            avg_brightness);
+            avg_brightness
+        );
 
         // Also verify LTR mode uses the LEFT (dark) half as cover
         let ltr_output = dir.path().join("ltr_spread_cover.mobi");
@@ -1896,22 +2020,25 @@ mod tests {
         let ltr_rec0 = get_record(&ltr_data, &ltr_offsets, 0);
         let ltr_first_img = read_u32_be(ltr_rec0, 108) as usize;
         let ltr_cover_rec = get_record(&ltr_data, &ltr_offsets, ltr_first_img);
-        let ltr_cover_img = image::load_from_memory(ltr_cover_rec)
-            .expect("Failed to decode LTR cover JPEG");
+        let ltr_cover_img =
+            image::load_from_memory(ltr_cover_rec).expect("Failed to decode LTR cover JPEG");
         let ltr_gray = ltr_cover_img.to_luma8();
         let (lw, lh) = (ltr_gray.width(), ltr_gray.height());
-        let ltr_avg: f64 = ltr_gray.pixels()
-            .map(|p| p.0[0] as f64)
-            .sum::<f64>() / (lw as f64 * lh as f64);
+        let ltr_avg: f64 =
+            ltr_gray.pixels().map(|p| p.0[0] as f64).sum::<f64>() / (lw as f64 * lh as f64);
 
-        assert!(ltr_avg < 100.0,
+        assert!(
+            ltr_avg < 100.0,
             "LTR cover should be the LEFT (dark) half of the spread, \
              but average brightness was {:.1} (expected < 100).",
-            ltr_avg);
+            ltr_avg
+        );
 
-        println!("  \u{2713} RTL spread cover: brightness={:.1} (right/bright half), \
+        println!(
+            "  \u{2713} RTL spread cover: brightness={:.1} (right/bright half), \
                   LTR cover: brightness={:.1} (left/dark half)",
-                  avg_brightness, ltr_avg);
+            avg_brightness, ltr_avg
+        );
     }
 
     #[test]
@@ -1923,9 +2050,9 @@ mod tests {
         fs::create_dir_all(&images_dir).unwrap();
 
         // Create a single landscape image
-        let img = image::DynamicImage::ImageRgb8(
-            image::RgbImage::from_fn(300, 150, |_, _| image::Rgb([128, 128, 128])),
-        );
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(300, 150, |_, _| {
+            image::Rgb([128, 128, 128])
+        }));
         img.save(images_dir.join("spread_001.jpg")).unwrap();
 
         let output_split = dir.path().join("split.mobi");
@@ -1934,19 +2061,34 @@ mod tests {
 
         // With splitting
         let opt_split = comic::ComicOptions {
-            rtl: false, split: true, crop: 0, enhance: false, webtoon: false, panel_view: false,
-            jpeg_quality: 85, max_height: 65536, embed_source: false,
+            rtl: false,
+            split: true,
+            crop: 0,
+            enhance: false,
+            webtoon: false,
+            panel_view: false,
+            jpeg_quality: 85,
+            max_height: 65536,
+            embed_source: false,
             ..Default::default()
         };
         comic::build_comic_with_options(&images_dir, &output_split, &profile, &opt_split).unwrap();
 
         // Without splitting
         let opt_nosplit = comic::ComicOptions {
-            rtl: false, split: false, crop: 0, enhance: false, webtoon: false, panel_view: false,
-            jpeg_quality: 85, max_height: 65536, embed_source: false,
+            rtl: false,
+            split: false,
+            crop: 0,
+            enhance: false,
+            webtoon: false,
+            panel_view: false,
+            jpeg_quality: 85,
+            max_height: 65536,
+            embed_source: false,
             ..Default::default()
         };
-        comic::build_comic_with_options(&images_dir, &output_nosplit, &profile, &opt_nosplit).unwrap();
+        comic::build_comic_with_options(&images_dir, &output_nosplit, &profile, &opt_nosplit)
+            .unwrap();
 
         let data_split = fs::read(&output_split).unwrap();
         let data_nosplit = fs::read(&output_nosplit).unwrap();
@@ -1957,9 +2099,13 @@ mod tests {
         assert!(
             rc_split > rc_nosplit,
             "Split version should have more records ({}) than no-split ({})",
+            rc_split,
+            rc_nosplit
+        );
+        println!(
+            "  \u{2713} Split {} records > no-split {} records",
             rc_split, rc_nosplit
         );
-        println!("  \u{2713} Split {} records > no-split {} records", rc_split, rc_nosplit);
     }
 
     #[test]
@@ -1970,9 +2116,9 @@ mod tests {
         let images_dir = dir.path().join("images");
         fs::create_dir_all(&images_dir).unwrap();
 
-        let img = image::DynamicImage::ImageRgb8(
-            image::RgbImage::from_fn(100, 150, |_, _| image::Rgb([128, 128, 128])),
-        );
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(100, 150, |_, _| {
+            image::Rgb([128, 128, 128])
+        }));
         img.save(images_dir.join("page_001.jpg")).unwrap();
 
         // Build with colorsoft (color device) - should work without errors
@@ -1980,8 +2126,15 @@ mod tests {
         let profile = comic::get_profile("colorsoft").unwrap();
         assert!(!profile.grayscale, "colorsoft should not be grayscale");
         let options = comic::ComicOptions {
-            rtl: false, split: false, crop: 0, enhance: true, webtoon: false, panel_view: false,
-            jpeg_quality: 85, max_height: 65536, embed_source: false,
+            rtl: false,
+            split: false,
+            crop: 0,
+            enhance: true,
+            webtoon: false,
+            panel_view: false,
+            jpeg_quality: 85,
+            max_height: 65536,
+            embed_source: false,
             ..Default::default()
         };
         comic::build_comic_with_options(&images_dir, &output_path, &profile, &options)
@@ -1989,7 +2142,10 @@ mod tests {
 
         let data = fs::read(&output_path).unwrap();
         assert!(data.len() > 100, "Color comic MOBI should be valid");
-        println!("  \u{2713} Color device with enhance=true: {} bytes, valid", data.len());
+        println!(
+            "  \u{2713} Color device with enhance=true: {} bytes, valid",
+            data.len()
+        );
     }
 
     #[test]
@@ -2001,9 +2157,9 @@ mod tests {
         fs::create_dir_all(&images_dir).unwrap();
 
         // Create an image
-        let img = image::DynamicImage::ImageLuma8(
-            image::GrayImage::from_fn(100, 150, |_, _| image::Luma([128])),
-        );
+        let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(100, 150, |_, _| {
+            image::Luma([128])
+        }));
         img.save(images_dir.join("page_001.jpg")).unwrap();
 
         // Create ComicInfo.xml with manga RTL
@@ -2026,7 +2182,8 @@ mod tests {
             webtoon: false,
             panel_view: false,
             jpeg_quality: 85,
-            max_height: 65536, embed_source: false,
+            max_height: 65536,
+            embed_source: false,
             ..Default::default()
         };
         comic::build_comic_with_options(&images_dir, &output_path, &profile, &options)
@@ -2040,11 +2197,19 @@ mod tests {
         // ComicInfo.xml manga detection should auto-enable RTL
         let exth527 = exth.get(&527).expect("Manga comic should have EXTH 527");
         let ppd = std::str::from_utf8(&exth527[0]).unwrap();
-        assert_eq!(ppd, "rtl", "Manga comic EXTH 527 should be 'rtl', got '{}'", ppd);
+        assert_eq!(
+            ppd, "rtl",
+            "Manga comic EXTH 527 should be 'rtl', got '{}'",
+            ppd
+        );
 
         let exth525 = exth.get(&525).expect("Manga comic should have EXTH 525");
         let wm = std::str::from_utf8(&exth525[0]).unwrap();
-        assert_eq!(wm, "horizontal-rl", "Manga comic EXTH 525 should be 'horizontal-rl', got '{}'", wm);
+        assert_eq!(
+            wm, "horizontal-rl",
+            "Manga comic EXTH 525 should be 'horizontal-rl', got '{}'",
+            wm
+        );
         println!("  \u{2713} ComicInfo.xml auto-RTL: EXTH 527=rtl, 525=horizontal-rl");
     }
 
@@ -2099,7 +2264,12 @@ mod tests {
         let (images, extract_dir) =
             cbr::extract_cbr(&staged).expect("extract_cbr failed for fixture");
 
-        assert_eq!(images.len(), 3, "expected 3 images in test_comic.cbr, got {}", images.len());
+        assert_eq!(
+            images.len(),
+            3,
+            "expected 3 images in test_comic.cbr, got {}",
+            images.len()
+        );
         for (i, img) in images.iter().enumerate() {
             let name = img.file_name().unwrap().to_string_lossy().into_owned();
             let expected = format!("page_{:03}.png", i + 1);
@@ -2221,7 +2391,10 @@ mod tests {
         // Fixed-layout flag should be set for comics (same as test_comic_pipeline).
         let exth122 = exth.get(&122).expect("CBR comic should have EXTH 122");
         let value = std::str::from_utf8(&exth122[0]).unwrap();
-        assert_eq!(value, "true", "EXTH 122 should be 'true' for fixed-layout CBR build");
+        assert_eq!(
+            value, "true",
+            "EXTH 122 should be 'true' for fixed-layout CBR build"
+        );
 
         // The sibling extraction dir should have been cleaned up by the
         // build_comic_with_options finalizer.
@@ -2265,7 +2438,8 @@ mod tests {
 </body></html>"#;
         fs::write(dir.path().join("content.html"), html).unwrap();
 
-        let long_title = "A Very Long Dictionary Title That Exceeds Twenty Seven Characters For Sure";
+        let long_title =
+            "A Very Long Dictionary Title That Exceeds Twenty Seven Characters For Sure";
         let opf = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <package version="2.0" xmlns="http://www.idpf.org/2007/opf">
@@ -2317,7 +2491,10 @@ mod tests {
             "Truncated name should preserve the prefix: '{}'",
             name
         );
-        println!("  \u{2713} Long title truncated to {} bytes: '{}'", name_len, name);
+        println!(
+            "  \u{2713} Long title truncated to {} bytes: '{}'",
+            name_len, name
+        );
     }
 
     #[test]
@@ -2361,7 +2538,11 @@ mod tests {
         let (name_bytes, _, _) = parse_palmdb(&data);
 
         let name_len = name_bytes.iter().position(|&b| b == 0).unwrap_or(32);
-        assert!(name_len <= 31, "Name should be <= 31 bytes, got {}", name_len);
+        assert!(
+            name_len <= 31,
+            "Name should be <= 31 bytes, got {}",
+            name_len
+        );
 
         // Must decode as valid UTF-8 (no splitting multi-byte codepoints).
         let name = std::str::from_utf8(&name_bytes[..name_len])
@@ -2371,7 +2552,10 @@ mod tests {
             "Truncated name should end with '...': '{}'",
             name
         );
-        println!("  \u{2713} UTF-8 title truncated to {} bytes: '{}'", name_len, name);
+        println!(
+            "  \u{2713} UTF-8 title truncated to {} bytes: '{}'",
+            name_len, name
+        );
     }
 
     #[test]
@@ -2410,10 +2594,26 @@ mod tests {
         let name = std::str::from_utf8(&name_bytes[..name_len]).unwrap();
 
         // ()[] should be stripped
-        assert!(!name.contains('('), "Name should not contain '(': '{}'", name);
-        assert!(!name.contains(')'), "Name should not contain ')': '{}'", name);
-        assert!(!name.contains('['), "Name should not contain '[': '{}'", name);
-        assert!(!name.contains(']'), "Name should not contain ']': '{}'", name);
+        assert!(
+            !name.contains('('),
+            "Name should not contain '(': '{}'",
+            name
+        );
+        assert!(
+            !name.contains(')'),
+            "Name should not contain ')': '{}'",
+            name
+        );
+        assert!(
+            !name.contains('['),
+            "Name should not contain '[': '{}'",
+            name
+        );
+        assert!(
+            !name.contains(']'),
+            "Name should not contain ']': '{}'",
+            name
+        );
         println!("  \u{2713} Special chars stripped: '{}'", name);
     }
 
@@ -2491,11 +2691,7 @@ mod tests {
         assert_eq!(jpeg[1], 0xD8, "Expected SOI marker");
 
         // Find the JFIF header and check if it exists
-        if jpeg.len() > 13
-            && jpeg[2] == 0xFF
-            && jpeg[3] == 0xE0
-            && &jpeg[6..11] == b"JFIF\0"
-        {
+        if jpeg.len() > 13 && jpeg[2] == 0xFF && jpeg[3] == 0xE0 && &jpeg[6..11] == b"JFIF\0" {
             // Manually set density_units to 0x00 (aspect ratio) to test patching
             jpeg[13] = 0x00;
 
@@ -2513,10 +2709,7 @@ mod tests {
                 img_rec.len() > 13,
                 "Image record too short to contain JFIF header"
             );
-            if img_rec[2] == 0xFF
-                && img_rec[3] == 0xE0
-                && &img_rec[6..11] == b"JFIF\0"
-            {
+            if img_rec[2] == 0xFF && img_rec[3] == 0xE0 && &img_rec[6..11] == b"JFIF\0" {
                 assert_eq!(
                     img_rec[13], 0x01,
                     "JFIF density_units should be patched from 0x00 to 0x01, got 0x{:02X}",
@@ -2574,10 +2767,7 @@ mod tests {
         let dir_c = TempDir::new("dict_compressed");
         let dir_u = TempDir::new("dict_uncompressed");
 
-        let entries: &[(&str, &[&str])] = &[
-            ("alpha", &["alphas"]),
-            ("beta", &["betas"]),
-        ];
+        let entries: &[(&str, &[&str])] = &[("alpha", &["alphas"]), ("beta", &["betas"])];
 
         let opf_c = create_dict_fixture(dir_c.path(), entries);
         let opf_u = create_dict_fixture(dir_u.path(), entries);
@@ -2595,13 +2785,22 @@ mod tests {
         // Compressed record 0 compression type = 2
         let rec0_c = get_record(&data_c, &offsets_c, 0);
         let comp_type_c = read_u16_be(rec0_c, 0);
-        assert_eq!(comp_type_c, 2, "Compressed MOBI should have compression type 2");
+        assert_eq!(
+            comp_type_c, 2,
+            "Compressed MOBI should have compression type 2"
+        );
 
         // Uncompressed record 0 compression type = 1
         let rec0_u = get_record(&data_u, &offsets_u, 0);
         let comp_type_u = read_u16_be(rec0_u, 0);
-        assert_eq!(comp_type_u, 1, "Uncompressed MOBI should have compression type 1");
-        println!("  \u{2713} Compressed type={}, uncompressed type={}", comp_type_c, comp_type_u);
+        assert_eq!(
+            comp_type_u, 1,
+            "Uncompressed MOBI should have compression type 1"
+        );
+        println!(
+            "  \u{2713} Compressed type={}, uncompressed type={}",
+            comp_type_c, comp_type_u
+        );
     }
 
     #[test]
@@ -2651,38 +2850,50 @@ mod tests {
 
         // Create tall images (height > 3x width) - should trigger webtoon detection
         for i in 0..3u32 {
-            let img = image::DynamicImage::ImageRgb8(
-                image::RgbImage::from_fn(100, 400, |x, y| {
-                    image::Rgb([((x + i * 30) % 256) as u8, ((y + i * 20) % 256) as u8, 128])
-                }),
-            );
-            img.save(images_dir.join(format!("strip_{:03}.png", i))).unwrap();
+            let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(100, 400, |x, y| {
+                image::Rgb([((x + i * 30) % 256) as u8, ((y + i * 20) % 256) as u8, 128])
+            }));
+            img.save(images_dir.join(format!("strip_{:03}.png", i)))
+                .unwrap();
         }
 
         let paths: Vec<std::path::PathBuf> = (0..3)
             .map(|i| images_dir.join(format!("strip_{:03}.png", i)))
             .collect();
 
-        assert!(comic::detect_webtoon(&paths), "Images with height > 3x width should be detected as webtoon");
+        assert!(
+            comic::detect_webtoon(&paths),
+            "Images with height > 3x width should be detected as webtoon"
+        );
 
         // Create a non-webtoon image (roughly square)
-        let normal_img = image::DynamicImage::ImageRgb8(
-            image::RgbImage::from_fn(100, 150, |_, _| image::Rgb([128, 128, 128])),
-        );
+        let normal_img =
+            image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(100, 150, |_, _| {
+                image::Rgb([128, 128, 128])
+            }));
         let normal_path = images_dir.join("normal.png");
         normal_img.save(&normal_path).unwrap();
 
         // Mix of tall and normal should NOT detect as webtoon
         let mixed_paths = vec![paths[0].clone(), normal_path.clone()];
-        assert!(!comic::detect_webtoon(&mixed_paths), "Mixed aspect ratios should not be detected as webtoon");
+        assert!(
+            !comic::detect_webtoon(&mixed_paths),
+            "Mixed aspect ratios should not be detected as webtoon"
+        );
 
         // Only normal images should not be webtoon
         let normal_paths = vec![normal_path];
-        assert!(!comic::detect_webtoon(&normal_paths), "Normal images should not be detected as webtoon");
+        assert!(
+            !comic::detect_webtoon(&normal_paths),
+            "Normal images should not be detected as webtoon"
+        );
 
         // Empty input should not be webtoon
         let empty: Vec<std::path::PathBuf> = vec![];
-        assert!(!comic::detect_webtoon(&empty), "Empty input should not be detected as webtoon");
+        assert!(
+            !comic::detect_webtoon(&empty),
+            "Empty input should not be detected as webtoon"
+        );
         println!("  \u{2713} Webtoon detection: tall=yes, mixed=no, normal=no, empty=no");
     }
 
@@ -2692,12 +2903,12 @@ mod tests {
         use image::GenericImageView;
 
         // Create two images of different widths
-        let img1 = image::DynamicImage::ImageRgb8(
-            image::RgbImage::from_fn(100, 200, |_, _| image::Rgb([255, 0, 0])),
-        );
-        let img2 = image::DynamicImage::ImageRgb8(
-            image::RgbImage::from_fn(80, 150, |_, _| image::Rgb([0, 255, 0])),
-        );
+        let img1 = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(100, 200, |_, _| {
+            image::Rgb([255, 0, 0])
+        }));
+        let img2 = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(80, 150, |_, _| {
+            image::Rgb([0, 255, 0])
+        }));
 
         let merged = comic::webtoon_merge(&[img1.clone(), img2.clone()]);
         let (w, h) = merged.dimensions();
@@ -2709,13 +2920,24 @@ mod tests {
         // Top portion should be red (from img1)
         let merged_rgb = merged.to_rgb8();
         let top_pixel = merged_rgb.get_pixel(50, 50);
-        assert_eq!(top_pixel.0, [255, 0, 0], "Top portion should be from img1 (red)");
+        assert_eq!(
+            top_pixel.0,
+            [255, 0, 0],
+            "Top portion should be from img1 (red)"
+        );
 
         // Bottom portion should be green (from img2)
         // img2 is narrower (80px), centered on 100px canvas, so center should be green
         let bottom_pixel = merged_rgb.get_pixel(50, 250);
-        assert_eq!(bottom_pixel.0, [0, 255, 0], "Bottom center should be from img2 (green)");
-        println!("  \u{2713} Webtoon merge: {}x{}, top=red, bottom=green", w, h);
+        assert_eq!(
+            bottom_pixel.0,
+            [0, 255, 0],
+            "Bottom center should be from img2 (green)"
+        );
+        println!(
+            "  \u{2713} Webtoon merge: {}x{}, top=red, bottom=green",
+            w, h
+        );
     }
 
     #[test]
@@ -2723,13 +2945,17 @@ mod tests {
         use crate::comic;
         use image::GenericImageView;
 
-        let img = image::DynamicImage::ImageRgb8(
-            image::RgbImage::from_fn(100, 500, |_, _| image::Rgb([128, 128, 128])),
-        );
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(100, 500, |_, _| {
+            image::Rgb([128, 128, 128])
+        }));
 
         let merged = comic::webtoon_merge(&[img.clone()]);
         let (w, h) = merged.dimensions();
-        assert_eq!((w, h), (100, 500), "Single image merge should return same dimensions");
+        assert_eq!(
+            (w, h),
+            (100, 500),
+            "Single image merge should return same dimensions"
+        );
         println!("  \u{2713} Single-image merge: {}x{} unchanged", w, h);
     }
 
@@ -2739,12 +2965,12 @@ mod tests {
         use image::GenericImageView;
 
         // Wide image (200px) + narrow image (100px) with white background
-        let img1 = image::DynamicImage::ImageRgb8(
-            image::RgbImage::from_fn(200, 100, |_, _| image::Rgb([255, 255, 255])),
-        );
-        let img2 = image::DynamicImage::ImageRgb8(
-            image::RgbImage::from_fn(100, 100, |_, _| image::Rgb([0, 0, 0])),
-        );
+        let img1 = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(200, 100, |_, _| {
+            image::Rgb([255, 255, 255])
+        }));
+        let img2 = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(100, 100, |_, _| {
+            image::Rgb([0, 0, 0])
+        }));
 
         let merged = comic::webtoon_merge(&[img1, img2]);
         let (w, h) = merged.dimensions();
@@ -2756,16 +2982,31 @@ mod tests {
         // The narrow image (100px) should be centered on the 200px canvas
         // Left edge (x=0) in bottom half should be background (white)
         let left_bg = rgb.get_pixel(0, 150);
-        assert_eq!(left_bg.0, [255, 255, 255], "Left padding should be white background");
+        assert_eq!(
+            left_bg.0,
+            [255, 255, 255],
+            "Left padding should be white background"
+        );
 
         // Center (x=100) in bottom half should be from img2 (black)
         let center_content = rgb.get_pixel(100, 150);
-        assert_eq!(center_content.0, [0, 0, 0], "Center of bottom half should be black (img2)");
+        assert_eq!(
+            center_content.0,
+            [0, 0, 0],
+            "Center of bottom half should be black (img2)"
+        );
 
         // Right edge (x=199) in bottom half should be background (white)
         let right_bg = rgb.get_pixel(199, 150);
-        assert_eq!(right_bg.0, [255, 255, 255], "Right padding should be white background");
-        println!("  \u{2713} Merge centering: narrow img centered on {}x{} canvas", w, h);
+        assert_eq!(
+            right_bg.0,
+            [255, 255, 255],
+            "Right padding should be white background"
+        );
+        println!(
+            "  \u{2713} Merge centering: narrow img centered on {}x{} canvas",
+            w, h
+        );
     }
 
     #[test]
@@ -2778,8 +3019,10 @@ mod tests {
         let strip_width = 100u32;
         let device_height = 1448u32;
 
-        let img = image::DynamicImage::ImageLuma8(
-            image::GrayImage::from_fn(strip_width, strip_height, |_x, y| {
+        let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(
+            strip_width,
+            strip_height,
+            |_x, y| {
                 // Create uniform white rows at y=1400, y=2800 (near target cut points)
                 // These serve as gutters for the splitter to find
                 if (y >= 1390 && y <= 1410) || (y >= 2790 && y <= 2810) {
@@ -2788,25 +3031,45 @@ mod tests {
                     // Content: varied pixels to have non-zero variance
                     image::Luma([((y * 7 + 13) % 200) as u8 + 30])
                 }
-            }),
-        );
+            },
+        ));
 
         let pages = comic::webtoon_split(&img, device_height);
 
         // Should produce at least 2 pages (4000 / 1448 ~ 2.76)
-        assert!(pages.len() >= 2, "Should produce at least 2 pages, got {}", pages.len());
-        assert!(pages.len() <= 4, "Should produce at most 4 pages, got {}", pages.len());
+        assert!(
+            pages.len() >= 2,
+            "Should produce at least 2 pages, got {}",
+            pages.len()
+        );
+        assert!(
+            pages.len() <= 4,
+            "Should produce at most 4 pages, got {}",
+            pages.len()
+        );
 
         // All pages should have the same width
         for (i, page) in pages.iter().enumerate() {
             let (pw, _ph) = page.dimensions();
-            assert_eq!(pw, strip_width, "Page {} width should be {}, got {}", i, strip_width, pw);
+            assert_eq!(
+                pw, strip_width,
+                "Page {} width should be {}, got {}",
+                i, strip_width, pw
+            );
         }
 
         // Total height of all pages should equal original strip height
         let total_h: u32 = pages.iter().map(|p| p.height()).sum();
-        assert_eq!(total_h, strip_height, "Sum of page heights ({}) should equal strip height ({})", total_h, strip_height);
-        println!("  \u{2713} Webtoon split: {} pages, total height={}", pages.len(), total_h);
+        assert_eq!(
+            total_h, strip_height,
+            "Sum of page heights ({}) should equal strip height ({})",
+            total_h, strip_height
+        );
+        println!(
+            "  \u{2713} Webtoon split: {} pages, total height={}",
+            pages.len(),
+            total_h
+        );
     }
 
     #[test]
@@ -2819,22 +3082,33 @@ mod tests {
         let device_height = 1448u32;
         let overlap = (device_height as f64 * 0.10) as u32;
 
-        let img = image::DynamicImage::ImageLuma8(
-            image::GrayImage::from_fn(strip_width, strip_height, |x, y| {
+        let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(
+            strip_width,
+            strip_height,
+            |x, y| {
                 // Noisy content everywhere - no gutters
                 image::Luma([((x * 37 + y * 13 + 7) % 200) as u8 + 28])
-            }),
-        );
+            },
+        ));
 
         let pages = comic::webtoon_split(&img, device_height);
 
         // Should still produce pages
-        assert!(pages.len() >= 2, "Should produce at least 2 pages even without gutters, got {}", pages.len());
+        assert!(
+            pages.len() >= 2,
+            "Should produce at least 2 pages even without gutters, got {}",
+            pages.len()
+        );
 
         // With overlap, total page height should be greater than strip height
         // because overlapping regions are duplicated across pages
         let total_h: u32 = pages.iter().map(|p| p.height()).sum();
-        assert!(total_h >= strip_height, "Sum of page heights ({}) should be >= strip height ({})", total_h, strip_height);
+        assert!(
+            total_h >= strip_height,
+            "Sum of page heights ({}) should be >= strip height ({})",
+            total_h,
+            strip_height
+        );
 
         // Each split without a gutter adds ~overlap pixels of duplication,
         // so total should be approximately strip_height + (num_splits * overlap)
@@ -2843,10 +3117,17 @@ mod tests {
         assert!(
             total_h <= strip_height + expected_overlap_total + device_height / 5,
             "Total height ({}) should not vastly exceed strip height + overlap ({}+{})",
-            total_h, strip_height, expected_overlap_total,
+            total_h,
+            strip_height,
+            expected_overlap_total,
         );
-        println!("  \u{2713} Overlap split: {} pages, total height={} (strip={}, overlap per split={})",
-            pages.len(), total_h, strip_height, overlap);
+        println!(
+            "  \u{2713} Overlap split: {} pages, total height={} (strip={}, overlap per split={})",
+            pages.len(),
+            total_h,
+            strip_height,
+            overlap
+        );
     }
 
     #[test]
@@ -2860,12 +3141,16 @@ mod tests {
         let device_height = 1448u32;
         let overlap = (device_height as f64 * 0.10) as u32;
 
-        let img = image::DynamicImage::ImageLuma8(
-            image::GrayImage::from_fn(strip_width, strip_height, |x, y| {
+        let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(
+            strip_width,
+            strip_height,
+            |x, y| {
                 // Every row gets a unique-ish pattern (high variance, no gutters)
-                image::Luma([((x.wrapping_mul(41).wrapping_add(y.wrapping_mul(97))) % 200) as u8 + 28])
-            }),
-        );
+                image::Luma([
+                    ((x.wrapping_mul(41).wrapping_add(y.wrapping_mul(97))) % 200) as u8 + 28,
+                ])
+            },
+        ));
 
         let pages = comic::webtoon_split(&img, device_height);
         assert!(pages.len() >= 2, "Need at least 2 pages to test overlap");
@@ -2888,7 +3173,8 @@ mod tests {
         assert!(
             total_h > strip_height,
             "With no gutters, overlap should make total height ({}) > strip height ({})",
-            total_h, strip_height,
+            total_h,
+            strip_height,
         );
 
         // Verify that pages cover the full strip (last page's end should reach strip_height).
@@ -2912,7 +3198,10 @@ mod tests {
 
         println!(
             "  \u{2713} Overlap content: {} pages, overlap={}, total_h={} (strip={})",
-            pages.len(), overlap, total_h, strip_height,
+            pages.len(),
+            overlap,
+            total_h,
+            strip_height,
         );
     }
 
@@ -2922,12 +3211,16 @@ mod tests {
         use image::GenericImageView;
 
         // Image shorter than device height - should not be split
-        let img = image::DynamicImage::ImageLuma8(
-            image::GrayImage::from_fn(100, 500, |_, _| image::Luma([128])),
-        );
+        let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(100, 500, |_, _| {
+            image::Luma([128])
+        }));
 
         let pages = comic::webtoon_split(&img, 1448);
-        assert_eq!(pages.len(), 1, "Image shorter than device height should produce 1 page");
+        assert_eq!(
+            pages.len(),
+            1,
+            "Image shorter than device height should produce 1 page"
+        );
         assert_eq!(pages[0].dimensions(), (100, 500));
         println!("  \u{2713} Short image: 1 page, 100x500 unchanged");
     }
@@ -2942,8 +3235,8 @@ mod tests {
 
         // Create 2 tall webtoon strip images (height > 3x width)
         for i in 0..2u32 {
-            let img = image::DynamicImage::ImageRgb8(
-                image::RgbImage::from_fn(200, 2000, |x, y| {
+            let img =
+                image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(200, 2000, |x, y| {
                     // Create some gutters (white bands) for splitting
                     if y % 800 < 20 {
                         image::Rgb([255, 255, 255])
@@ -2954,9 +3247,9 @@ mod tests {
                             128,
                         ])
                     }
-                }),
-            );
-            img.save(images_dir.join(format!("strip_{:03}.png", i))).unwrap();
+                }));
+            img.save(images_dir.join(format!("strip_{:03}.png", i)))
+                .unwrap();
         }
 
         let output_path = dir.path().join("webtoon.mobi");
@@ -2969,7 +3262,8 @@ mod tests {
             webtoon: false, // rely on auto-detection
             panel_view: false,
             jpeg_quality: 85,
-            max_height: 65536, embed_source: false,
+            max_height: 65536,
+            embed_source: false,
             ..Default::default()
         };
 
@@ -2989,10 +3283,18 @@ mod tests {
 
         // Check for fixed-layout flag
         let exth = parse_exth_records(rec0);
-        let exth122 = exth.get(&122).expect("Webtoon EXTH should contain record 122 (fixed-layout)");
+        let exth122 = exth
+            .get(&122)
+            .expect("Webtoon EXTH should contain record 122 (fixed-layout)");
         let value = std::str::from_utf8(&exth122[0]).unwrap();
-        assert_eq!(value, "true", "EXTH 122 should be 'true' for fixed-layout webtoon");
-        println!("  \u{2713} Webtoon pipeline: {} bytes, EXTH 122=true", data.len());
+        assert_eq!(
+            value, "true",
+            "EXTH 122 should be 'true' for fixed-layout webtoon"
+        );
+        println!(
+            "  \u{2713} Webtoon pipeline: {} bytes, EXTH 122=true",
+            data.len()
+        );
     }
 
     #[test]
@@ -3006,12 +3308,12 @@ mod tests {
         // Create images that are NOT tall enough for auto-detection (height < 3x width)
         // but the --webtoon flag should still force webtoon processing
         for i in 0..2u32 {
-            let img = image::DynamicImage::ImageRgb8(
-                image::RgbImage::from_fn(200, 2000, |x, y| {
+            let img =
+                image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(200, 2000, |x, y| {
                     image::Rgb([((x + i * 50) % 256) as u8, ((y + i * 30) % 256) as u8, 128])
-                }),
-            );
-            img.save(images_dir.join(format!("page_{:03}.png", i))).unwrap();
+                }));
+            img.save(images_dir.join(format!("page_{:03}.png", i)))
+                .unwrap();
         }
 
         let output_path = dir.path().join("webtoon_forced.mobi");
@@ -3024,7 +3326,8 @@ mod tests {
             webtoon: true, // force webtoon mode
             panel_view: false,
             jpeg_quality: 85,
-            max_height: 65536, embed_source: false,
+            max_height: 65536,
+            embed_source: false,
             ..Default::default()
         };
 
@@ -3034,7 +3337,10 @@ mod tests {
         let data = fs::read(&output_path).expect("could not read forced webtoon MOBI");
         assert!(data.len() > 100, "Forced webtoon MOBI too small");
         assert_eq!(&data[60..64], b"BOOK");
-        println!("  \u{2713} Forced webtoon flag: {} bytes, valid MOBI", data.len());
+        println!(
+            "  \u{2713} Forced webtoon flag: {} bytes, valid MOBI",
+            data.len()
+        );
     }
 
     #[test]
@@ -3046,15 +3352,13 @@ mod tests {
         fs::create_dir_all(&images_dir).unwrap();
 
         // Create a tall webtoon image
-        let img = image::DynamicImage::ImageRgb8(
-            image::RgbImage::from_fn(200, 5000, |x, y| {
-                if y % 1200 < 20 {
-                    image::Rgb([255, 255, 255]) // gutters
-                } else {
-                    image::Rgb([((x * 3) % 256) as u8, ((y * 7) % 256) as u8, 100])
-                }
-            }),
-        );
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(200, 5000, |x, y| {
+            if y % 1200 < 20 {
+                image::Rgb([255, 255, 255]) // gutters
+            } else {
+                image::Rgb([((x * 3) % 256) as u8, ((y * 7) % 256) as u8, 100])
+            }
+        }));
         img.save(images_dir.join("strip_001.png")).unwrap();
 
         // Test with Scribe profile (different device height: 2480)
@@ -3068,7 +3372,8 @@ mod tests {
             webtoon: true,
             panel_view: false,
             jpeg_quality: 85,
-            max_height: 65536, embed_source: false,
+            max_height: 65536,
+            embed_source: false,
             ..Default::default()
         };
 
@@ -3078,7 +3383,10 @@ mod tests {
         let data = fs::read(&output_path).expect("could not read scribe webtoon MOBI");
         assert!(data.len() > 100, "Scribe webtoon MOBI too small");
         assert_eq!(&data[60..64], b"BOOK");
-        println!("  \u{2713} Scribe webtoon: {} bytes, valid MOBI", data.len());
+        println!(
+            "  \u{2713} Scribe webtoon: {} bytes, valid MOBI",
+            data.len()
+        );
     }
 
     // =======================================================================
@@ -3098,29 +3406,28 @@ mod tests {
         //   [panel0 190x190] [20px gutter] [panel1 190x190]
         //   [20px gutter row]
         //   [panel2 190x190] [20px gutter] [panel3 190x190]
-        let img = image::DynamicImage::ImageRgb8(
-            image::RgbImage::from_fn(400, 400, |x, y| {
-                // Horizontal gutter at y=190..210
-                // Vertical gutter at x=190..210
-                let in_h_gutter = y >= 190 && y < 210;
-                let in_v_gutter = x >= 190 && x < 210;
-                if in_h_gutter || in_v_gutter {
-                    image::Rgb([255, 255, 255]) // white gutter
-                } else {
-                    // Varied content within each panel - pixel values depend on x
-                    // so each row has high variance (not uniform)
-                    image::Rgb([
-                        ((x * 7 + 13) % 200) as u8 + 28,
-                        ((x * 11 + y * 3 + 7) % 200) as u8 + 28,
-                        ((x * 3 + 29) % 200) as u8 + 28,
-                    ])
-                }
-            }),
-        );
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(400, 400, |x, y| {
+            // Horizontal gutter at y=190..210
+            // Vertical gutter at x=190..210
+            let in_h_gutter = y >= 190 && y < 210;
+            let in_v_gutter = x >= 190 && x < 210;
+            if in_h_gutter || in_v_gutter {
+                image::Rgb([255, 255, 255]) // white gutter
+            } else {
+                // Varied content within each panel - pixel values depend on x
+                // so each row has high variance (not uniform)
+                image::Rgb([
+                    ((x * 7 + 13) % 200) as u8 + 28,
+                    ((x * 11 + y * 3 + 7) % 200) as u8 + 28,
+                    ((x * 3 + 29) % 200) as u8 + 28,
+                ])
+            }
+        }));
 
         let panels = comic::detect_panels(&img);
         assert_eq!(
-            panels.len(), 4,
+            panels.len(),
+            4,
             "2x2 grid should produce 4 panels, got {}",
             panels.len()
         );
@@ -3131,19 +3438,32 @@ mod tests {
             assert!(
                 panel.w > 40.0 && panel.w < 55.0,
                 "Panel {} width should be ~47.5%, got {:.1}%",
-                i, panel.w
+                i,
+                panel.w
             );
             assert!(
                 panel.h > 40.0 && panel.h < 55.0,
                 "Panel {} height should be ~47.5%, got {:.1}%",
-                i, panel.h
+                i,
+                panel.h
             );
         }
 
         // First panel should start at top-left (x ~0, y ~0)
-        assert!(panels[0].x < 5.0, "First panel should start near x=0, got {:.1}%", panels[0].x);
-        assert!(panels[0].y < 5.0, "First panel should start near y=0, got {:.1}%", panels[0].y);
-        println!("  \u{2713} 2x2 grid: {} panels detected, all ~47.5%", panels.len());
+        assert!(
+            panels[0].x < 5.0,
+            "First panel should start near x=0, got {:.1}%",
+            panels[0].x
+        );
+        assert!(
+            panels[0].y < 5.0,
+            "First panel should start near y=0, got {:.1}%",
+            panels[0].y
+        );
+        println!(
+            "  \u{2713} 2x2 grid: {} panels detected, all ~47.5%",
+            panels.len()
+        );
     }
 
     #[test]
@@ -3152,15 +3472,13 @@ mod tests {
 
         // Create a single full-page image with no gutters (varied content everywhere).
         // This should detect 0 panels (full-page splash).
-        let img = image::DynamicImage::ImageRgb8(
-            image::RgbImage::from_fn(200, 300, |x, y| {
-                image::Rgb([
-                    ((x * 7 + y * 13 + 3) % 200) as u8 + 28,
-                    ((x * 11 + y * 3 + 7) % 200) as u8 + 28,
-                    ((x * 3 + y * 7 + 11) % 200) as u8 + 28,
-                ])
-            }),
-        );
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(200, 300, |x, y| {
+            image::Rgb([
+                ((x * 7 + y * 13 + 3) % 200) as u8 + 28,
+                ((x * 11 + y * 3 + 7) % 200) as u8 + 28,
+                ((x * 3 + y * 7 + 11) % 200) as u8 + 28,
+            ])
+        }));
 
         let panels = comic::detect_panels(&img);
         assert!(
@@ -3181,22 +3499,20 @@ mod tests {
         fs::create_dir_all(&images_dir).unwrap();
 
         // Create a 400x400 image with a 2x2 panel grid and white gutters
-        let img = image::DynamicImage::ImageRgb8(
-            image::RgbImage::from_fn(400, 400, |x, y| {
-                let in_h_gutter = y >= 190 && y < 210;
-                let in_v_gutter = x >= 190 && x < 210;
-                if in_h_gutter || in_v_gutter {
-                    image::Rgb([255, 255, 255]) // white gutter
-                } else {
-                    // Varied content
-                    image::Rgb([
-                        ((x * 3 + 10) % 200) as u8 + 28,
-                        ((y * 7 + 20) % 200) as u8 + 28,
-                        128,
-                    ])
-                }
-            }),
-        );
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(400, 400, |x, y| {
+            let in_h_gutter = y >= 190 && y < 210;
+            let in_v_gutter = x >= 190 && x < 210;
+            if in_h_gutter || in_v_gutter {
+                image::Rgb([255, 255, 255]) // white gutter
+            } else {
+                // Varied content
+                image::Rgb([
+                    ((x * 3 + 10) % 200) as u8 + 28,
+                    ((y * 7 + 20) % 200) as u8 + 28,
+                    128,
+                ])
+            }
+        }));
         img.save(images_dir.join("page_001.jpg")).unwrap();
 
         let output_path = dir.path().join("panel_comic.mobi");
@@ -3209,7 +3525,8 @@ mod tests {
             webtoon: false,
             panel_view: true,
             jpeg_quality: 85,
-            max_height: 65536, embed_source: false,
+            max_height: 65536,
+            embed_source: false,
             ..Default::default()
         };
 
@@ -3220,7 +3537,10 @@ mod tests {
         let data = fs::read(&output_path).expect("could not read panel view comic MOBI");
         assert!(data.len() > 100, "Panel View comic MOBI too small");
         assert_eq!(&data[60..64], b"BOOK");
-        println!("  \u{2713} Panel view comic: {} bytes, valid MOBI", data.len());
+        println!(
+            "  \u{2713} Panel view comic: {} bytes, valid MOBI",
+            data.len()
+        );
     }
 
     #[test]
@@ -3233,17 +3553,15 @@ mod tests {
         fs::create_dir_all(&images_dir).unwrap();
 
         // Create a 400x400 image with a 2x2 panel grid
-        let img = image::DynamicImage::ImageRgb8(
-            image::RgbImage::from_fn(400, 400, |x, y| {
-                let in_h_gutter = y >= 190 && y < 210;
-                let in_v_gutter = x >= 190 && x < 210;
-                if in_h_gutter || in_v_gutter {
-                    image::Rgb([255, 255, 255])
-                } else {
-                    image::Rgb([100, 100, 100])
-                }
-            }),
-        );
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(400, 400, |x, y| {
+            let in_h_gutter = y >= 190 && y < 210;
+            let in_v_gutter = x >= 190 && x < 210;
+            if in_h_gutter || in_v_gutter {
+                image::Rgb([255, 255, 255])
+            } else {
+                image::Rgb([100, 100, 100])
+            }
+        }));
         img.save(images_dir.join("page_001.jpg")).unwrap();
 
         // Build with panel_view disabled
@@ -3257,7 +3575,8 @@ mod tests {
             webtoon: false,
             panel_view: false,
             jpeg_quality: 85,
-            max_height: 65536, embed_source: false,
+            max_height: 65536,
+            embed_source: false,
             ..Default::default()
         };
         comic::build_comic_with_options(&images_dir, &output_no_pv, &profile, &options_no_pv)
@@ -3273,7 +3592,8 @@ mod tests {
             webtoon: false,
             panel_view: true,
             jpeg_quality: 85,
-            max_height: 65536, embed_source: false,
+            max_height: 65536,
+            embed_source: false,
             ..Default::default()
         };
         comic::build_comic_with_options(&images_dir, &output_with_pv, &profile, &options_with_pv)
@@ -3289,7 +3609,11 @@ mod tests {
         // but both should be valid MOBIs
         assert!(data_no_pv.len() > 100, "no-panel-view MOBI too small");
         assert!(data_with_pv.len() > 100, "panel-view MOBI too small");
-        println!("  \u{2713} No-PV {} bytes, with-PV {} bytes, both valid", data_no_pv.len(), data_with_pv.len());
+        println!(
+            "  \u{2713} No-PV {} bytes, with-PV {} bytes, both valid",
+            data_no_pv.len(),
+            data_with_pv.len()
+        );
     }
 
     #[test]
@@ -3298,25 +3622,24 @@ mod tests {
 
         // Create a 200x300 image with 3 horizontal panels (no vertical gutters)
         // separated by white gutters
-        let img = image::DynamicImage::ImageRgb8(
-            image::RgbImage::from_fn(200, 300, |x, y| {
-                // Gutters at y=90..110 and y=190..210
-                let in_gutter = (y >= 90 && y < 110) || (y >= 190 && y < 210);
-                if in_gutter {
-                    image::Rgb([255, 255, 255])
-                } else {
-                    image::Rgb([
-                        ((x * 3 + y * 7 + 5) % 180) as u8 + 40,
-                        ((x * 11 + y * 3 + 13) % 180) as u8 + 40,
-                        128,
-                    ])
-                }
-            }),
-        );
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(200, 300, |x, y| {
+            // Gutters at y=90..110 and y=190..210
+            let in_gutter = (y >= 90 && y < 110) || (y >= 190 && y < 210);
+            if in_gutter {
+                image::Rgb([255, 255, 255])
+            } else {
+                image::Rgb([
+                    ((x * 3 + y * 7 + 5) % 180) as u8 + 40,
+                    ((x * 11 + y * 3 + 13) % 180) as u8 + 40,
+                    128,
+                ])
+            }
+        }));
 
         let panels = comic::detect_panels(&img);
         assert_eq!(
-            panels.len(), 3,
+            panels.len(),
+            3,
             "3 horizontal panels should produce 3 panels, got {}",
             panels.len()
         );
@@ -3326,10 +3649,14 @@ mod tests {
             assert!(
                 panel.w > 95.0,
                 "Horizontal panel {} should span ~100% width, got {:.1}%",
-                i, panel.w
+                i,
+                panel.w
             );
         }
-        println!("  \u{2713} Horizontal strip: {} panels, all full-width", panels.len());
+        println!(
+            "  \u{2713} Horizontal strip: {} panels, all full-width",
+            panels.len()
+        );
     }
 
     #[test]
@@ -3341,9 +3668,9 @@ mod tests {
         let images_dir = dir.path().join("images");
         fs::create_dir_all(&images_dir).unwrap();
 
-        let img = image::DynamicImage::ImageRgb8(
-            image::RgbImage::from_fn(100, 150, |_, _| image::Rgb([128, 128, 128])),
-        );
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(100, 150, |_, _| {
+            image::Rgb([128, 128, 128])
+        }));
         img.save(images_dir.join("page_001.jpg")).unwrap();
 
         // Build with panel_view enabled
@@ -3357,7 +3684,8 @@ mod tests {
             webtoon: false,
             panel_view: true,
             jpeg_quality: 85,
-            max_height: 65536, embed_source: false,
+            max_height: 65536,
+            embed_source: false,
             ..Default::default()
         };
         comic::build_comic_with_options(&images_dir, &output_pv, &profile, &options)
@@ -3373,7 +3701,8 @@ mod tests {
             webtoon: false,
             panel_view: false,
             jpeg_quality: 85,
-            max_height: 65536, embed_source: false,
+            max_height: 65536,
+            embed_source: false,
             ..Default::default()
         };
         comic::build_comic_with_options(&images_dir, &output_no_pv, &profile, &options_no)
@@ -3384,7 +3713,11 @@ mod tests {
         let data_no_pv = fs::read(&output_no_pv).unwrap();
         assert_eq!(&data_pv[60..64], b"BOOK");
         assert_eq!(&data_no_pv[60..64], b"BOOK");
-        println!("  \u{2713} Panel view OPF: PV {} bytes, no-PV {} bytes", data_pv.len(), data_no_pv.len());
+        println!(
+            "  \u{2713} Panel view OPF: PV {} bytes, no-PV {} bytes",
+            data_pv.len(),
+            data_no_pv.len()
+        );
     }
 
     #[test]
@@ -3392,35 +3725,60 @@ mod tests {
         use crate::comic;
 
         // Verify panel rects are expressed as valid percentages (0-100)
-        let img = image::DynamicImage::ImageRgb8(
-            image::RgbImage::from_fn(200, 200, |x, y| {
-                let in_h_gutter = y >= 95 && y < 105;
-                let in_v_gutter = x >= 95 && x < 105;
-                if in_h_gutter || in_v_gutter {
-                    image::Rgb([255, 255, 255])
-                } else {
-                    image::Rgb([80, 80, 80])
-                }
-            }),
-        );
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(200, 200, |x, y| {
+            let in_h_gutter = y >= 95 && y < 105;
+            let in_v_gutter = x >= 95 && x < 105;
+            if in_h_gutter || in_v_gutter {
+                image::Rgb([255, 255, 255])
+            } else {
+                image::Rgb([80, 80, 80])
+            }
+        }));
 
         let panels = comic::detect_panels(&img);
         for (i, panel) in panels.iter().enumerate() {
-            assert!(panel.x >= 0.0 && panel.x <= 100.0,
-                "Panel {} x ({:.1}) should be 0-100", i, panel.x);
-            assert!(panel.y >= 0.0 && panel.y <= 100.0,
-                "Panel {} y ({:.1}) should be 0-100", i, panel.y);
-            assert!(panel.w > 0.0 && panel.w <= 100.0,
-                "Panel {} w ({:.1}) should be 0-100", i, panel.w);
-            assert!(panel.h > 0.0 && panel.h <= 100.0,
-                "Panel {} h ({:.1}) should be 0-100", i, panel.h);
+            assert!(
+                panel.x >= 0.0 && panel.x <= 100.0,
+                "Panel {} x ({:.1}) should be 0-100",
+                i,
+                panel.x
+            );
+            assert!(
+                panel.y >= 0.0 && panel.y <= 100.0,
+                "Panel {} y ({:.1}) should be 0-100",
+                i,
+                panel.y
+            );
+            assert!(
+                panel.w > 0.0 && panel.w <= 100.0,
+                "Panel {} w ({:.1}) should be 0-100",
+                i,
+                panel.w
+            );
+            assert!(
+                panel.h > 0.0 && panel.h <= 100.0,
+                "Panel {} h ({:.1}) should be 0-100",
+                i,
+                panel.h
+            );
             // Panel should not extend beyond image bounds
-            assert!(panel.x + panel.w <= 100.1,
-                "Panel {} x+w ({:.1}) should be <= 100", i, panel.x + panel.w);
-            assert!(panel.y + panel.h <= 100.1,
-                "Panel {} y+h ({:.1}) should be <= 100", i, panel.y + panel.h);
+            assert!(
+                panel.x + panel.w <= 100.1,
+                "Panel {} x+w ({:.1}) should be <= 100",
+                i,
+                panel.x + panel.w
+            );
+            assert!(
+                panel.y + panel.h <= 100.1,
+                "Panel {} y+h ({:.1}) should be <= 100",
+                i,
+                panel.y + panel.h
+            );
         }
-        println!("  \u{2713} All {} panel rects within 0-100% bounds", panels.len());
+        println!(
+            "  \u{2713} All {} panel rects within 0-100% bounds",
+            panels.len()
+        );
     }
 
     // =======================================================================
@@ -3436,15 +3794,13 @@ mod tests {
         fs::create_dir_all(&images_dir).unwrap();
 
         // Create a single test image with varied content (so quality matters)
-        let img = image::DynamicImage::ImageRgb8(
-            image::RgbImage::from_fn(200, 300, |x, y| {
-                image::Rgb([
-                    ((x * 7 + y * 3) % 256) as u8,
-                    ((x * 3 + y * 11 + 50) % 256) as u8,
-                    ((x * 5 + y * 7 + 100) % 256) as u8,
-                ])
-            }),
-        );
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(200, 300, |x, y| {
+            image::Rgb([
+                ((x * 7 + y * 3) % 256) as u8,
+                ((x * 3 + y * 11 + 50) % 256) as u8,
+                ((x * 5 + y * 7 + 100) % 256) as u8,
+            ])
+        }));
         img.save(images_dir.join("page_001.jpg")).unwrap();
 
         let profile = comic::get_profile("colorsoft").unwrap();
@@ -3452,10 +3808,15 @@ mod tests {
         // Build at low quality (30)
         let output_low = dir.path().join("quality_low.mobi");
         let options_low = comic::ComicOptions {
-            rtl: false, split: false, crop: 0, enhance: false,
-            webtoon: false, panel_view: false,
+            rtl: false,
+            split: false,
+            crop: 0,
+            enhance: false,
+            webtoon: false,
+            panel_view: false,
             jpeg_quality: 30,
-            max_height: 65536, embed_source: false,
+            max_height: 65536,
+            embed_source: false,
             ..Default::default()
         };
         comic::build_comic_with_options(&images_dir, &output_low, &profile, &options_low)
@@ -3464,10 +3825,15 @@ mod tests {
         // Build at high quality (95)
         let output_high = dir.path().join("quality_high.mobi");
         let options_high = comic::ComicOptions {
-            rtl: false, split: false, crop: 0, enhance: false,
-            webtoon: false, panel_view: false,
+            rtl: false,
+            split: false,
+            crop: 0,
+            enhance: false,
+            webtoon: false,
+            panel_view: false,
             jpeg_quality: 95,
-            max_height: 65536, embed_source: false,
+            max_height: 65536,
+            embed_source: false,
             ..Default::default()
         };
         comic::build_comic_with_options(&images_dir, &output_high, &profile, &options_high)
@@ -3480,9 +3846,13 @@ mod tests {
         assert!(
             size_high > size_low,
             "Quality 95 ({} bytes) should produce a larger MOBI than quality 30 ({} bytes)",
-            size_high, size_low
+            size_high,
+            size_low
         );
-        println!("  \u{2713} JPEG q30={} bytes < q95={} bytes", size_low, size_high);
+        println!(
+            "  \u{2713} JPEG q30={} bytes < q95={} bytes",
+            size_low, size_high
+        );
     }
 
     #[test]
@@ -3495,8 +3865,8 @@ mod tests {
 
         // Create 3 tall webtoon strips, each 200x2000 = 6000 total height
         for i in 0..3u32 {
-            let img = image::DynamicImage::ImageRgb8(
-                image::RgbImage::from_fn(200, 2000, |x, y| {
+            let img =
+                image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(200, 2000, |x, y| {
                     if y % 800 < 20 {
                         image::Rgb([255, 255, 255]) // gutters
                     } else {
@@ -3506,9 +3876,9 @@ mod tests {
                             128,
                         ])
                     }
-                }),
-            );
-            img.save(images_dir.join(format!("strip_{:03}.png", i))).unwrap();
+                }));
+            img.save(images_dir.join(format!("strip_{:03}.png", i)))
+                .unwrap();
         }
 
         let profile = comic::get_profile("paperwhite").unwrap();
@@ -3516,8 +3886,12 @@ mod tests {
         // Build with a max_height that forces chunking (3000 < total 6000)
         let output_chunked = dir.path().join("chunked.mobi");
         let options_chunked = comic::ComicOptions {
-            rtl: false, split: false, crop: 0, enhance: false,
-            webtoon: true, panel_view: false,
+            rtl: false,
+            split: false,
+            crop: 0,
+            enhance: false,
+            webtoon: true,
+            panel_view: false,
             jpeg_quality: 85,
             max_height: 3000,
             embed_source: false,
@@ -3529,10 +3903,15 @@ mod tests {
         // Build with default (no chunking)
         let output_normal = dir.path().join("normal.mobi");
         let options_normal = comic::ComicOptions {
-            rtl: false, split: false, crop: 0, enhance: false,
-            webtoon: true, panel_view: false,
+            rtl: false,
+            split: false,
+            crop: 0,
+            enhance: false,
+            webtoon: true,
+            panel_view: false,
             jpeg_quality: 85,
-            max_height: 65536, embed_source: false,
+            max_height: 65536,
+            embed_source: false,
             ..Default::default()
         };
         comic::build_comic_with_options(&images_dir, &output_normal, &profile, &options_normal)
@@ -3545,7 +3924,11 @@ mod tests {
         assert_eq!(&data_normal[60..64], b"BOOK");
         assert!(data_chunked.len() > 100, "Chunked MOBI too small");
         assert!(data_normal.len() > 100, "Normal MOBI too small");
-        println!("  \u{2713} Max-height chunked={} bytes, normal={} bytes", data_chunked.len(), data_normal.len());
+        println!(
+            "  \u{2713} Max-height chunked={} bytes, normal={} bytes",
+            data_chunked.len(),
+            data_normal.len()
+        );
     }
 
     #[test]
@@ -3557,27 +3940,36 @@ mod tests {
         fs::create_dir_all(&images_dir).unwrap();
 
         // Create one valid image
-        let img = image::DynamicImage::ImageRgb8(
-            image::RgbImage::from_fn(100, 150, |_, _| image::Rgb([128, 128, 128])),
-        );
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(100, 150, |_, _| {
+            image::Rgb([128, 128, 128])
+        }));
         img.save(images_dir.join("page_001.jpg")).unwrap();
 
         // Create a corrupt "image" file (random bytes, not a valid image)
-        fs::write(images_dir.join("page_002.jpg"), b"this is not a valid jpeg file at all").unwrap();
+        fs::write(
+            images_dir.join("page_002.jpg"),
+            b"this is not a valid jpeg file at all",
+        )
+        .unwrap();
 
         // Create another valid image
-        let img2 = image::DynamicImage::ImageRgb8(
-            image::RgbImage::from_fn(100, 150, |_, _| image::Rgb([200, 200, 200])),
-        );
+        let img2 = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(100, 150, |_, _| {
+            image::Rgb([200, 200, 200])
+        }));
         img2.save(images_dir.join("page_003.jpg")).unwrap();
 
         let output_path = dir.path().join("corrupt_test.mobi");
         let profile = comic::get_profile("paperwhite").unwrap();
         let options = comic::ComicOptions {
-            rtl: false, split: false, crop: 0, enhance: false,
-            webtoon: false, panel_view: false,
+            rtl: false,
+            split: false,
+            crop: 0,
+            enhance: false,
+            webtoon: false,
+            panel_view: false,
             jpeg_quality: 85,
-            max_height: 65536, embed_source: false,
+            max_height: 65536,
+            embed_source: false,
             ..Default::default()
         };
 
@@ -3589,7 +3981,10 @@ mod tests {
         let data = fs::read(&output_path).unwrap();
         assert!(data.len() > 100, "MOBI too small");
         assert_eq!(&data[60..64], b"BOOK");
-        println!("  \u{2713} Corrupt image skipped, valid MOBI: {} bytes", data.len());
+        println!(
+            "  \u{2713} Corrupt image skipped, valid MOBI: {} bytes",
+            data.len()
+        );
     }
 
     #[test]
@@ -3601,9 +3996,9 @@ mod tests {
         fs::create_dir_all(&images_dir).unwrap();
 
         // Create a valid image
-        let img = image::DynamicImage::ImageRgb8(
-            image::RgbImage::from_fn(100, 150, |_, _| image::Rgb([128, 128, 128])),
-        );
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(100, 150, |_, _| {
+            image::Rgb([128, 128, 128])
+        }));
         img.save(images_dir.join("page_001.png")).unwrap();
 
         // Create a zero-width PNG (1x0 or 0x1 is hard to create with the image crate,
@@ -3626,18 +4021,23 @@ mod tests {
         fs::write(images_dir.join("page_002.png"), &zero_dim_png).unwrap();
 
         // Create another valid image
-        let img2 = image::DynamicImage::ImageRgb8(
-            image::RgbImage::from_fn(100, 150, |_, _| image::Rgb([200, 200, 200])),
-        );
+        let img2 = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(100, 150, |_, _| {
+            image::Rgb([200, 200, 200])
+        }));
         img2.save(images_dir.join("page_003.png")).unwrap();
 
         let output_path = dir.path().join("zero_dim_test.mobi");
         let profile = comic::get_profile("paperwhite").unwrap();
         let options = comic::ComicOptions {
-            rtl: false, split: false, crop: 0, enhance: false,
-            webtoon: false, panel_view: false,
+            rtl: false,
+            split: false,
+            crop: 0,
+            enhance: false,
+            webtoon: false,
+            panel_view: false,
             jpeg_quality: 85,
-            max_height: 65536, embed_source: false,
+            max_height: 65536,
+            embed_source: false,
             ..Default::default()
         };
 
@@ -3649,7 +4049,10 @@ mod tests {
         let data = fs::read(&output_path).unwrap();
         assert!(data.len() > 100, "MOBI too small");
         assert_eq!(&data[60..64], b"BOOK");
-        println!("  \u{2713} Zero-dim image skipped, valid MOBI: {} bytes", data.len());
+        println!(
+            "  \u{2713} Zero-dim image skipped, valid MOBI: {} bytes",
+            data.len()
+        );
     }
 
     // =======================================================================
@@ -3660,40 +4063,88 @@ mod tests {
     fn test_device_profile_kpw5() {
         use crate::comic;
         let profile = comic::get_profile("kpw5").expect("kpw5 profile should exist");
-        assert_eq!(profile.width, 1236, "kpw5 width should be 1236, got {}", profile.width);
-        assert_eq!(profile.height, 1648, "kpw5 height should be 1648, got {}", profile.height);
+        assert_eq!(
+            profile.width, 1236,
+            "kpw5 width should be 1236, got {}",
+            profile.width
+        );
+        assert_eq!(
+            profile.height, 1648,
+            "kpw5 height should be 1648, got {}",
+            profile.height
+        );
         assert!(profile.grayscale, "kpw5 should be grayscale");
-        println!("  \u{2713} kpw5: {}x{}, grayscale={}", profile.width, profile.height, profile.grayscale);
+        println!(
+            "  \u{2713} kpw5: {}x{}, grayscale={}",
+            profile.width, profile.height, profile.grayscale
+        );
     }
 
     #[test]
     fn test_device_profile_scribe2025() {
         use crate::comic;
         let profile = comic::get_profile("scribe2025").expect("scribe2025 profile should exist");
-        assert_eq!(profile.width, 1986, "scribe2025 width should be 1986, got {}", profile.width);
-        assert_eq!(profile.height, 2648, "scribe2025 height should be 2648, got {}", profile.height);
+        assert_eq!(
+            profile.width, 1986,
+            "scribe2025 width should be 1986, got {}",
+            profile.width
+        );
+        assert_eq!(
+            profile.height, 2648,
+            "scribe2025 height should be 2648, got {}",
+            profile.height
+        );
         assert!(profile.grayscale, "scribe2025 should be grayscale");
-        println!("  \u{2713} scribe2025: {}x{}, grayscale={}", profile.width, profile.height, profile.grayscale);
+        println!(
+            "  \u{2713} scribe2025: {}x{}, grayscale={}",
+            profile.width, profile.height, profile.grayscale
+        );
     }
 
     #[test]
     fn test_device_profile_kindle2024() {
         use crate::comic;
         let profile = comic::get_profile("kindle2024").expect("kindle2024 profile should exist");
-        assert_eq!(profile.width, 1240, "kindle2024 width should be 1240, got {}", profile.width);
-        assert_eq!(profile.height, 1860, "kindle2024 height should be 1860, got {}", profile.height);
+        assert_eq!(
+            profile.width, 1240,
+            "kindle2024 width should be 1240, got {}",
+            profile.width
+        );
+        assert_eq!(
+            profile.height, 1860,
+            "kindle2024 height should be 1860, got {}",
+            profile.height
+        );
         assert!(profile.grayscale, "kindle2024 should be grayscale");
-        println!("  \u{2713} kindle2024: {}x{}, grayscale={}", profile.width, profile.height, profile.grayscale);
+        println!(
+            "  \u{2713} kindle2024: {}x{}, grayscale={}",
+            profile.width, profile.height, profile.grayscale
+        );
     }
 
     #[test]
     fn test_valid_device_names_includes_new() {
         use crate::comic;
         let names = comic::valid_device_names();
-        assert!(names.contains("kpw5"), "valid_device_names should contain 'kpw5', got: {}", names);
-        assert!(names.contains("scribe2025"), "valid_device_names should contain 'scribe2025', got: {}", names);
-        assert!(names.contains("kindle2024"), "valid_device_names should contain 'kindle2024', got: {}", names);
-        println!("  \u{2713} valid_device_names includes kpw5, scribe2025, kindle2024: {}", names);
+        assert!(
+            names.contains("kpw5"),
+            "valid_device_names should contain 'kpw5', got: {}",
+            names
+        );
+        assert!(
+            names.contains("scribe2025"),
+            "valid_device_names should contain 'scribe2025', got: {}",
+            names
+        );
+        assert!(
+            names.contains("kindle2024"),
+            "valid_device_names should contain 'kindle2024', got: {}",
+            names
+        );
+        println!(
+            "  \u{2713} valid_device_names includes kpw5, scribe2025, kindle2024: {}",
+            names
+        );
     }
 
     // =======================================================================
@@ -3709,16 +4160,14 @@ mod tests {
         fs::create_dir_all(&images_dir).unwrap();
 
         // Create a grayscale test image (saved as grayscale JPEG)
-        let img = image::DynamicImage::ImageLuma8(
-            image::GrayImage::from_fn(100, 150, |x, y| {
-                // Fine screentone pattern (alternating bright/dark pixels)
-                if (x + y) % 2 == 0 {
-                    image::Luma([200])
-                } else {
-                    image::Luma([50])
-                }
-            }),
-        );
+        let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(100, 150, |x, y| {
+            // Fine screentone pattern (alternating bright/dark pixels)
+            if (x + y) % 2 == 0 {
+                image::Luma([200])
+            } else {
+                image::Luma([50])
+            }
+        }));
         img.save(images_dir.join("page_001.jpg")).unwrap();
 
         // Build with colorsoft (color device, grayscale=false) - moire filter should run
@@ -3726,9 +4175,15 @@ mod tests {
         let profile = comic::get_profile("colorsoft").unwrap();
         assert!(!profile.grayscale, "colorsoft should be a color device");
         let options = comic::ComicOptions {
-            rtl: false, split: false, crop: 0, enhance: false,
-            webtoon: false, panel_view: false,
-            jpeg_quality: 85, max_height: 65536, embed_source: false,
+            rtl: false,
+            split: false,
+            crop: 0,
+            enhance: false,
+            webtoon: false,
+            panel_view: false,
+            jpeg_quality: 85,
+            max_height: 65536,
+            embed_source: false,
             ..Default::default()
         };
         comic::build_comic_with_options(&images_dir, &output_path, &profile, &options)
@@ -3737,7 +4192,10 @@ mod tests {
         let data = fs::read(&output_path).unwrap();
         assert!(data.len() > 100, "Color device comic MOBI should be valid");
         assert_eq!(&data[60..64], b"BOOK");
-        println!("  \u{2713} Moire filter on color device (colorsoft): {} bytes, valid MOBI", data.len());
+        println!(
+            "  \u{2713} Moire filter on color device (colorsoft): {} bytes, valid MOBI",
+            data.len()
+        );
     }
 
     #[test]
@@ -3749,15 +4207,13 @@ mod tests {
         fs::create_dir_all(&images_dir).unwrap();
 
         // Same grayscale screentone test image
-        let img = image::DynamicImage::ImageLuma8(
-            image::GrayImage::from_fn(100, 150, |x, y| {
-                if (x + y) % 2 == 0 {
-                    image::Luma([200])
-                } else {
-                    image::Luma([50])
-                }
-            }),
-        );
+        let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(100, 150, |x, y| {
+            if (x + y) % 2 == 0 {
+                image::Luma([200])
+            } else {
+                image::Luma([50])
+            }
+        }));
         img.save(images_dir.join("page_001.jpg")).unwrap();
 
         // Build with paperwhite (grayscale device) - moire filter should NOT run
@@ -3765,18 +4221,30 @@ mod tests {
         let profile = comic::get_profile("paperwhite").unwrap();
         assert!(profile.grayscale, "paperwhite should be a grayscale device");
         let options = comic::ComicOptions {
-            rtl: false, split: false, crop: 0, enhance: false,
-            webtoon: false, panel_view: false,
-            jpeg_quality: 85, max_height: 65536, embed_source: false,
+            rtl: false,
+            split: false,
+            crop: 0,
+            enhance: false,
+            webtoon: false,
+            panel_view: false,
+            jpeg_quality: 85,
+            max_height: 65536,
+            embed_source: false,
             ..Default::default()
         };
         comic::build_comic_with_options(&images_dir, &output_path, &profile, &options)
             .expect("build_comic should succeed without moire filter on grayscale device");
 
         let data = fs::read(&output_path).unwrap();
-        assert!(data.len() > 100, "Grayscale device comic MOBI should be valid");
+        assert!(
+            data.len() > 100,
+            "Grayscale device comic MOBI should be valid"
+        );
         assert_eq!(&data[60..64], b"BOOK");
-        println!("  \u{2713} Moire filter skipped on grayscale device (paperwhite): {} bytes, valid MOBI", data.len());
+        println!(
+            "  \u{2713} Moire filter skipped on grayscale device (paperwhite): {} bytes, valid MOBI",
+            data.len()
+        );
     }
 
     // =======================================================================
@@ -3792,20 +4260,18 @@ mod tests {
         // - 10px uniform white border on all sides
         // - Left half content (inside border) is dark gray (60)
         // - Right half content (inside border) is light gray (190)
-        let img = image::DynamicImage::ImageLuma8(
-            image::GrayImage::from_fn(200, 100, |x, y| {
-                // White border: 10px on all sides
-                if x < 10 || x >= 190 || y < 10 || y >= 90 {
-                    image::Luma([255])
-                } else if x < 100 {
-                    // Left half content (dark)
-                    image::Luma([60])
-                } else {
-                    // Right half content (light)
-                    image::Luma([190])
-                }
-            }),
-        );
+        let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(200, 100, |x, y| {
+            // White border: 10px on all sides
+            if x < 10 || x >= 190 || y < 10 || y >= 90 {
+                image::Luma([255])
+            } else if x < 100 {
+                // Left half content (dark)
+                image::Luma([60])
+            } else {
+                // Right half content (light)
+                image::Luma([190])
+            }
+        }));
 
         // First, crop the borders (this simulates the pipeline's crop-before-split)
         let cropped = comic::crop_borders(&img);
@@ -3817,19 +4283,29 @@ mod tests {
         assert!(ch < 100, "Should have cropped height: got {}", ch);
 
         // Now split the cropped image (it should be landscape since cw > ch)
-        assert!(comic::is_double_page_spread(&cropped), "Cropped image should still be landscape");
+        assert!(
+            comic::is_double_page_spread(&cropped),
+            "Cropped image should still be landscape"
+        );
         let (left, right) = comic::split_spread(&cropped);
 
         // Key assertion: both halves should have the same width
         // because we cropped symmetrically before splitting
         assert_eq!(
-            left.width(), right.width(),
+            left.width(),
+            right.width(),
             "After crop-then-split, left ({}) and right ({}) halves should have equal width",
-            left.width(), right.width()
+            left.width(),
+            right.width()
         );
         println!(
             "  \u{2713} Crop-before-split: original 200x100 -> cropped {}x{} -> halves {}x{} and {}x{} (symmetric)",
-            cw, ch, left.width(), left.height(), right.width(), right.height()
+            cw,
+            ch,
+            left.width(),
+            left.height(),
+            right.width(),
+            right.height()
         );
     }
 
@@ -3849,8 +4325,16 @@ mod tests {
 </html>"#;
 
         let refs = comic::extract_image_refs_from_xhtml(xhtml);
-        assert_eq!(refs, vec!["page1.jpg"], "Should extract 'page1.jpg' from <img src=...>, got {:?}", refs);
-        println!("  \u{2713} extract_image_refs_from_xhtml(<img>): {:?}", refs);
+        assert_eq!(
+            refs,
+            vec!["page1.jpg"],
+            "Should extract 'page1.jpg' from <img src=...>, got {:?}",
+            refs
+        );
+        println!(
+            "  \u{2713} extract_image_refs_from_xhtml(<img>): {:?}",
+            refs
+        );
     }
 
     #[test]
@@ -3867,8 +4351,16 @@ mod tests {
 </html>"#;
 
         let refs = comic::extract_image_refs_from_xhtml(xhtml);
-        assert_eq!(refs, vec!["page1.jpg"], "Should extract 'page1.jpg' from <image xlink:href=...>, got {:?}", refs);
-        println!("  \u{2713} extract_image_refs_from_xhtml(<image xlink:href>): {:?}", refs);
+        assert_eq!(
+            refs,
+            vec!["page1.jpg"],
+            "Should extract 'page1.jpg' from <image xlink:href=...>, got {:?}",
+            refs
+        );
+        println!(
+            "  \u{2713} extract_image_refs_from_xhtml(<image xlink:href>): {:?}",
+            refs
+        );
     }
 
     #[test]
@@ -3877,7 +4369,12 @@ mod tests {
 
         let content = r#"<html><body><img src="images/page01.png" alt="page"/></body></html>"#;
         let refs = comic::extract_image_refs_regex(content);
-        assert_eq!(refs, vec!["images/page01.png"], "Regex should extract img src, got {:?}", refs);
+        assert_eq!(
+            refs,
+            vec!["images/page01.png"],
+            "Regex should extract img src, got {:?}",
+            refs
+        );
         println!("  \u{2713} extract_image_refs_regex(<img>): {:?}", refs);
     }
 
@@ -3887,8 +4384,16 @@ mod tests {
 
         let content = r#"<svg><image xlink:href="page1.jpg" width="100%" height="100%"/></svg>"#;
         let refs = comic::extract_image_refs_regex(content);
-        assert_eq!(refs, vec!["page1.jpg"], "Regex should extract image xlink:href, got {:?}", refs);
-        println!("  \u{2713} extract_image_refs_regex(<image xlink:href>): {:?}", refs);
+        assert_eq!(
+            refs,
+            vec!["page1.jpg"],
+            "Regex should extract image xlink:href, got {:?}",
+            refs
+        );
+        println!(
+            "  \u{2713} extract_image_refs_regex(<image xlink:href>): {:?}",
+            refs
+        );
     }
 
     #[test]
@@ -3905,11 +4410,19 @@ mod tests {
 </html>"#;
 
         let refs = comic::extract_image_refs_from_xhtml(xhtml);
-        assert_eq!(refs.len(), 3, "Should extract 3 image refs, got {}", refs.len());
+        assert_eq!(
+            refs.len(),
+            3,
+            "Should extract 3 image refs, got {}",
+            refs.len()
+        );
         assert_eq!(refs[0], "cover.jpg");
         assert_eq!(refs[1], "page1.png");
         assert_eq!(refs[2], "page2.png");
-        println!("  \u{2713} extract_image_refs_from_xhtml (multiple): {:?}", refs);
+        println!(
+            "  \u{2713} extract_image_refs_from_xhtml (multiple): {:?}",
+            refs
+        );
     }
 
     // =======================================================================
@@ -3927,8 +4440,10 @@ mod tests {
         let strip_width = 100u32;
         let device_height = 1448u32;
 
-        let img = image::DynamicImage::ImageLuma8(
-            image::GrayImage::from_fn(strip_width, strip_height, |_x, y| {
+        let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(
+            strip_width,
+            strip_height,
+            |_x, y| {
                 // Create solid BLACK gutter rows near target split points
                 if (y >= 1390 && y <= 1420) || (y >= 2790 && y <= 2820) {
                     image::Luma([0]) // BLACK gutter (not white)
@@ -3936,8 +4451,8 @@ mod tests {
                     // Varied content (high variance rows)
                     image::Luma([((y * 7 + 13) % 200) as u8 + 30])
                 }
-            }),
-        );
+            },
+        ));
 
         let pages = comic::webtoon_split(&img, device_height);
 
@@ -3956,7 +4471,11 @@ mod tests {
         // All pages should have the correct width
         for (i, page) in pages.iter().enumerate() {
             let (pw, _ph) = page.dimensions();
-            assert_eq!(pw, strip_width, "Page {} width should be {}, got {}", i, strip_width, pw);
+            assert_eq!(
+                pw, strip_width,
+                "Page {} width should be {}, got {}",
+                i, strip_width, pw
+            );
         }
 
         // Total height should equal the strip height (clean gutter cuts, no overlap needed)
@@ -3968,7 +4487,10 @@ mod tests {
         );
         println!(
             "  \u{2713} Dark gutter detection: {} pages from {}px strip, total_h={}, all widths={}",
-            pages.len(), strip_height, total_h, strip_width
+            pages.len(),
+            strip_height,
+            total_h,
+            strip_width
         );
     }
 
@@ -3984,17 +4506,23 @@ mod tests {
         let images_dir = dir.path().join("images");
         fs::create_dir_all(&images_dir).unwrap();
 
-        let img = image::DynamicImage::ImageLuma8(
-            image::GrayImage::from_fn(100, 150, |_, _| image::Luma([128])),
-        );
+        let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(100, 150, |_, _| {
+            image::Luma([128])
+        }));
         img.save(images_dir.join("page_001.jpg")).unwrap();
 
         let output_path = dir.path().join("ebok_comic.mobi");
         let profile = comic::get_profile("paperwhite").unwrap();
         let options = comic::ComicOptions {
-            rtl: false, split: false, crop: 0, enhance: false,
-            webtoon: false, panel_view: false,
-            jpeg_quality: 85, max_height: 65536, embed_source: false,
+            rtl: false,
+            split: false,
+            crop: 0,
+            enhance: false,
+            webtoon: false,
+            panel_view: false,
+            jpeg_quality: 85,
+            max_height: 65536,
+            embed_source: false,
             doc_type: Some("EBOK".to_string()),
             ..Default::default()
         };
@@ -4007,7 +4535,9 @@ mod tests {
         let exth = parse_exth_records(rec0);
 
         // Verify EXTH 501 = "EBOK"
-        let exth501 = exth.get(&501).expect("EXTH 501 should exist for doc_type=EBOK");
+        let exth501 = exth
+            .get(&501)
+            .expect("EXTH 501 should exist for doc_type=EBOK");
         let value = std::str::from_utf8(&exth501[0]).unwrap();
         assert_eq!(value, "EBOK", "EXTH 501 should be 'EBOK', got '{}'", value);
         println!("  \u{2713} Comic doc_type=EBOK: EXTH 501='{}'", value);
@@ -4021,17 +4551,23 @@ mod tests {
         let images_dir = dir.path().join("images");
         fs::create_dir_all(&images_dir).unwrap();
 
-        let img = image::DynamicImage::ImageLuma8(
-            image::GrayImage::from_fn(100, 150, |_, _| image::Luma([128])),
-        );
+        let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(100, 150, |_, _| {
+            image::Luma([128])
+        }));
         img.save(images_dir.join("page_001.jpg")).unwrap();
 
         let output_path = dir.path().join("titled_comic.mobi");
         let profile = comic::get_profile("paperwhite").unwrap();
         let options = comic::ComicOptions {
-            rtl: false, split: false, crop: 0, enhance: false,
-            webtoon: false, panel_view: false,
-            jpeg_quality: 85, max_height: 65536, embed_source: false,
+            rtl: false,
+            split: false,
+            crop: 0,
+            enhance: false,
+            webtoon: false,
+            panel_view: false,
+            jpeg_quality: 85,
+            max_height: 65536,
+            embed_source: false,
             title_override: Some("Custom Title".to_string()),
             ..Default::default()
         };
@@ -4062,11 +4598,17 @@ mod tests {
                 "EXTH 503 should contain 'Custom Title', got '{}'",
                 title
             );
-            println!("  \u{2713} Comic title override: PalmDB='{}', EXTH 503='{}'", name, title);
+            println!(
+                "  \u{2713} Comic title override: PalmDB='{}', EXTH 503='{}'",
+                name, title
+            );
         } else {
             // Check EXTH 100 (author field is often set, but 503 may not be - check EXTH 99 = title)
             // The title goes through the OPF -> MOBI path. Verify via PalmDB name at minimum.
-            println!("  \u{2713} Comic title override: PalmDB='{}' (no EXTH 503)", name);
+            println!(
+                "  \u{2713} Comic title override: PalmDB='{}' (no EXTH 503)",
+                name
+            );
         }
     }
 
@@ -4078,17 +4620,23 @@ mod tests {
         let images_dir = dir.path().join("images");
         fs::create_dir_all(&images_dir).unwrap();
 
-        let img = image::DynamicImage::ImageLuma8(
-            image::GrayImage::from_fn(100, 150, |_, _| image::Luma([128])),
-        );
+        let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(100, 150, |_, _| {
+            image::Luma([128])
+        }));
         img.save(images_dir.join("page_001.jpg")).unwrap();
 
         let output_path = dir.path().join("ja_comic.mobi");
         let profile = comic::get_profile("paperwhite").unwrap();
         let options = comic::ComicOptions {
-            rtl: false, split: false, crop: 0, enhance: false,
-            webtoon: false, panel_view: false,
-            jpeg_quality: 85, max_height: 65536, embed_source: false,
+            rtl: false,
+            split: false,
+            crop: 0,
+            enhance: false,
+            webtoon: false,
+            panel_view: false,
+            jpeg_quality: 85,
+            max_height: 65536,
+            embed_source: false,
             language: Some("ja".to_string()),
             ..Default::default()
         };
@@ -4101,7 +4649,9 @@ mod tests {
         let exth = parse_exth_records(rec0);
 
         // Verify EXTH 524 = "ja" (language)
-        let exth524 = exth.get(&524).expect("EXTH 524 should exist for language override");
+        let exth524 = exth
+            .get(&524)
+            .expect("EXTH 524 should exist for language override");
         let value = std::str::from_utf8(&exth524[0]).unwrap();
         assert_eq!(value, "ja", "EXTH 524 should be 'ja', got '{}'", value);
         println!("  \u{2713} Comic language=ja: EXTH 524='{}'", value);
@@ -4126,7 +4676,9 @@ mod tests {
             let dyn_img = image::DynamicImage::ImageRgb8(img);
             let mut buf = Vec::new();
             let mut cursor = std::io::Cursor::new(&mut buf);
-            dyn_img.write_to(&mut cursor, image::ImageFormat::Jpeg).unwrap();
+            dyn_img
+                .write_to(&mut cursor, image::ImageFormat::Jpeg)
+                .unwrap();
             buf
         };
         let img2 = {
@@ -4136,7 +4688,9 @@ mod tests {
             let dyn_img = image::DynamicImage::ImageRgb8(img);
             let mut buf = Vec::new();
             let mut cursor = std::io::Cursor::new(&mut buf);
-            dyn_img.write_to(&mut cursor, image::ImageFormat::Jpeg).unwrap();
+            dyn_img
+                .write_to(&mut cursor, image::ImageFormat::Jpeg)
+                .unwrap();
             buf
         };
 
@@ -4156,17 +4710,22 @@ mod tests {
                 .compression_method(zip::CompressionMethod::Deflated);
 
             // META-INF/container.xml
-            zip.start_file("META-INF/container.xml", deflate_opts).unwrap();
-            zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+            zip.start_file("META-INF/container.xml", deflate_opts)
+                .unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
   <rootfiles>
     <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
   </rootfiles>
-</container>"#).unwrap();
+</container>"#,
+            )
+            .unwrap();
 
             // OEBPS/content.opf
             zip.start_file("OEBPS/content.opf", deflate_opts).unwrap();
-            zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:title>EPUB Comic Test</dc:title>
@@ -4184,29 +4743,39 @@ mod tests {
     <itemref idref="page1"/>
     <itemref idref="page2"/>
   </spine>
-</package>"#).unwrap();
+</package>"#,
+            )
+            .unwrap();
 
             // OEBPS/page1.xhtml
             zip.start_file("OEBPS/page1.xhtml", deflate_opts).unwrap();
-            zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head><title>Page 1</title></head>
 <body><img src="images/img1.jpg"/></body>
-</html>"#).unwrap();
+</html>"#,
+            )
+            .unwrap();
 
             // OEBPS/page2.xhtml
             zip.start_file("OEBPS/page2.xhtml", deflate_opts).unwrap();
-            zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head><title>Page 2</title></head>
 <body><img src="images/img2.jpg"/></body>
-</html>"#).unwrap();
+</html>"#,
+            )
+            .unwrap();
 
             // OEBPS/images/img1.jpg and img2.jpg
-            zip.start_file("OEBPS/images/img1.jpg", stored_opts).unwrap();
+            zip.start_file("OEBPS/images/img1.jpg", stored_opts)
+                .unwrap();
             zip.write_all(&img1).unwrap();
 
-            zip.start_file("OEBPS/images/img2.jpg", stored_opts).unwrap();
+            zip.start_file("OEBPS/images/img2.jpg", stored_opts)
+                .unwrap();
             zip.write_all(&img2).unwrap();
 
             let cursor = zip.finish().unwrap();
@@ -4225,7 +4794,11 @@ mod tests {
 
         // Verify output exists and has reasonable size
         let data = fs::read(&output_path).expect("could not read output MOBI");
-        assert!(data.len() > 100, "Comic MOBI too small: {} bytes", data.len());
+        assert!(
+            data.len() > 100,
+            "Comic MOBI too small: {} bytes",
+            data.len()
+        );
 
         // PalmDB type/creator check
         assert_eq!(&data[60..64], b"BOOK", "PalmDB type should be BOOK");
@@ -4239,15 +4812,16 @@ mod tests {
 
         // Check for EXTH 122 = "true" (fixed-layout flag, expected for comics)
         let exth = parse_exth_records(rec0);
-        let exth122 = exth.get(&122).expect("Comic EXTH should contain record 122 (fixed-layout)");
+        let exth122 = exth
+            .get(&122)
+            .expect("Comic EXTH should contain record 122 (fixed-layout)");
         let value = std::str::from_utf8(&exth122[0]).unwrap();
         assert_eq!(value, "true", "EXTH 122 should be 'true' for fixed-layout");
 
         // Verify image records: first_image_record at MOBI header offset 92 (rec0 offset 108)
         let first_img = read_u32_be(rec0, 108) as usize;
         assert_ne!(
-            first_img,
-            0xFFFFFFFF_u32 as usize,
+            first_img, 0xFFFFFFFF_u32 as usize,
             "Comic with images should have first_image set"
         );
 
@@ -4286,11 +4860,13 @@ mod tests {
         fs::create_dir_all(&images_dir).unwrap();
 
         // 300x150 landscape image
-        let img = image::DynamicImage::ImageRgb8(
-            image::RgbImage::from_fn(300, 150, |x, _| {
-                if x < 150 { image::Rgb([80, 80, 80]) } else { image::Rgb([180, 180, 180]) }
-            }),
-        );
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(300, 150, |x, _| {
+            if x < 150 {
+                image::Rgb([80, 80, 80])
+            } else {
+                image::Rgb([180, 180, 180])
+            }
+        }));
         img.save(images_dir.join("spread_001.jpg")).unwrap();
 
         let output_path = dir.path().join("rotate_spreads.mobi");
@@ -4344,7 +4920,8 @@ mod tests {
         assert!(
             split_record_count > record_count,
             "Split version should have more records ({}) than rotated version ({})",
-            split_record_count, record_count,
+            split_record_count,
+            record_count,
         );
 
         // Verify the rotated image is portrait (height > width) by decoding the first
@@ -4354,15 +4931,19 @@ mod tests {
         let first_img_idx = read_u32_be(rec0, 108) as usize;
         let img_rec = get_record(&data, &offsets, first_img_idx);
         // Decode the JPEG to check dimensions
-        let decoded = image::load_from_memory(img_rec)
-            .expect("failed to decode rotated image from MOBI");
+        let decoded =
+            image::load_from_memory(img_rec).expect("failed to decode rotated image from MOBI");
         let (w, h) = decoded.dimensions();
         assert!(
             h > w,
-            "Rotated spread should be portrait (height > width), got {}x{}", w, h,
+            "Rotated spread should be portrait (height > width), got {}x{}",
+            w,
+            h,
         );
-        println!("  \u{2713} Rotated spread: {}x{} portrait, {} records (vs {} split records)",
-                 w, h, record_count, split_record_count);
+        println!(
+            "  \u{2713} Rotated spread: {}x{} portrait, {} records (vs {} split records)",
+            w, h, record_count, split_record_count
+        );
     }
 
     // =======================================================================
@@ -4377,46 +4958,82 @@ mod tests {
         //   Panel A (0,0)    Panel B (52,0)
         //   Panel C (0,52)   Panel D (52,52)
         let panels = vec![
-            comic::PanelRect { x: 0.0, y: 0.0, w: 47.0, h: 47.0 },   // A: top-left
-            comic::PanelRect { x: 52.0, y: 0.0, w: 47.0, h: 47.0 },  // B: top-right
-            comic::PanelRect { x: 0.0, y: 52.0, w: 47.0, h: 47.0 },  // C: bottom-left
-            comic::PanelRect { x: 52.0, y: 52.0, w: 47.0, h: 47.0 }, // D: bottom-right
+            comic::PanelRect {
+                x: 0.0,
+                y: 0.0,
+                w: 47.0,
+                h: 47.0,
+            }, // A: top-left
+            comic::PanelRect {
+                x: 52.0,
+                y: 0.0,
+                w: 47.0,
+                h: 47.0,
+            }, // B: top-right
+            comic::PanelRect {
+                x: 0.0,
+                y: 52.0,
+                w: 47.0,
+                h: 47.0,
+            }, // C: bottom-left
+            comic::PanelRect {
+                x: 52.0,
+                y: 52.0,
+                w: 47.0,
+                h: 47.0,
+            }, // D: bottom-right
         ];
 
         // horizontal-lr: A, B, C, D (left-to-right, top-to-bottom)
         let mut lr = panels.clone();
         comic::sort_panels_by_reading_order(&mut lr, "horizontal-lr");
-        assert_eq!(lr[0].x, 0.0);  assert_eq!(lr[0].y, 0.0);   // A
-        assert_eq!(lr[1].x, 52.0); assert_eq!(lr[1].y, 0.0);   // B
-        assert_eq!(lr[2].x, 0.0);  assert_eq!(lr[2].y, 52.0);  // C
-        assert_eq!(lr[3].x, 52.0); assert_eq!(lr[3].y, 52.0);  // D
+        assert_eq!(lr[0].x, 0.0);
+        assert_eq!(lr[0].y, 0.0); // A
+        assert_eq!(lr[1].x, 52.0);
+        assert_eq!(lr[1].y, 0.0); // B
+        assert_eq!(lr[2].x, 0.0);
+        assert_eq!(lr[2].y, 52.0); // C
+        assert_eq!(lr[3].x, 52.0);
+        assert_eq!(lr[3].y, 52.0); // D
         println!("  \u{2713} horizontal-lr: A, B, C, D");
 
         // horizontal-rl: B, A, D, C (right-to-left, top-to-bottom)
         let mut rl = panels.clone();
         comic::sort_panels_by_reading_order(&mut rl, "horizontal-rl");
-        assert_eq!(rl[0].x, 52.0); assert_eq!(rl[0].y, 0.0);   // B
-        assert_eq!(rl[1].x, 0.0);  assert_eq!(rl[1].y, 0.0);   // A
-        assert_eq!(rl[2].x, 52.0); assert_eq!(rl[2].y, 52.0);  // D
-        assert_eq!(rl[3].x, 0.0);  assert_eq!(rl[3].y, 52.0);  // C
+        assert_eq!(rl[0].x, 52.0);
+        assert_eq!(rl[0].y, 0.0); // B
+        assert_eq!(rl[1].x, 0.0);
+        assert_eq!(rl[1].y, 0.0); // A
+        assert_eq!(rl[2].x, 52.0);
+        assert_eq!(rl[2].y, 52.0); // D
+        assert_eq!(rl[3].x, 0.0);
+        assert_eq!(rl[3].y, 52.0); // C
         println!("  \u{2713} horizontal-rl: B, A, D, C");
 
         // vertical-lr: A, C, B, D (top-to-bottom, left-to-right)
         let mut vlr = panels.clone();
         comic::sort_panels_by_reading_order(&mut vlr, "vertical-lr");
-        assert_eq!(vlr[0].x, 0.0);  assert_eq!(vlr[0].y, 0.0);   // A
-        assert_eq!(vlr[1].x, 0.0);  assert_eq!(vlr[1].y, 52.0);  // C
-        assert_eq!(vlr[2].x, 52.0); assert_eq!(vlr[2].y, 0.0);   // B
-        assert_eq!(vlr[3].x, 52.0); assert_eq!(vlr[3].y, 52.0);  // D
+        assert_eq!(vlr[0].x, 0.0);
+        assert_eq!(vlr[0].y, 0.0); // A
+        assert_eq!(vlr[1].x, 0.0);
+        assert_eq!(vlr[1].y, 52.0); // C
+        assert_eq!(vlr[2].x, 52.0);
+        assert_eq!(vlr[2].y, 0.0); // B
+        assert_eq!(vlr[3].x, 52.0);
+        assert_eq!(vlr[3].y, 52.0); // D
         println!("  \u{2713} vertical-lr: A, C, B, D");
 
         // vertical-rl: B, D, A, C (top-to-bottom, right-to-left)
         let mut vrl = panels.clone();
         comic::sort_panels_by_reading_order(&mut vrl, "vertical-rl");
-        assert_eq!(vrl[0].x, 52.0); assert_eq!(vrl[0].y, 0.0);   // B
-        assert_eq!(vrl[1].x, 52.0); assert_eq!(vrl[1].y, 52.0);  // D
-        assert_eq!(vrl[2].x, 0.0);  assert_eq!(vrl[2].y, 0.0);   // A
-        assert_eq!(vrl[3].x, 0.0);  assert_eq!(vrl[3].y, 52.0);  // C
+        assert_eq!(vrl[0].x, 52.0);
+        assert_eq!(vrl[0].y, 0.0); // B
+        assert_eq!(vrl[1].x, 52.0);
+        assert_eq!(vrl[1].y, 52.0); // D
+        assert_eq!(vrl[2].x, 0.0);
+        assert_eq!(vrl[2].y, 0.0); // A
+        assert_eq!(vrl[3].x, 0.0);
+        assert_eq!(vrl[3].y, 52.0); // C
         println!("  \u{2713} vertical-rl: B, D, A, C");
 
         // Auto-detect: RTL should default to horizontal-rl
@@ -4432,14 +5049,20 @@ mod tests {
         // Explicit override should take precedence over RTL
         let order_override = comic::resolve_panel_reading_order(Some("vertical-lr"), true);
         assert_eq!(order_override, "vertical-lr");
-        println!("  \u{2713} explicit override vertical-lr with RTL: {}", order_override);
+        println!(
+            "  \u{2713} explicit override vertical-lr with RTL: {}",
+            order_override
+        );
 
         // Verify panels are different with different reading orders
         let mut order1 = panels.clone();
         let mut order2 = panels.clone();
         comic::sort_panels_by_reading_order(&mut order1, "horizontal-lr");
         comic::sort_panels_by_reading_order(&mut order2, "horizontal-rl");
-        assert_ne!(order1, order2, "horizontal-lr and horizontal-rl should produce different orderings");
+        assert_ne!(
+            order1, order2,
+            "horizontal-lr and horizontal-rl should produce different orderings"
+        );
         println!("  \u{2713} different reading orders produce different panel sequences");
     }
 
@@ -4453,11 +5076,9 @@ mod tests {
         let images_dir = dir.path().join("images");
         fs::create_dir_all(&images_dir).unwrap();
 
-        let img = image::DynamicImage::ImageRgb8(
-            image::RgbImage::from_fn(400, 400, |x, y| {
-                image::Rgb([(x % 256) as u8, (y % 256) as u8, 128])
-            }),
-        );
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(400, 400, |x, y| {
+            image::Rgb([(x % 256) as u8, (y % 256) as u8, 128])
+        }));
         img.save(images_dir.join("page_001.jpg")).unwrap();
 
         let output_path = dir.path().join("cover_fill.mobi");
@@ -4482,12 +5103,13 @@ mod tests {
         // Find the first image record
         let first_img_idx = read_u32_be(rec0, 108) as usize;
         let cover_rec = get_record(&data, &offsets, first_img_idx);
-        assert!(cover_rec.len() > 2 && cover_rec[0] == 0xFF && cover_rec[1] == 0xD8,
-            "Cover record should be a JPEG");
+        assert!(
+            cover_rec.len() > 2 && cover_rec[0] == 0xFF && cover_rec[1] == 0xD8,
+            "Cover record should be a JPEG"
+        );
 
         // Decode the cover and verify it matches the device aspect ratio
-        let cover_img = image::load_from_memory(cover_rec)
-            .expect("Failed to decode cover JPEG");
+        let cover_img = image::load_from_memory(cover_rec).expect("Failed to decode cover JPEG");
         let (w, h) = (cover_img.width(), cover_img.height());
 
         // The cover should have been resized to the device dimensions exactly.
@@ -4499,12 +5121,17 @@ mod tests {
         // Verify the aspect ratio matches the device (within rounding tolerance)
         let device_ratio = profile.width as f64 / profile.height as f64;
         let cover_ratio = w as f64 / h as f64;
-        assert!((device_ratio - cover_ratio).abs() < 0.01,
+        assert!(
+            (device_ratio - cover_ratio).abs() < 0.01,
             "Cover aspect ratio ({:.4}) should match device ({:.4})",
-            cover_ratio, device_ratio);
+            cover_ratio,
+            device_ratio
+        );
 
-        println!("  \u{2713} cover_fill: cover is {}x{} (matches device {}x{})",
-            w, h, profile.width, profile.height);
+        println!(
+            "  \u{2713} cover_fill: cover is {}x{} (matches device {}x{})",
+            w, h, profile.width, profile.height
+        );
     }
 
     // =======================================================================
@@ -4563,8 +5190,14 @@ mod tests {
                 break;
             }
         }
-        assert!(found_indx, "Dictionary with kindle_limits should still have INDX records");
-        println!("  \u{2713} kindle_limits dict: valid MOBI with INDX, {} records", record_count);
+        assert!(
+            found_indx,
+            "Dictionary with kindle_limits should still have INDX records"
+        );
+        println!(
+            "  \u{2713} kindle_limits dict: valid MOBI with INDX, {} records",
+            record_count
+        );
     }
 
     #[test]
@@ -4603,10 +5236,7 @@ mod tests {
     fn test_kindle_limits_off_dict_uses_single_blob() {
         // With kindle_limits=false, dictionary should use the original single-file approach.
         let dir = TempDir::new("kindle_limits_off");
-        let entries: &[(&str, &[&str])] = &[
-            ("alpha", &[]),
-            ("beta", &[]),
-        ];
+        let entries: &[(&str, &[&str])] = &[("alpha", &[]), ("beta", &[])];
         let opf_path = create_dict_fixture(dir.path(), entries);
         let output_path = dir.path().join("output.mobi");
 
@@ -4707,7 +5337,8 @@ mod tests {
         let dir = TempDir::new("dict_front_matter");
 
         // Create front matter HTML (no idx:entry tags)
-        let cover_html = r#"<html><head></head><body><h1>My Dictionary</h1><p>Copyright 2026</p></body></html>"#;
+        let cover_html =
+            r#"<html><head></head><body><h1>My Dictionary</h1><p>Copyright 2026</p></body></html>"#;
         fs::write(dir.path().join("cover.html"), cover_html).unwrap();
 
         // Create dictionary content HTML
@@ -4781,9 +5412,12 @@ mod tests {
         assert!(
             fm_pos < dict_pos,
             "Front matter should appear before dictionary entries (fm at {}, dict at {})",
-            fm_pos, dict_pos
+            fm_pos,
+            dict_pos
         );
-        println!("  \u{2713} Front matter included and appears before dictionary entries in kindle_limits mode");
+        println!(
+            "  \u{2713} Front matter included and appears before dictionary entries in kindle_limits mode"
+        );
     }
 
     #[test]
@@ -4841,7 +5475,10 @@ mod tests {
             text.contains("a loyal animal<hr/>"),
             "Entry content should be followed by <hr/> separator"
         );
-        println!("  \u{2713} <hr/> separators present between dictionary entries ({} found)", hr_count);
+        println!(
+            "  \u{2713} <hr/> separators present between dictionary entries ({} found)",
+            hr_count
+        );
     }
 
     // =======================================================================
@@ -4852,10 +5489,7 @@ mod tests {
     // Helper: build a dictionary MOBI with kindle_limits enabled
     // -----------------------------------------------------------------------
 
-    fn build_mobi_bytes_with_kindle_limits(
-        opf_path: &Path,
-        output_dir: &Path,
-    ) -> Vec<u8> {
+    fn build_mobi_bytes_with_kindle_limits(opf_path: &Path, output_dir: &Path) -> Vec<u8> {
         let output_path = output_dir.join("output_kl.mobi");
         mobi::build_mobi(
             opf_path,
@@ -5004,10 +5638,7 @@ mod tests {
     // cause find_entry_positions to match the wrong occurrence)
     // -----------------------------------------------------------------------
 
-    fn create_dict_fixture_unambiguous(
-        dir: &Path,
-        entries: &[(&str, &[&str])],
-    ) -> PathBuf {
+    fn create_dict_fixture_unambiguous(dir: &Path, entries: &[(&str, &[&str])]) -> PathBuf {
         let mut html_body = String::new();
         for (i, (hw, iforms)) in entries.iter().enumerate() {
             html_body.push_str(&format!(
@@ -5023,7 +5654,8 @@ mod tests {
             // Use a unique numeric definition that does NOT contain the headword
             html_body.push_str(&format!(
                 "<b>{hw}</b> entry number {i}<hr/></idx:entry>\n",
-                hw = hw, i = i
+                hw = hw,
+                i = i
             ));
         }
 
@@ -5081,27 +5713,23 @@ mod tests {
         let text_blob = extract_text_blob(&data);
         let indx_entries = parse_indx_entries(&data, &offsets, orth_idx);
 
-        assert!(
-            !indx_entries.is_empty(),
-            "Should have parsed INDX entries"
-        );
+        assert!(!indx_entries.is_empty(), "Should have parsed INDX entries");
 
         for (i, &(start_pos, text_len)) in indx_entries.iter().enumerate() {
             let sp = start_pos as usize;
             let tl = text_len as usize;
 
             // text_len must be > 0
-            assert!(
-                tl > 0,
-                "INDX entry {} has text_len=0 (start_pos={})",
-                i, sp
-            );
+            assert!(tl > 0, "INDX entry {} has text_len=0 (start_pos={})", i, sp);
 
             // start_pos + text_len must not exceed the text blob
             assert!(
                 sp + tl <= text_blob.len(),
                 "INDX entry {} out of bounds: start_pos={}, text_len={}, text_blob_len={}",
-                i, sp, tl, text_blob.len()
+                i,
+                sp,
+                tl,
+                text_blob.len()
             );
 
             // The entry's text region should contain "<b>" near the start.
@@ -5114,7 +5742,8 @@ mod tests {
             assert!(
                 has_bold,
                 "INDX entry {} at start_pos={} should contain '<b>' near the start, got {:?}",
-                i, sp,
+                i,
+                sp,
                 String::from_utf8_lossy(region)
             );
         }
@@ -5172,10 +5801,7 @@ mod tests {
     #[test]
     fn test_record0_text_record_count_matches_actual() {
         let dir = TempDir::new("rec0_text_count");
-        let entries: &[(&str, &[&str])] = &[
-            ("apple", &[]),
-            ("banana", &[]),
-        ];
+        let entries: &[(&str, &[&str])] = &[("apple", &[]), ("banana", &[])];
         let opf = create_dict_fixture(dir.path(), entries);
         let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
 
@@ -5221,16 +5847,22 @@ mod tests {
         assert!(
             orth_idx < offsets.len(),
             "orth_index_record {} exceeds record count {}",
-            orth_idx, offsets.len()
+            orth_idx,
+            offsets.len()
         );
 
         let indx_rec = get_record(&data, &offsets, orth_idx);
         assert_eq!(
-            &indx_rec[0..4], b"INDX",
+            &indx_rec[0..4],
+            b"INDX",
             "Record at orth_index_record={} should start with INDX magic, got {:?}",
-            orth_idx, &indx_rec[0..4]
+            orth_idx,
+            &indx_rec[0..4]
         );
-        println!("  \u{2713} orth_index_record={} -> INDX magic verified", orth_idx);
+        println!(
+            "  \u{2713} orth_index_record={} -> INDX magic verified",
+            orth_idx
+        );
     }
 
     #[test]
@@ -5249,7 +5881,10 @@ mod tests {
             "extra_record_data_flags should be 3 (multibyte + TBS), got {}",
             extra_flags
         );
-        println!("  \u{2713} extra_record_data_flags = {} (multibyte + TBS)", extra_flags);
+        println!(
+            "  \u{2713} extra_record_data_flags = {} (multibyte + TBS)",
+            extra_flags
+        );
     }
 
     // =======================================================================
@@ -5281,21 +5916,26 @@ mod tests {
             assert!(
                 len >= 2,
                 "Text record {} too short ({} bytes) to have trailing bytes",
-                i, len
+                i,
+                len
             );
 
             // Last byte is TBS (0x81), second-to-last is multibyte (0x00).
             // libmobi / Kindle parse extras from the end backward,
             // bit 1 = TBS first, then bit 0 = multibyte.
             assert_eq!(
-                rec[len - 1], 0x81,
+                rec[len - 1],
+                0x81,
                 "Text record {} trailing byte[-1] should be 0x81 (TBS), got 0x{:02X}",
-                i, rec[len - 1]
+                i,
+                rec[len - 1]
             );
             assert_eq!(
-                rec[len - 2], 0x00,
+                rec[len - 2],
+                0x00,
                 "Text record {} trailing byte[-2] should be 0x00 (multibyte), got 0x{:02X}",
-                i, rec[len - 2]
+                i,
+                rec[len - 2]
             );
         }
 
@@ -5311,8 +5951,16 @@ mod tests {
         // Create enough entries to produce text > 4096 bytes so we get multiple records
         let mut entries_vec: Vec<(&str, &[&str])> = Vec::new();
         let words: &[&str] = &[
-            "aardvark", "abacus", "abandon", "abbreviation", "abdomen",
-            "aberration", "ability", "abnormal", "abolish", "abominable",
+            "aardvark",
+            "abacus",
+            "abandon",
+            "abbreviation",
+            "abdomen",
+            "aberration",
+            "ability",
+            "abnormal",
+            "abolish",
+            "abominable",
         ];
         for w in words {
             entries_vec.push((w, &[]));
@@ -5334,21 +5982,27 @@ mod tests {
             if i < text_record_count {
                 // Non-last records should be exactly RECORD_SIZE + 2 trailing bytes
                 assert_eq!(
-                    rec.len(), expected_full_size,
+                    rec.len(),
+                    expected_full_size,
                     "Text record {} (non-last) should be {} bytes, got {}",
-                    i, expected_full_size, rec.len()
+                    i,
+                    expected_full_size,
+                    rec.len()
                 );
             } else {
                 // Last record can be smaller but must still have trailing bytes
                 assert!(
                     rec.len() >= 3, // at least 1 byte of text + 2 trailing
                     "Last text record {} should have at least 3 bytes, got {}",
-                    i, rec.len()
+                    i,
+                    rec.len()
                 );
                 assert!(
                     rec.len() <= expected_full_size,
                     "Last text record {} should be <= {} bytes, got {}",
-                    i, expected_full_size, rec.len()
+                    i,
+                    expected_full_size,
+                    rec.len()
                 );
             }
         }
@@ -5382,9 +6036,11 @@ mod tests {
         let indx_entries = parse_indx_entries(&data, &offsets, orth_idx);
 
         assert_eq!(
-            indx_entries.len(), entries.len(),
+            indx_entries.len(),
+            entries.len(),
             "INDX should have {} entries (headwords_only), got {}",
-            entries.len(), indx_entries.len()
+            entries.len(),
+            indx_entries.len()
         );
 
         for (i, &(start_pos, text_len)) in indx_entries.iter().enumerate() {
@@ -5526,18 +6182,26 @@ mod tests {
         // Create 3 small test images
         for i in 0..3u8 {
             let brightness = 50 + i * 80;
-            let img = image::DynamicImage::ImageLuma8(
-                image::GrayImage::from_fn(100, 150, |_, _| image::Luma([brightness])),
-            );
-            img.save(images_dir.join(format!("page_{:03}.jpg", i))).unwrap();
+            let img =
+                image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(100, 150, |_, _| {
+                    image::Luma([brightness])
+                }));
+            img.save(images_dir.join(format!("page_{:03}.jpg", i)))
+                .unwrap();
         }
 
         let output_path = dir.join("comic.azw3");
         let profile = comic::get_profile("paperwhite").unwrap();
         let options = comic::ComicOptions {
-            rtl: false, split: false, crop: 0, enhance: false,
-            webtoon: false, panel_view: false,
-            jpeg_quality: 85, max_height: 65536, embed_source: false,
+            rtl: false,
+            split: false,
+            crop: 0,
+            enhance: false,
+            webtoon: false,
+            panel_view: false,
+            jpeg_quality: 85,
+            max_height: 65536,
+            embed_source: false,
             kf8_only: true,
             ..Default::default()
         };
@@ -5558,12 +6222,23 @@ mod tests {
 
         // File version at MOBI header offset 20 (rec0 offset 36)
         let version = read_u32_be(rec0, 36);
-        assert_eq!(version, 8, "Comic KF8-only version should be 8, got {}", version);
+        assert_eq!(
+            version, 8,
+            "Comic KF8-only version should be 8, got {}",
+            version
+        );
 
         // Min version at MOBI header offset 88 (rec0 offset 104)
         let min_version = read_u32_be(rec0, 104);
-        assert_eq!(min_version, 8, "Comic KF8-only min_version should be 8, got {}", min_version);
-        println!("  \u{2713} Comic KF8-only rec0: version={}, min_version={}", version, min_version);
+        assert_eq!(
+            min_version, 8,
+            "Comic KF8-only min_version should be 8, got {}",
+            min_version
+        );
+        println!(
+            "  \u{2713} Comic KF8-only rec0: version={}, min_version={}",
+            version, min_version
+        );
     }
 
     #[test]
@@ -5579,7 +6254,8 @@ mod tests {
                 let next_rec = get_record(&data, &offsets, i + 1);
                 assert!(
                     next_rec.len() < 20 || &next_rec[16..20] != b"MOBI",
-                    "Comic KF8-only should not have a BOUNDARY separating KF7/KF8 sections (found at index {})", i
+                    "Comic KF8-only should not have a BOUNDARY separating KF7/KF8 sections (found at index {})",
+                    i
                 );
             }
         }
@@ -5589,7 +6265,10 @@ mod tests {
         assert_eq!(&rec0[16..20], b"MOBI");
         let version = read_u32_be(rec0, 36);
         assert_eq!(version, 8, "The sole Record 0 should be version 8 (KF8)");
-        println!("  \u{2713} Comic KF8-only: no KF7/KF8 BOUNDARY, sole rec0 version={}", version);
+        println!(
+            "  \u{2713} Comic KF8-only: no KF7/KF8 BOUNDARY, sole rec0 version={}",
+            version
+        );
     }
 
     #[test]
@@ -5602,8 +6281,7 @@ mod tests {
         // first_image_record at MOBI header offset 92 (rec0 offset 108)
         let first_img = read_u32_be(rec0, 108) as usize;
         assert_ne!(
-            first_img,
-            0xFFFFFFFF_u32 as usize,
+            first_img, 0xFFFFFFFF_u32 as usize,
             "Comic KF8-only with images should have first_image set"
         );
 
@@ -5631,7 +6309,10 @@ mod tests {
             "Should have 3 source images + 1 library thumbnail = 4 JPEGs, found {}",
             jpeg_count
         );
-        println!("  \u{2713} Comic KF8-only: {} JPEGs (3 source + 1 thumbnail) at index {}", jpeg_count, first_img);
+        println!(
+            "  \u{2713} Comic KF8-only: {} JPEGs (3 source + 1 thumbnail) at index {}",
+            jpeg_count, first_img
+        );
     }
 
     #[test]
@@ -5661,17 +6342,25 @@ mod tests {
         let images_dir_dual = dir_dual.path().join("images");
         fs::create_dir_all(&images_dir_dual).unwrap();
         for i in 0..3u8 {
-            let img = image::DynamicImage::ImageLuma8(
-                image::GrayImage::from_fn(100, 150, |_, _| image::Luma([50 + i * 80])),
-            );
-            img.save(images_dir_dual.join(format!("page_{:03}.jpg", i))).unwrap();
+            let img =
+                image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(100, 150, |_, _| {
+                    image::Luma([50 + i * 80])
+                }));
+            img.save(images_dir_dual.join(format!("page_{:03}.jpg", i)))
+                .unwrap();
         }
         let output_dual = dir_dual.path().join("comic.mobi");
         let profile = comic::get_profile("paperwhite").unwrap();
         let options_dual = comic::ComicOptions {
-            rtl: false, split: false, crop: 0, enhance: false,
-            webtoon: false, panel_view: false,
-            jpeg_quality: 85, max_height: 65536, embed_source: false,
+            rtl: false,
+            split: false,
+            crop: 0,
+            enhance: false,
+            webtoon: false,
+            panel_view: false,
+            jpeg_quality: 85,
+            max_height: 65536,
+            embed_source: false,
             kf8_only: false,
             ..Default::default()
         };
@@ -5688,7 +6377,11 @@ mod tests {
             kf8_data.len(),
             dual_data.len()
         );
-        println!("  \u{2713} Comic KF8-only {} bytes < dual {} bytes", kf8_data.len(), dual_data.len());
+        println!(
+            "  \u{2713} Comic KF8-only {} bytes < dual {} bytes",
+            kf8_data.len(),
+            dual_data.len()
+        );
     }
 
     #[test]
@@ -5700,7 +6393,9 @@ mod tests {
         let exth = parse_exth_records(rec0);
 
         // Comics should have EXTH 122 = "true" (fixed-layout) even in KF8-only mode
-        let exth122 = exth.get(&122).expect("Comic KF8-only should have EXTH 122 (fixed-layout)");
+        let exth122 = exth
+            .get(&122)
+            .expect("Comic KF8-only should have EXTH 122 (fixed-layout)");
         let value = std::str::from_utf8(&exth122[0]).unwrap();
         assert_eq!(value, "true", "EXTH 122 should be 'true' for fixed-layout");
         println!("  \u{2713} Comic KF8-only: EXTH 122=true (fixed-layout)");
@@ -5784,8 +6479,7 @@ mod tests {
         // first_image_record at MOBI header offset 92 (rec0 offset 16+92 = 108)
         let first_img = read_u32_be(rec0, 108) as usize;
         assert_ne!(
-            first_img,
-            0xFFFFFFFF_u32 as usize,
+            first_img, 0xFFFFFFFF_u32 as usize,
             "Dictionary with image should have first_image set"
         );
 
@@ -5805,11 +6499,7 @@ mod tests {
     fn test_dict_cover_offset_exth_201() {
         let dir = TempDir::new("dict_cover_exth");
         let jpeg = make_test_jpeg();
-        let opf = create_dict_fixture_with_cover(
-            dir.path(),
-            &[("word", &["words"])],
-            &jpeg,
-        );
+        let opf = create_dict_fixture_with_cover(dir.path(), &[("word", &["words"])], &jpeg);
         let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
         let (_, _, offsets) = parse_palmdb(&data);
         let rec0 = get_record(&data, &offsets, 0);
@@ -5848,7 +6538,10 @@ mod tests {
 
         // Orth index record at MOBI header offset 24 (record0 offset 40)
         let orth_idx = read_u32_be(rec0, 40) as usize;
-        assert_ne!(orth_idx, 0xFFFFFFFF_u32 as usize, "Should have valid orth index");
+        assert_ne!(
+            orth_idx, 0xFFFFFFFF_u32 as usize,
+            "Should have valid orth index"
+        );
 
         // The INDX record should come after the image records
         let first_img = read_u32_be(rec0, 108) as usize;
@@ -5899,11 +6592,7 @@ mod tests {
     fn test_dict_image_src_rewritten_to_recindex() {
         let dir = TempDir::new("dict_img_recindex");
         let jpeg = make_test_jpeg();
-        let opf = create_dict_fixture_with_cover(
-            dir.path(),
-            &[("test", &["tests"])],
-            &jpeg,
-        );
+        let opf = create_dict_fixture_with_cover(dir.path(), &[("test", &["tests"])], &jpeg);
         let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
 
         // Extract text from uncompressed records and check for recindex
@@ -5946,7 +6635,11 @@ mod tests {
 
         // Offset 4: header length
         let hdr_len = read_u32_be(rec0, 16 + 4);
-        assert_eq!(hdr_len, 264, "Dict MOBI header length should be 264, got {}", hdr_len);
+        assert_eq!(
+            hdr_len, 264,
+            "Dict MOBI header length should be 264, got {}",
+            hdr_len
+        );
         println!("  \u{2713} Dict MOBI header length: {}", hdr_len);
     }
 
@@ -5960,7 +6653,11 @@ mod tests {
 
         // Offset 8: MOBI type
         let mobi_type = read_u32_be(rec0, 16 + 8);
-        assert_eq!(mobi_type, 2, "Dict MOBI type should be 2, got {}", mobi_type);
+        assert_eq!(
+            mobi_type, 2,
+            "Dict MOBI type should be 2, got {}",
+            mobi_type
+        );
         println!("  \u{2713} Dict MOBI type: {}", mobi_type);
     }
 
@@ -5974,7 +6671,11 @@ mod tests {
 
         // Offset 12: encoding
         let encoding = read_u32_be(rec0, 16 + 12);
-        assert_eq!(encoding, 65001, "Dict encoding should be 65001 (UTF-8), got {}", encoding);
+        assert_eq!(
+            encoding, 65001,
+            "Dict encoding should be 65001 (UTF-8), got {}",
+            encoding
+        );
         println!("  \u{2713} Dict encoding: {}", encoding);
     }
 
@@ -6020,11 +6721,15 @@ mod tests {
 
         // Offset 24: orth index - should be a valid record index for dicts
         let orth_idx = read_u32_be(rec0, 16 + 24);
-        assert_ne!(orth_idx, 0xFFFFFFFF, "Dict orth index should not be 0xFFFFFFFF");
+        assert_ne!(
+            orth_idx, 0xFFFFFFFF,
+            "Dict orth index should not be 0xFFFFFFFF"
+        );
         assert!(
             (orth_idx as u16) < record_count,
             "Dict orth index {} should be < record count {}",
-            orth_idx, record_count
+            orth_idx,
+            record_count
         );
         println!("  \u{2713} Dict orth index: {}", orth_idx);
     }
@@ -6063,7 +6768,8 @@ mod tests {
         assert!(
             fnbr > 0 && (fnbr as u16) <= record_count,
             "Dict first non-book record {} should be valid (1..={})",
-            fnbr, record_count
+            fnbr,
+            record_count
         );
         println!("  \u{2713} Dict first non-book record: {}", fnbr);
     }
@@ -6083,7 +6789,11 @@ mod tests {
         // primary is 0x09.
         let lang = read_u32_be(rec0, 16 + 76);
         assert_ne!(lang, 0, "Dict language code should be non-zero");
-        assert_eq!(lang, 0x09, "Dict language code for 'en' should be primary LCID 0x09, got 0x{:X}", lang);
+        assert_eq!(
+            lang, 0x09,
+            "Dict language code for 'en' should be primary LCID 0x09, got 0x{:X}",
+            lang
+        );
         println!("  \u{2713} Dict language code: {}", lang);
     }
 
@@ -6097,12 +6807,21 @@ mod tests {
 
         // Offset 80: input language - non-zero for dicts with DictionaryInLanguage
         let input_lang = read_u32_be(rec0, 16 + 80);
-        assert_ne!(input_lang, 0, "Dict input language should be non-zero (DictionaryInLanguage=en)");
+        assert_ne!(
+            input_lang, 0,
+            "Dict input language should be non-zero (DictionaryInLanguage=en)"
+        );
 
         // Offset 84: output language - non-zero for dicts with DictionaryOutLanguage
         let output_lang = read_u32_be(rec0, 16 + 84);
-        assert_ne!(output_lang, 0, "Dict output language should be non-zero (DictionaryOutLanguage=en)");
-        println!("  \u{2713} Dict input lang: {}, output lang: {}", input_lang, output_lang);
+        assert_ne!(
+            output_lang, 0,
+            "Dict output language should be non-zero (DictionaryOutLanguage=en)"
+        );
+        println!(
+            "  \u{2713} Dict input lang: {}, output lang: {}",
+            input_lang, output_lang
+        );
     }
 
     #[test]
@@ -6121,7 +6840,10 @@ mod tests {
             "Dict min version ({}) should match file version ({})",
             min_ver, file_ver
         );
-        println!("  \u{2713} Dict min version: {} == file version: {}", min_ver, file_ver);
+        println!(
+            "  \u{2713} Dict min version: {} == file version: {}",
+            min_ver, file_ver
+        );
     }
 
     #[test]
@@ -6134,7 +6856,11 @@ mod tests {
 
         // Offset 112: capability marker - 0x50 for dicts
         let cap = read_u32_be(rec0, 16 + 112);
-        assert_eq!(cap, 0x50, "Dict capability marker should be 0x50, got 0x{:X}", cap);
+        assert_eq!(
+            cap, 0x50,
+            "Dict capability marker should be 0x50, got 0x{:X}",
+            cap
+        );
         println!("  \u{2713} Dict capability marker: 0x{:X}", cap);
     }
 
@@ -6148,7 +6874,11 @@ mod tests {
 
         // Offset 224: extra record data flags - should be 3 (multibyte + TBS)
         let flags = read_u32_be(rec0, 16 + 224);
-        assert_eq!(flags, 3, "Dict extra record data flags should be 3, got {}", flags);
+        assert_eq!(
+            flags, 3,
+            "Dict extra record data flags should be 3, got {}",
+            flags
+        );
         println!("  \u{2713} Dict extra record data flags: {}", flags);
     }
 
@@ -6179,7 +6909,11 @@ mod tests {
         let rec0 = get_record(&data, &offsets, 0);
 
         let hdr_len = read_u32_be(rec0, 16 + 4);
-        assert_eq!(hdr_len, 264, "Book MOBI header length should be 264, got {}", hdr_len);
+        assert_eq!(
+            hdr_len, 264,
+            "Book MOBI header length should be 264, got {}",
+            hdr_len
+        );
         println!("  \u{2713} Book MOBI header length: {}", hdr_len);
     }
 
@@ -6193,7 +6927,11 @@ mod tests {
         let rec0 = get_record(&data, &offsets, 0);
 
         let mobi_type = read_u32_be(rec0, 16 + 8);
-        assert_eq!(mobi_type, 2, "Book MOBI type should be 2, got {}", mobi_type);
+        assert_eq!(
+            mobi_type, 2,
+            "Book MOBI type should be 2, got {}",
+            mobi_type
+        );
         println!("  \u{2713} Book MOBI type: {}", mobi_type);
     }
 
@@ -6207,7 +6945,11 @@ mod tests {
         let rec0 = get_record(&data, &offsets, 0);
 
         let encoding = read_u32_be(rec0, 16 + 12);
-        assert_eq!(encoding, 65001, "Book encoding should be 65001 (UTF-8), got {}", encoding);
+        assert_eq!(
+            encoding, 65001,
+            "Book encoding should be 65001 (UTF-8), got {}",
+            encoding
+        );
         println!("  \u{2713} Book encoding: {}", encoding);
     }
 
@@ -6299,7 +7041,8 @@ mod tests {
         assert!(
             fnbr > 0 && (fnbr as u16) <= record_count,
             "Book first non-book record {} should be valid (1..={})",
-            fnbr, record_count
+            fnbr,
+            record_count
         );
         println!("  \u{2713} Book first non-book record: {}", fnbr);
     }
@@ -6317,7 +7060,11 @@ mod tests {
         // sublanguage-tagged one (confirmed against kindlegen book output).
         let lang = read_u32_be(rec0, 16 + 76);
         assert_ne!(lang, 0, "Book language code should be non-zero for 'en'");
-        assert_eq!(lang, 0x09, "Book language code for 'en' should be primary LCID 0x09, got 0x{:X}", lang);
+        assert_eq!(
+            lang, 0x09,
+            "Book language code for 'en' should be primary LCID 0x09, got 0x{:X}",
+            lang
+        );
         println!("  \u{2713} Book language code: {}", lang);
     }
 
@@ -6337,7 +7084,10 @@ mod tests {
             "Book min version ({}) should match file version ({})",
             min_ver, file_ver
         );
-        println!("  \u{2713} Book min version: {} == file version: {}", min_ver, file_ver);
+        println!(
+            "  \u{2713} Book min version: {} == file version: {}",
+            min_ver, file_ver
+        );
     }
 
     #[test]
@@ -6351,11 +7101,15 @@ mod tests {
 
         // Offset 92: first image record
         let first_img = read_u32_be(rec0, 16 + 92);
-        assert_ne!(first_img, 0xFFFFFFFF, "Book with image should have first_image set");
+        assert_ne!(
+            first_img, 0xFFFFFFFF,
+            "Book with image should have first_image set"
+        );
         assert!(
             (first_img as u16) < record_count,
             "Book first image record {} should be < record count {}",
-            first_img, record_count
+            first_img,
+            record_count
         );
         println!("  \u{2713} Book first image record: {}", first_img);
     }
@@ -6370,7 +7124,11 @@ mod tests {
         let rec0 = get_record(&data, &offsets, 0);
 
         let cap = read_u32_be(rec0, 16 + 112);
-        assert_eq!(cap, 0x850, "Book capability marker should be 0x850, got 0x{:X}", cap);
+        assert_eq!(
+            cap, 0x850,
+            "Book capability marker should be 0x850, got 0x{:X}",
+            cap
+        );
         println!("  \u{2713} Book capability marker: 0x{:X}", cap);
     }
 
@@ -6384,7 +7142,11 @@ mod tests {
         let rec0 = get_record(&data, &offsets, 0);
 
         let flags = read_u32_be(rec0, 16 + 224);
-        assert_eq!(flags, 3, "Book extra record data flags should be 3, got {}", flags);
+        assert_eq!(
+            flags, 3,
+            "Book extra record data flags should be 3, got {}",
+            flags
+        );
         println!("  \u{2713} Book extra record data flags: {}", flags);
     }
 
@@ -6438,8 +7200,11 @@ mod tests {
         let data = build_kf8_only_mobi_bytes(&opf, dir.path());
         let (_, _, offsets) = parse_palmdb(&data);
         let rec0 = get_record(&data, &offsets, 0);
-        assert!(rec0.len() >= 8892,
-            "KF8 Record 0 must be >= 8892 bytes (padded), got {}", rec0.len());
+        assert!(
+            rec0.len() >= 8892,
+            "KF8 Record 0 must be >= 8892 bytes (padded), got {}",
+            rec0.len()
+        );
     }
 
     #[test]
@@ -6453,8 +7218,13 @@ mod tests {
         let rec0 = get_record(&data, &offsets, 0);
         let text_count = u16::from_be_bytes(rec0[8..10].try_into().unwrap()) as u32;
         let fnb = read_u32_be(rec0, 16 + 64);
-        assert_eq!(fnb, text_count + 2,
-            "first_nonbook should be text_count+2={}, got {}", text_count + 2, fnb);
+        assert_eq!(
+            fnb,
+            text_count + 2,
+            "first_nonbook should be text_count+2={}, got {}",
+            text_count + 2,
+            fnb
+        );
     }
 
     #[test]
@@ -6465,8 +7235,11 @@ mod tests {
         let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
         let (_, _, offsets) = parse_palmdb(&data);
         let rec0 = get_record(&data, &offsets, 0);
-        assert!(rec0.len() >= 8892,
-            "Book Record 0 must be >= 8892 bytes (padded), got {}", rec0.len());
+        assert!(
+            rec0.len() >= 8892,
+            "Book Record 0 must be >= 8892 bytes (padded), got {}",
+            rec0.len()
+        );
     }
 
     #[test]
@@ -6480,7 +7253,12 @@ mod tests {
         let text_count = u16::from_be_bytes(rec0[8..10].try_into().unwrap()) as usize;
         // NULL pad is at record text_count + 1
         let null_rec = get_record(&data, &offsets, text_count + 1);
-        assert_eq!(null_rec.len(), 2, "NULL pad must be 2 bytes, got {}", null_rec.len());
+        assert_eq!(
+            null_rec.len(),
+            2,
+            "NULL pad must be 2 bytes, got {}",
+            null_rec.len()
+        );
         assert_eq!(null_rec, &[0x00, 0x00]);
     }
 
@@ -6498,8 +7276,11 @@ mod tests {
         let (_, _, offsets) = parse_palmdb(&data);
         let rec0 = get_record(&data, &offsets, 0);
         let lang = read_u32_be(rec0, 16 + 76);
-        assert_eq!(lang, 0x09,
-            "KF8 book language should be primary LCID 0x09, got 0x{:X}", lang);
+        assert_eq!(
+            lang, 0x09,
+            "KF8 book language should be primary LCID 0x09, got 0x{:X}",
+            lang
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -6509,10 +7290,7 @@ mod tests {
     /// Create a minimal fixed-layout book OPF + HTML in a temp dir.
     /// Includes `<meta name="fixed-layout" content="true"/>` so the OPF
     /// parser sets `is_fixed_layout = true`. Always includes an image.
-    fn create_fixed_layout_book_fixture(
-        dir: &Path,
-        image_data: &[u8],
-    ) -> PathBuf {
+    fn create_fixed_layout_book_fixture(dir: &Path, image_data: &[u8]) -> PathBuf {
         let html = r#"<html><head><title>Test Comic</title></head><body><div><img src="page.jpg"/></div></body></html>"#;
         fs::write(dir.join("content.html"), html).unwrap();
         fs::write(dir.join("page.jpg"), image_data).unwrap();
@@ -6561,7 +7339,9 @@ mod tests {
             "Fixed-layout book must NOT have EXTH 503 (updated_title) - it breaks Kindle navigation"
         );
         // Sanity: should still have EXTH 122 = "true" (fixed-layout flag)
-        let exth122 = exth.get(&122).expect("Fixed-layout book should have EXTH 122");
+        let exth122 = exth
+            .get(&122)
+            .expect("Fixed-layout book should have EXTH 122");
         assert_eq!(std::str::from_utf8(&exth122[0]).unwrap(), "true");
     }
 
@@ -6642,7 +7422,11 @@ mod tests {
         let low = composite & 0xFFFF;
 
         // High 16 bits should be 1 (KF7 flow count)
-        assert_eq!(high, 1, "FDST composite high word should be 1 (flow count), got {}", high);
+        assert_eq!(
+            high, 1,
+            "FDST composite high word should be 1 (flow count), got {}",
+            high
+        );
 
         // Find the FLIS record by scanning for its magic bytes
         let mut flis_idx: Option<usize> = None;
@@ -6657,9 +7441,11 @@ mod tests {
 
         // Low 16 bits should be flis_record - 1
         assert_eq!(
-            low, (flis_record - 1) as u32,
+            low,
+            (flis_record - 1) as u32,
             "FDST composite low word should be flis_record-1={}, got {}",
-            flis_record - 1, low
+            flis_record - 1,
+            low
         );
     }
 
@@ -6710,16 +7496,23 @@ mod tests {
         let kf7_rec0 = get_record(&data, &offsets, 0);
         let exth = parse_exth_records(kf7_rec0);
         let boundary_entries = exth.get(&121).expect("Dual-format should have EXTH 121");
-        let kf8_rec0_idx = u32::from_be_bytes(
-            boundary_entries[0][0..4].try_into().unwrap()
-        ) as usize;
+        let kf8_rec0_idx =
+            u32::from_be_bytes(boundary_entries[0][0..4].try_into().unwrap()) as usize;
 
         // Verify the BOUNDARY record immediately precedes KF8 Record 0
         let boundary_rec = get_record(&data, &offsets, kf8_rec0_idx - 1);
-        assert_eq!(&boundary_rec[0..8], b"BOUNDARY", "Expected BOUNDARY record before KF8 Record 0");
+        assert_eq!(
+            &boundary_rec[0..8],
+            b"BOUNDARY",
+            "Expected BOUNDARY record before KF8 Record 0"
+        );
 
         let kf8_rec0 = get_record(&data, &offsets, kf8_rec0_idx);
-        assert_eq!(&kf8_rec0[16..20], b"MOBI", "KF8 Record 0 should have MOBI magic");
+        assert_eq!(
+            &kf8_rec0[16..20],
+            b"MOBI",
+            "KF8 Record 0 should have MOBI magic"
+        );
 
         // first_image at MOBI offset 92 = record byte 16 + 92 = 108
         let first_image = read_u32_be(kf8_rec0, 16 + 92);
@@ -6746,9 +7539,15 @@ mod tests {
         let rec0 = get_record(&data, &offsets, 0);
         let exth = parse_exth_records(rec0);
 
-        let author_entries = exth.get(&100).expect("Dict EXTH 100 (Author) should be present");
+        let author_entries = exth
+            .get(&100)
+            .expect("Dict EXTH 100 (Author) should be present");
         let author = std::str::from_utf8(&author_entries[0]).unwrap();
-        assert_eq!(author, "Tester", "Dict author should be 'Tester', got '{}'", author);
+        assert_eq!(
+            author, "Tester",
+            "Dict author should be 'Tester', got '{}'",
+            author
+        );
         println!("  \u{2713} Dict EXTH 100 (Author): {}", author);
     }
 
@@ -6786,11 +7585,7 @@ mod tests {
     fn test_dict_exth_201_cover_offset_with_images() {
         let dir = TempDir::new("dict_exth_201");
         let jpeg = make_test_jpeg();
-        let opf = create_dict_fixture_with_cover(
-            dir.path(),
-            &[("word", &["words"])],
-            &jpeg,
-        );
+        let opf = create_dict_fixture_with_cover(dir.path(), &[("word", &["words"])], &jpeg);
         let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
         let (_, _, offsets) = parse_palmdb(&data);
         let rec0 = get_record(&data, &offsets, 0);
@@ -6812,7 +7607,9 @@ mod tests {
         let rec0 = get_record(&data, &offsets, 0);
         let exth = parse_exth_records(rec0);
 
-        let entries = exth.get(&300).expect("Dict EXTH 300 (Fontsignature) should be present");
+        let entries = exth
+            .get(&300)
+            .expect("Dict EXTH 300 (Fontsignature) should be present");
         // Fontsignature: USB(16) + CSB(8) + padding(8) + char_data(4 prefix + codepoints)
         // Minimum is 32 (header) + 4 (prefix) = 36 bytes for empty codepoint set
         assert!(
@@ -6820,7 +7617,10 @@ mod tests {
             "Dict EXTH 300 should be >= 36 bytes, got {}",
             entries[0].len()
         );
-        println!("  \u{2713} Dict EXTH 300 (Fontsignature): {} bytes", entries[0].len());
+        println!(
+            "  \u{2713} Dict EXTH 300 (Fontsignature): {} bytes",
+            entries[0].len()
+        );
     }
 
     #[test]
@@ -6848,7 +7648,9 @@ mod tests {
         let rec0 = get_record(&data, &offsets, 0);
         let exth = parse_exth_records(rec0);
 
-        let entries = exth.get(&524).expect("Dict EXTH 524 (Language) should be present");
+        let entries = exth
+            .get(&524)
+            .expect("Dict EXTH 524 (Language) should be present");
         let lang = std::str::from_utf8(&entries[0]).unwrap();
         assert_eq!(lang, "en", "Dict EXTH 524 should be 'en', got '{}'", lang);
         println!("  \u{2713} Dict EXTH 524 (Language): {}", lang);
@@ -6863,10 +7665,16 @@ mod tests {
         let rec0 = get_record(&data, &offsets, 0);
         let exth = parse_exth_records(rec0);
 
-        let entries = exth.get(&531).expect("Dict EXTH 531 (DictInputLang) should be present");
+        let entries = exth
+            .get(&531)
+            .expect("Dict EXTH 531 (DictInputLang) should be present");
         let lang = std::str::from_utf8(&entries[0]).unwrap();
         // The fixture has DictionaryInLanguage=en
-        assert_eq!(lang, "en", "Dict EXTH 531 should match source language 'en', got '{}'", lang);
+        assert_eq!(
+            lang, "en",
+            "Dict EXTH 531 should match source language 'en', got '{}'",
+            lang
+        );
         println!("  \u{2713} Dict EXTH 531 (DictInputLang): {}", lang);
     }
 
@@ -6879,10 +7687,16 @@ mod tests {
         let rec0 = get_record(&data, &offsets, 0);
         let exth = parse_exth_records(rec0);
 
-        let entries = exth.get(&532).expect("Dict EXTH 532 (DictOutputLang) should be present");
+        let entries = exth
+            .get(&532)
+            .expect("Dict EXTH 532 (DictOutputLang) should be present");
         let lang = std::str::from_utf8(&entries[0]).unwrap();
         // The fixture has DictionaryOutLanguage=en
-        assert_eq!(lang, "en", "Dict EXTH 532 should match target language 'en', got '{}'", lang);
+        assert_eq!(
+            lang, "en",
+            "Dict EXTH 532 should match target language 'en', got '{}'",
+            lang
+        );
         println!("  \u{2713} Dict EXTH 532 (DictOutputLang): {}", lang);
     }
 
@@ -6911,9 +7725,15 @@ mod tests {
         let rec0 = get_record(&data, &offsets, 0);
         let exth = parse_exth_records(rec0);
 
-        let entries = exth.get(&547).expect("Dict EXTH 547 (InMemory) should be present");
+        let entries = exth
+            .get(&547)
+            .expect("Dict EXTH 547 (InMemory) should be present");
         let val = std::str::from_utf8(&entries[0]).unwrap();
-        assert_eq!(val, "InMemory", "Dict EXTH 547 should be 'InMemory', got '{}'", val);
+        assert_eq!(
+            val, "InMemory",
+            "Dict EXTH 547 should be 'InMemory', got '{}'",
+            val
+        );
         println!("  \u{2713} Dict EXTH 547: {}", val);
     }
 
@@ -6931,9 +7751,15 @@ mod tests {
         let rec0 = get_record(&data, &offsets, 0);
         let exth = parse_exth_records(rec0);
 
-        let author_entries = exth.get(&100).expect("Book EXTH 100 (Author) should be present");
+        let author_entries = exth
+            .get(&100)
+            .expect("Book EXTH 100 (Author) should be present");
         let author = std::str::from_utf8(&author_entries[0]).unwrap();
-        assert_eq!(author, "Author", "Book author should be 'Author', got '{}'", author);
+        assert_eq!(
+            author, "Author",
+            "Book author should be 'Author', got '{}'",
+            author
+        );
         println!("  \u{2713} Book EXTH 100 (Author): {}", author);
     }
 
@@ -7014,9 +7840,15 @@ mod tests {
         let rec0 = get_record(&data, &offsets, 0);
         let exth = parse_exth_records(rec0);
 
-        let entries = exth.get(&501).expect("Book EXTH 501 (DocType) should be present");
+        let entries = exth
+            .get(&501)
+            .expect("Book EXTH 501 (DocType) should be present");
         let val = std::str::from_utf8(&entries[0]).unwrap();
-        assert_eq!(val, "PDOC", "Book EXTH 501 default should be 'PDOC', got '{}'", val);
+        assert_eq!(
+            val, "PDOC",
+            "Book EXTH 501 default should be 'PDOC', got '{}'",
+            val
+        );
         println!("  \u{2713} Book EXTH 501 (DocType): {}", val);
     }
 
@@ -7030,7 +7862,9 @@ mod tests {
         let rec0 = get_record(&data, &offsets, 0);
         let exth = parse_exth_records(rec0);
 
-        let entries = exth.get(&524).expect("Book EXTH 524 (Language) should be present");
+        let entries = exth
+            .get(&524)
+            .expect("Book EXTH 524 (Language) should be present");
         let lang = std::str::from_utf8(&entries[0]).unwrap();
         assert_eq!(lang, "en", "Book EXTH 524 should be 'en', got '{}'", lang);
         println!("  \u{2713} Book EXTH 524 (Language): {}", lang);
@@ -7063,9 +7897,15 @@ mod tests {
         let rec0 = get_record(&data, &offsets, 0);
         let exth = parse_exth_records(rec0);
 
-        let entries = exth.get(&547).expect("Book EXTH 547 (InMemory) should be present");
+        let entries = exth
+            .get(&547)
+            .expect("Book EXTH 547 (InMemory) should be present");
         let val = std::str::from_utf8(&entries[0]).unwrap();
-        assert_eq!(val, "InMemory", "Book EXTH 547 should be 'InMemory', got '{}'", val);
+        assert_eq!(
+            val, "InMemory",
+            "Book EXTH 547 should be 'InMemory', got '{}'",
+            val
+        );
         println!("  \u{2713} Book EXTH 547: {}", val);
     }
     // =======================================================================
@@ -7131,8 +7971,10 @@ mod tests {
         // Compressed
         let output_c = dir_c.path().join("output_comp.mobi");
         mobi::build_mobi(
-            &opf_c, &output_c, false, false, None, false, false, false, false, None, false, false, false, false,
-        ).expect("compressed build failed");
+            &opf_c, &output_c, false, false, None, false, false, false, false, None, false, false,
+            false, false,
+        )
+        .expect("compressed build failed");
         let data_c = fs::read(&output_c).unwrap();
 
         let text_u = extract_text_blob(&data_u);
@@ -7144,7 +7986,9 @@ mod tests {
 
         let mut decompressed = Vec::new();
         for i in 1..=text_rc {
-            if i >= offsets_c.len() { break; }
+            if i >= offsets_c.len() {
+                break;
+            }
             let rec = get_record(&data_c, &offsets_c, i);
             let chunk = palmdoc_decompress(strip_trailing_bytes(rec));
             decompressed.extend_from_slice(&chunk);
@@ -7163,9 +8007,7 @@ mod tests {
     #[test]
     fn test_total_decompressed_text_matches_palmdoc_text_length() {
         let dir = TempDir::new("text_len_palmdoc");
-        let entries: &[(&str, &[&str])] = &[
-            ("alpha", &[]), ("beta", &[]), ("gamma", &[]),
-        ];
+        let entries: &[(&str, &[&str])] = &[("alpha", &[]), ("beta", &[]), ("gamma", &[])];
         let opf = create_dict_fixture(dir.path(), entries);
         let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
 
@@ -7175,13 +8017,16 @@ mod tests {
 
         let text_blob = extract_text_blob(&data);
         assert_eq!(
-            text_blob.len(), palmdoc_text_length,
+            text_blob.len(),
+            palmdoc_text_length,
             "Total text length ({}) should match PalmDOC text_length field ({})",
-            text_blob.len(), palmdoc_text_length
+            text_blob.len(),
+            palmdoc_text_length
         );
         println!(
             "  \u{2713} Text blob {} bytes matches PalmDOC text_length {}",
-            text_blob.len(), palmdoc_text_length
+            text_blob.len(),
+            palmdoc_text_length
         );
     }
 
@@ -7204,20 +8049,20 @@ mod tests {
 
         let indx_rec = get_record(&data, &offsets, orth_idx);
         assert_eq!(
-            &indx_rec[0..4], b"INDX",
+            &indx_rec[0..4],
+            b"INDX",
             "First INDX record should start with 'INDX' magic"
         );
-        println!("  \u{2713} First INDX record at {} starts with INDX magic", orth_idx);
+        println!(
+            "  \u{2713} First INDX record at {} starts with INDX magic",
+            orth_idx
+        );
     }
 
     #[test]
     fn test_indx_record_count_matches_mobi_header() {
         let dir = TempDir::new("indx_count_match");
-        let entries: &[(&str, &[&str])] = &[
-            ("alpha", &[]),
-            ("beta", &[]),
-            ("gamma", &[]),
-        ];
+        let entries: &[(&str, &[&str])] = &[("alpha", &[]), ("beta", &[]), ("gamma", &[])];
         let opf = create_dict_fixture(dir.path(), entries);
         let data = build_mobi_bytes(&opf, dir.path(), true, true, None);
 
@@ -7235,11 +8080,13 @@ mod tests {
             assert!(
                 data_rec_idx < offsets.len(),
                 "INDX data record {} (PalmDB record {}) out of bounds",
-                dr, data_rec_idx
+                dr,
+                data_rec_idx
             );
             let data_rec = get_record(&data, &offsets, data_rec_idx);
             assert_eq!(
-                &data_rec[0..4], b"INDX",
+                &data_rec[0..4],
+                b"INDX",
                 "INDX data record {} should start with INDX magic",
                 dr
             );
@@ -7279,33 +8126,30 @@ mod tests {
             assert!(
                 sp < text_blob.len(),
                 "INDX entry {} start_pos={} exceeds text blob size {}",
-                i, sp, text_blob.len()
+                i,
+                sp,
+                text_blob.len()
             );
-            assert!(
-                tl > 0,
-                "INDX entry {} has text_len=0",
-                i
-            );
+            assert!(tl > 0, "INDX entry {} has text_len=0", i);
             assert!(
                 sp + tl <= text_blob.len(),
                 "INDX entry {} end pos {} exceeds text blob size {}",
-                i, sp + tl, text_blob.len()
+                i,
+                sp + tl,
+                text_blob.len()
             );
         }
         println!(
             "  \u{2713} All {} INDX entries within text bounds ({} bytes)",
-            indx_entries.len(), text_blob.len()
+            indx_entries.len(),
+            text_blob.len()
         );
     }
 
     #[test]
     fn test_indx_entries_contain_bold_near_start() {
         let dir = TempDir::new("indx_bold_near_start");
-        let entries: &[(&str, &[&str])] = &[
-            ("foo", &[]),
-            ("bar", &["bars"]),
-            ("baz", &[]),
-        ];
+        let entries: &[(&str, &[&str])] = &[("foo", &[]), ("bar", &["bars"]), ("baz", &[])];
         let opf = create_dict_fixture_unambiguous(dir.path(), entries);
         let data = build_mobi_bytes(&opf, dir.path(), true, true, None);
 
@@ -7351,7 +8195,8 @@ mod tests {
             if rec.len() >= 4 && &rec[0..4] == b"FLIS" {
                 found_flis = true;
                 assert_eq!(
-                    rec.len(), 36,
+                    rec.len(),
+                    36,
                     "FLIS record should be exactly 36 bytes, got {}",
                     rec.len()
                 );
@@ -7375,7 +8220,12 @@ mod tests {
             let rec = get_record(&data, &offsets, i);
             if rec.len() >= 4 && &rec[0..4] == b"FLIS" {
                 found_flis = true;
-                assert_eq!(rec.len(), 36, "FLIS record should be 36 bytes in book, got {}", rec.len());
+                assert_eq!(
+                    rec.len(),
+                    36,
+                    "FLIS record should be 36 bytes in book, got {}",
+                    rec.len()
+                );
                 break;
             }
         }
@@ -7390,10 +8240,7 @@ mod tests {
     #[test]
     fn test_fcis_record_magic_and_text_length() {
         let dir = TempDir::new("fcis_structure");
-        let opf = create_dict_fixture(
-            dir.path(),
-            &[("alpha", &[]), ("beta", &[])],
-        );
+        let opf = create_dict_fixture(dir.path(), &[("alpha", &[]), ("beta", &[])]);
         let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
         let (_, _, offsets) = parse_palmdb(&data);
         let rec0 = get_record(&data, &offsets, 0);
@@ -7447,7 +8294,10 @@ mod tests {
             }
         }
         assert!(found_fcis, "Book MOBI should contain a FCIS record");
-        println!("  \u{2713} Book FCIS text_length matches PalmDOC text_length ({})", palmdoc_text_length);
+        println!(
+            "  \u{2713} Book FCIS text_length matches PalmDOC text_length ({})",
+            palmdoc_text_length
+        );
     }
 
     // =======================================================================
@@ -7507,14 +8357,18 @@ mod tests {
             if rec.len() >= 8 && &rec[0..8] == b"BOUNDARY" {
                 found_boundary = true;
                 assert_eq!(
-                    rec.len(), 8,
+                    rec.len(),
+                    8,
                     "BOUNDARY record should be exactly 8 bytes, got {}",
                     rec.len()
                 );
                 break;
             }
         }
-        assert!(found_boundary, "Dual-format book should contain a BOUNDARY record");
+        assert!(
+            found_boundary,
+            "Dual-format book should contain a BOUNDARY record"
+        );
         println!("  \u{2713} BOUNDARY record: exactly 8 bytes");
     }
 
@@ -7540,7 +8394,10 @@ mod tests {
         let rec0 = get_record(&data, &offsets, 0);
         assert_eq!(&rec0[16..20], b"MOBI");
         let kf7_version = read_u32_be(rec0, 36);
-        assert!(kf7_version == 6 || kf7_version == 7, "KF7 version should be 6 or 7");
+        assert!(
+            kf7_version == 6 || kf7_version == 7,
+            "KF7 version should be 6 or 7"
+        );
 
         // KF8 section: record after BOUNDARY has MOBI magic, version 8
         let kf8_rec0 = get_record(&data, &offsets, bi + 1);
@@ -7568,7 +8425,10 @@ mod tests {
         let rec0 = get_record(&data, &offsets, 0);
 
         let first_img = read_u32_be(rec0, 108) as usize;
-        assert_ne!(first_img, 0xFFFFFFFF_u32 as usize, "Should have first_image set");
+        assert_ne!(
+            first_img, 0xFFFFFFFF_u32 as usize,
+            "Should have first_image set"
+        );
 
         // Check all image records start with FF D8 FF (full JPEG SOI + marker)
         let mut img_count = 0;
@@ -7584,7 +8444,10 @@ mod tests {
             }
         }
         assert!(img_count > 0, "Should find at least one image record");
-        println!("  \u{2713} All {} image records start with FF D8 FF", img_count);
+        println!(
+            "  \u{2713} All {} image records start with FF D8 FF",
+            img_count
+        );
     }
 
     #[test]
@@ -7593,10 +8456,7 @@ mod tests {
         let mut jpeg = make_test_jpeg();
 
         // Ensure JFIF header has density_units=0x00 (will be patched)
-        if jpeg.len() > 13
-            && jpeg[2] == 0xFF && jpeg[3] == 0xE0
-            && &jpeg[6..11] == b"JFIF\0"
-        {
+        if jpeg.len() > 13 && jpeg[2] == 0xFF && jpeg[3] == 0xE0 && &jpeg[6..11] == b"JFIF\0" {
             jpeg[13] = 0x00; // set to aspect ratio
         }
 
@@ -7609,7 +8469,8 @@ mod tests {
         let img_rec = get_record(&data, &offsets, first_img);
 
         if img_rec.len() > 13
-            && img_rec[2] == 0xFF && img_rec[3] == 0xE0
+            && img_rec[2] == 0xFF
+            && img_rec[3] == 0xE0
             && &img_rec[6..11] == b"JFIF\0"
         {
             assert_eq!(
@@ -7619,7 +8480,9 @@ mod tests {
             );
             println!("  \u{2713} Cover image JFIF density_units = 0x01 (DPI)");
         } else {
-            println!("  \u{2713} Cover image has no JFIF header (re-encoded), skipping density check");
+            println!(
+                "  \u{2713} Cover image has no JFIF header (re-encoded), skipping density check"
+            );
         }
     }
 
@@ -7649,7 +8512,8 @@ mod tests {
         assert!(
             first_img > text_record_count,
             "First image ({}) should be after text records (0..{})",
-            first_img, text_record_count
+            first_img,
+            text_record_count
         );
 
         // If FLIS exists in KF7 section, images should come before it
@@ -7730,12 +8594,14 @@ mod tests {
             assert!(
                 first_img > text_record_count,
                 "Dict image ({}) should be after text records (1..{})",
-                first_img, text_record_count
+                first_img,
+                text_record_count
             );
             assert!(
                 first_img < orth_idx,
                 "Dict image ({}) should be before INDX ({})",
-                first_img, orth_idx
+                first_img,
+                orth_idx
             );
             println!(
                 "  \u{2713} Dict image at {} between text (1..{}) and INDX ({})",
@@ -7790,9 +8656,11 @@ mod tests {
                 // Verify total record = header + data
                 let data_len = read_u32_be(rec, 8) as usize;
                 assert_eq!(
-                    rec.len(), 16 + data_len,
+                    rec.len(),
+                    16 + data_len,
                     "SRCS record size ({}) should be 16 header + {} data",
-                    rec.len(), data_len
+                    rec.len(),
+                    data_len
                 );
                 println!("  \u{2713} SRCS: 16-byte header, {} bytes data", data_len);
                 return;
@@ -7819,11 +8687,15 @@ mod tests {
 
         let srcs_rec = get_record(&data, &offsets, srcs_idx as usize);
         assert_eq!(
-            &srcs_rec[0..4], b"SRCS",
+            &srcs_rec[0..4],
+            b"SRCS",
             "Record at MOBI header offset 208 ({}) should start with 'SRCS' magic",
             srcs_idx
         );
-        println!("  \u{2713} MOBI header offset 208 -> SRCS record at index {}", srcs_idx);
+        println!(
+            "  \u{2713} MOBI header offset 208 -> SRCS record at index {}",
+            srcs_idx
+        );
     }
 
     // =======================================================================
@@ -7872,7 +8744,11 @@ mod tests {
 
         // Min version at MOBI header offset 88 (rec0 offset 104)
         let min_version = read_u32_be(rec0, 104);
-        assert_eq!(min_version, 8, "KF8-only min_version should be 8, got {}", min_version);
+        assert_eq!(
+            min_version, 8,
+            "KF8-only min_version should be 8, got {}",
+            min_version
+        );
 
         // There should be no second MOBI header with a different version
         let mut mobi_count = 0;
@@ -7880,11 +8756,19 @@ mod tests {
             let rec = get_record(&data, &offsets, i);
             if rec.len() > 20 && &rec[16..20] == b"MOBI" {
                 let v = read_u32_be(rec, 36);
-                assert_eq!(v, 8, "All MOBI headers should be version 8, record {} has version {}", i, v);
+                assert_eq!(
+                    v, 8,
+                    "All MOBI headers should be version 8, record {} has version {}",
+                    i, v
+                );
                 mobi_count += 1;
             }
         }
-        assert_eq!(mobi_count, 1, "KF8-only should have exactly 1 MOBI header, found {}", mobi_count);
+        assert_eq!(
+            mobi_count, 1,
+            "KF8-only should have exactly 1 MOBI header, found {}",
+            mobi_count
+        );
         println!("  \u{2713} KF8-only: single MOBI header, version 8 throughout");
     }
 
@@ -8075,11 +8959,13 @@ mod tests {
    <itemref idref="content"/>"#,
         );
         let report = validate::validate_opf(&opf).unwrap();
-        let has_dup_error = report
-            .findings
-            .iter()
-            .any(|f| f.section == "4.2" && f.level == Level::Error && f.message.contains("HTML cover page"));
-        assert!(has_dup_error, "should error on HTML cover page in spine + cover image");
+        let has_dup_error = report.findings.iter().any(|f| {
+            f.section == "4.2" && f.level == Level::Error && f.message.contains("HTML cover page")
+        });
+        assert!(
+            has_dup_error,
+            "should error on HTML cover page in spine + cover image"
+        );
     }
 
     // --- 5.2: NCX presence and spine toc= attribute ---
@@ -8110,11 +8996,7 @@ mod tests {
             "<html><body><p>hi</p></body></html>",
         )
         .unwrap();
-        fs::write(
-            dir.path().join("toc.ncx"),
-            "<ncx><navMap></navMap></ncx>",
-        )
-        .unwrap();
+        fs::write(dir.path().join("toc.ncx"), "<ncx><navMap></navMap></ncx>").unwrap();
         let opf = write_opf(
             dir.path(),
             "",
@@ -8123,10 +9005,14 @@ mod tests {
             r#"<itemref idref="content"/>"#,
         );
         let report = validate::validate_opf(&opf).unwrap();
-        let has_spine_warn = report.findings.iter().any(|f| {
-            f.section == "5.2" && f.level == Level::Warning && f.message.contains("toc=")
-        });
-        assert!(has_spine_warn, "should warn about missing spine toc attribute");
+        let has_spine_warn = report
+            .findings
+            .iter()
+            .any(|f| f.section == "5.2" && f.level == Level::Warning && f.message.contains("toc="));
+        assert!(
+            has_spine_warn,
+            "should warn about missing spine toc attribute"
+        );
     }
 
     #[test]
@@ -8137,11 +9023,7 @@ mod tests {
             "<html><body><p>hi</p></body></html>",
         )
         .unwrap();
-        fs::write(
-            dir.path().join("toc.ncx"),
-            "<ncx><navMap></navMap></ncx>",
-        )
-        .unwrap();
+        fs::write(dir.path().join("toc.ncx"), "<ncx><navMap></navMap></ncx>").unwrap();
         // Write OPF manually so we can set spine toc="ncx"
         let opf = r#"<?xml version="1.0" encoding="UTF-8"?>
 <package version="2.0" xmlns="http://www.idpf.org/2007/opf">
@@ -8271,8 +9153,8 @@ mod tests {
         // 6.5 error. On case-sensitive filesystems (most Linux) the file
         // wouldn't exist and we'd get a 4.2 error instead. Accept either:
         // the important thing is that the manuscript does not silently pass.
-        let has_case_error = has_finding(&report, "6.5", Level::Error)
-            || has_finding(&report, "4.2", Level::Error);
+        let has_case_error =
+            has_finding(&report, "6.5", Level::Error) || has_finding(&report, "4.2", Level::Error);
         assert!(has_case_error);
     }
 
@@ -8351,10 +9233,7 @@ mod tests {
         for i in 0..60 {
             rows.push_str(&format!("<tr><td>{}</td></tr>", i));
         }
-        let html = format!(
-            r#"<html><body><table>{}</table></body></html>"#,
-            rows
-        );
+        let html = format!(r#"<html><body><table>{}</table></body></html>"#, rows);
         fs::write(dir.path().join("content.html"), html).unwrap();
         let opf = write_opf(
             dir.path(),
@@ -8416,11 +9295,7 @@ mod tests {
             .write_to(&mut cursor, image::ImageFormat::Jpeg)
             .unwrap();
         fs::write(dir.path().join("cover.jpg"), &buf).unwrap();
-        fs::write(
-            dir.path().join("toc.ncx"),
-            "<ncx><navMap></navMap></ncx>",
-        )
-        .unwrap();
+        fs::write(dir.path().join("toc.ncx"), "<ncx><navMap></navMap></ncx>").unwrap();
         fs::write(
             dir.path().join("content.html"),
             r#"<html><body><h1>Title</h1><p>Paragraph one.</p><p>Paragraph two.</p></body></html>"#,
@@ -8579,13 +9454,17 @@ mod tests {
         // And the MOBI build itself should still succeed end-to-end.
         let output = dir.path().join("out.mobi");
         mobi::build_mobi(
-            &opf, &output, true, false, None, false, false, false, false, None, false, false, false, false,
+            &opf, &output, true, false, None, false, false, false, false, None, false, false,
+            false, false,
         )
         .expect("build should succeed for clean OPF");
         assert!(output.exists(), "MOBI output file must exist");
         let size = fs::metadata(&output).unwrap().len();
         assert!(size > 0, "MOBI output must be non-empty");
-        println!("  \u{2713} clean OPF passes pre-flight + builds ({} bytes)", size);
+        println!(
+            "  \u{2713} clean OPF passes pre-flight + builds ({} bytes)",
+            size
+        );
     }
 
     /// An OPF with a missing cover image triggers a validation error, which
@@ -8604,11 +9483,12 @@ mod tests {
                     "missing-cover OPF should report >= 1 validation error, got {}",
                     errors
                 );
-                println!("  \u{2713} missing-cover OPF aborts pre-flight ({} errors)", errors);
+                println!(
+                    "  \u{2713} missing-cover OPF aborts pre-flight ({} errors)",
+                    errors
+                );
             }
-            Ok(()) => panic!(
-                "missing-cover OPF should fail pre-flight validation, but it passed"
-            ),
+            Ok(()) => panic!("missing-cover OPF should fail pre-flight validation, but it passed"),
         }
     }
 
@@ -8752,11 +9632,7 @@ mod tests {
 
     /// Run the full HTML validation suite on a text blob: parse, structure,
     /// corruption scan, and tag balance.
-    fn validate_mobi_text_blob(
-        blob: &[u8],
-        label: &str,
-        require_frameset: bool,
-    ) {
+    fn validate_mobi_text_blob(blob: &[u8], label: &str, require_frameset: bool) {
         let content = std::str::from_utf8(blob)
             .unwrap_or_else(|e| panic!("{}: text blob is not valid UTF-8: {}", label, e));
 
@@ -8934,16 +9810,17 @@ mod tests {
         // A couple of small grayscale test images is enough to exercise the
         // comic xhtml pipeline.
         for i in 0..3u8 {
-            let img = image::DynamicImage::ImageLuma8(
-                image::GrayImage::from_fn(100, 150, |_, _| image::Luma([60 + i * 60])),
-            );
-            img.save(images_dir.join(format!("page_{:03}.jpg", i))).unwrap();
+            let img =
+                image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(100, 150, |_, _| {
+                    image::Luma([60 + i * 60])
+                }));
+            img.save(images_dir.join(format!("page_{:03}.jpg", i)))
+                .unwrap();
         }
 
         let output_path = dir.path().join("comic.mobi");
         let profile = comic::get_profile("paperwhite").unwrap();
-        comic::build_comic(&images_dir, &output_path, &profile)
-            .expect("build_comic failed");
+        comic::build_comic(&images_dir, &output_path, &profile).expect("build_comic failed");
 
         let data = fs::read(&output_path).expect("could not read comic MOBI");
         let blob = extract_text_blob_auto(&data);
@@ -8966,9 +9843,8 @@ mod tests {
         // check_balanced_tags should flag this. Parsing with relaxed mode
         // will still succeed (check_end_names=false), so we rely on the
         // structural walker.
-        let err = check_balanced_tags(bad).expect_err(
-            "validator should reject <p> without matching </p>",
-        );
+        let err = check_balanced_tags(bad)
+            .expect_err("validator should reject <p> without matching </p>");
         assert!(
             err.contains("mismatched") || err.contains("unclosed"),
             "expected mismatched/unclosed error, got: {}",
@@ -8984,10 +9860,7 @@ mod tests {
         let result = std::panic::catch_unwind(|| {
             assert_no_html_corruption(bad);
         });
-        assert!(
-            result.is_err(),
-            "validator should panic on corrupt <hr/X>"
-        );
+        assert!(result.is_err(), "validator should panic on corrupt <hr/X>");
         println!("  \u{2713} validator rejected corrupt <hr/X>");
     }
 
@@ -9082,10 +9955,7 @@ mod tests {
         // the build succeeds. The warning path only fires on corrupted
         // output, which clean fixtures don't produce.
         let dir = TempDir::new("selfcheck_enabled_build");
-        let entries: &[(&str, &[&str])] = &[
-            ("apple", &["apples"]),
-            ("banana", &["bananas"]),
-        ];
+        let entries: &[(&str, &[&str])] = &[("apple", &["apples"]), ("banana", &["bananas"])];
         let opf = create_dict_fixture(dir.path(), entries);
         let output_path = dir.path().join("output.mobi");
 
@@ -9115,7 +9985,10 @@ mod tests {
             "self_check-enabled dict build should produce a clean blob, got: {:?}",
             issues
         );
-        println!("  \u{2713} build with self_check=true produces clean MOBI ({} bytes)", data.len());
+        println!(
+            "  \u{2713} build with self_check=true produces clean MOBI ({} bytes)",
+            data.len()
+        );
     }
 
     #[test]
@@ -9136,7 +10009,9 @@ mod tests {
         let bad = br#"<html><body>text<hr/X>more</body></html>"#;
         let issues = crate::html_check::validate_text_blob(bad);
         assert!(
-            issues.iter().any(|e| e.contains("corruption") || e.contains("hr/")),
+            issues
+                .iter()
+                .any(|e| e.contains("corruption") || e.contains("hr/")),
             "validator should report <hr/ corruption, got: {:?}",
             issues
         );
@@ -9149,7 +10024,9 @@ mod tests {
         let bad = br#"<html><body><p class="foo<b>bold</b></p></body></html>"#;
         let issues = crate::html_check::validate_text_blob(bad);
         assert!(
-            issues.iter().any(|e| e.contains("corruption") || e.contains("quote")),
+            issues
+                .iter()
+                .any(|e| e.contains("corruption") || e.contains("quote")),
             "validator should report unclosed attribute quote, got: {:?}",
             issues
         );

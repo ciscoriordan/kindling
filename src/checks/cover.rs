@@ -2,8 +2,8 @@
 
 use std::path::PathBuf;
 
-use super::helpers::looks_like_html_cover_page;
 use super::Check;
+use super::helpers::looks_like_html_cover_page;
 use crate::extracted::ExtractedEpub;
 use crate::validate::ValidationReport;
 
@@ -48,7 +48,10 @@ impl Check for CoverChecks {
             if looks_like_html_cover_page(&opf.base_dir, idref, href, &cover_href) {
                 report.emit_at(
                     "R4.2.4",
-                    format!("Spine entry '{}' ({}) matches the cover page pattern.", idref, href),
+                    format!(
+                        "Spine entry '{}' ({}) matches the cover page pattern.",
+                        idref, href
+                    ),
                     Some(PathBuf::from(href)),
                     None,
                 );

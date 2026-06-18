@@ -92,8 +92,16 @@ fn parse_syn(bytes: &[u8]) -> Vec<(String, u32)> {
 fn ascii_case_cmp(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
     let n = a.len().min(b.len());
     for i in 0..n {
-        let aa = if a[i].is_ascii_uppercase() { a[i] + 32 } else { a[i] };
-        let bb = if b[i].is_ascii_uppercase() { b[i] + 32 } else { b[i] };
+        let aa = if a[i].is_ascii_uppercase() {
+            a[i] + 32
+        } else {
+            a[i]
+        };
+        let bb = if b[i].is_ascii_uppercase() {
+            b[i] + 32
+        } else {
+            b[i]
+        };
         if aa != bb {
             return aa.cmp(&bb);
         }
@@ -176,7 +184,12 @@ fn builds_stardict_from_simple_dict_fixture() {
     for (word, offset, size) in &idx {
         let slice = &dict_bytes[*offset as usize..*offset as usize + *size as usize];
         let text = std::str::from_utf8(slice).expect(".dict slice must be UTF-8");
-        assert!(!text.contains("idx:"), "idx markup leaked for {}: {}", word, text);
+        assert!(
+            !text.contains("idx:"),
+            "idx markup leaked for {}: {}",
+            word,
+            text
+        );
         assert!(
             text.contains(&format!("<b>{}</b>", word)),
             "expected <b>{}</b> in entry: {}",
@@ -185,7 +198,12 @@ fn builds_stardict_from_simple_dict_fixture() {
         );
         // Each fixture entry has a sentence containing "placeholder"; that's
         // a cheap proof the definition text survived cleanup.
-        assert!(text.contains("placeholder"), "definition stripped for {}: {}", word, text);
+        assert!(
+            text.contains("placeholder"),
+            "definition stripped for {}: {}",
+            word,
+            text
+        );
     }
 
     // .syn: 9 inflections, each pointing at the right lemma index in .idx.
@@ -226,7 +244,11 @@ fn builds_stardict_from_simple_dict_fixture() {
         let want = lemma_index
             .get(lemma)
             .unwrap_or_else(|| panic!("missing lemma {}", lemma));
-        assert_eq!(got, want, "syn redirect for {} should point at {}", form, lemma);
+        assert_eq!(
+            got, want,
+            "syn redirect for {} should point at {}",
+            form, lemma
+        );
     }
 }
 
@@ -288,6 +310,14 @@ fn ifo_omits_metadata_keys_when_blank() {
     let report = stardict::build_stardict(&opf, &tmp, &options).expect("build_stardict failed");
     let ifo = std::fs::read_to_string(&report.ifo_path).unwrap();
 
-    assert!(!ifo.contains("\nwebsite="), "blank website should be omitted: {}", ifo);
-    assert!(!ifo.contains("\nemail="), "missing email should be omitted: {}", ifo);
+    assert!(
+        !ifo.contains("\nwebsite="),
+        "blank website should be omitted: {}",
+        ifo
+    );
+    assert!(
+        !ifo.contains("\nemail="),
+        "missing email should be omitted: {}",
+        ifo
+    );
 }

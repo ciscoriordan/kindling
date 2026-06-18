@@ -33,18 +33,10 @@ const IGNORED_EXTENSIONS: &[&str] = &[
 ];
 
 /// File names that must be ignored anywhere under the content root.
-const IGNORED_FILE_NAMES: &[&str] = &[
-    ".DS_Store",
-    "Thumbs.db",
-    "mimetype",
-];
+const IGNORED_FILE_NAMES: &[&str] = &[".DS_Store", "Thumbs.db", "mimetype"];
 
 /// Directory names whose entire subtrees are skipped by R7.1.
-const IGNORED_DIR_NAMES: &[&str] = &[
-    "META-INF",
-    ".git",
-    "__MACOSX",
-];
+const IGNORED_DIR_NAMES: &[&str] = &["META-INF", ".git", "__MACOSX"];
 
 /// Canonical xhtml/svg media-types that satisfy R7.10 / R7.11.
 const CORE_MEDIA_TYPES: &[&str] = &[
@@ -66,8 +58,8 @@ pub struct ManifestSpineChecks;
 impl Check for ManifestSpineChecks {
     fn ids(&self) -> &'static [&'static str] {
         &[
-            "R7.1", "R7.2", "R7.3", "R7.4", "R7.5", "R7.6", "R7.7",
-            "R7.8", "R7.9", "R7.10", "R7.11", "R7.12", "R7.13",
+            "R7.1", "R7.2", "R7.3", "R7.4", "R7.5", "R7.6", "R7.7", "R7.8", "R7.9", "R7.10",
+            "R7.11", "R7.12", "R7.13",
         ]
     }
 
@@ -75,7 +67,12 @@ impl Check for ManifestSpineChecks {
         let opf = &epub.opf;
 
         // R7.1: every file under base_dir must be declared in the manifest.
-        check_undeclared_files(opf.base_dir.as_path(), &epub.opf_path, &opf.manifest_items, report);
+        check_undeclared_files(
+            opf.base_dir.as_path(),
+            &epub.opf_path,
+            &opf.manifest_items,
+            report,
+        );
 
         // R7.2, R7.3: declared vs. actual media-type.
         check_media_type_magic(opf.base_dir.as_path(), &opf.manifest_items, report);
@@ -127,7 +124,12 @@ impl Check for ManifestSpineChecks {
         check_duplicate_hrefs(&opf.manifest_items, report);
 
         // R7.13: manifest href pointing at the OPF itself.
-        check_self_reference(&opf.manifest_items, &epub.opf_path, opf.base_dir.as_path(), report);
+        check_self_reference(
+            &opf.manifest_items,
+            &epub.opf_path,
+            opf.base_dir.as_path(),
+            report,
+        );
     }
 }
 
@@ -191,7 +193,10 @@ fn check_undeclared_files(
             };
             report.emit_at(
                 "R7.1",
-                format!("File \"{}\" is under the content root but not declared in the manifest.", rel),
+                format!(
+                    "File \"{}\" is under the content root but not declared in the manifest.",
+                    rel
+                ),
                 Some(PathBuf::from(rel)),
                 None,
             );
@@ -208,11 +213,15 @@ fn is_ignored_extension(path: &Path) -> bool {
 }
 
 fn is_ignored_file_name(name: &str) -> bool {
-    IGNORED_FILE_NAMES.iter().any(|n| n.eq_ignore_ascii_case(name))
+    IGNORED_FILE_NAMES
+        .iter()
+        .any(|n| n.eq_ignore_ascii_case(name))
 }
 
 fn is_ignored_dir_name(name: &str) -> bool {
-    IGNORED_DIR_NAMES.iter().any(|n| n.eq_ignore_ascii_case(name))
+    IGNORED_DIR_NAMES
+        .iter()
+        .any(|n| n.eq_ignore_ascii_case(name))
 }
 
 /// Strip a `#fragment` from an href so the path compares cleanly to disk.
@@ -246,11 +255,7 @@ pub(crate) enum DetectedKind {
 }
 
 /// Inspect each manifest item's declared media-type against the file bytes.
-fn check_media_type_magic(
-    base_dir: &Path,
-    items: &[ManifestItem],
-    report: &mut ValidationReport,
-) {
+fn check_media_type_magic(base_dir: &Path, items: &[ManifestItem], report: &mut ValidationReport) {
     for item in items {
         let path = base_dir.join(strip_fragment(&item.href));
         let bytes = match fs::read(&path) {
@@ -267,7 +272,10 @@ fn check_media_type_magic(
                     format!(
                         "Item id=\"{}\" href=\"{}\" declares media-type \"{}\" but file bytes \
                          look like {}.",
-                        item.id, item.href, item.media_type, kind_name(detected)
+                        item.id,
+                        item.href,
+                        item.media_type,
+                        kind_name(detected)
                     ),
                     Some(PathBuf::from(item.href.clone())),
                     None,
@@ -282,7 +290,10 @@ fn check_media_type_magic(
                 format!(
                     "Item id=\"{}\" href=\"{}\" has declared media-type \"{}\" that does not \
                      match detected content \"{}\".",
-                    item.id, item.href, item.media_type, kind_name(detected)
+                    item.id,
+                    item.href,
+                    item.media_type,
+                    kind_name(detected)
                 ),
                 Some(PathBuf::from(item.href.clone())),
                 None,
@@ -370,10 +381,7 @@ fn text_probe(bytes: &[u8], limit: usize) -> &str {
 // ---------------------------------------------------------------------------
 
 /// R7.4: emit if every itemref is `linear="no"`.
-fn check_spine_all_nonlinear(
-    itemrefs: &[crate::opf::SpineItemRef],
-    report: &mut ValidationReport,
-) {
+fn check_spine_all_nonlinear(itemrefs: &[crate::opf::SpineItemRef], report: &mut ValidationReport) {
     if itemrefs.is_empty() {
         return;
     }
@@ -392,10 +400,7 @@ fn check_spine_all_nonlinear(
 }
 
 /// R7.5: emit once per duplicated idref.
-fn check_duplicate_itemrefs(
-    itemrefs: &[crate::opf::SpineItemRef],
-    report: &mut ValidationReport,
-) {
+fn check_duplicate_itemrefs(itemrefs: &[crate::opf::SpineItemRef], report: &mut ValidationReport) {
     let mut seen: HashSet<&str> = HashSet::new();
     let mut reported: HashSet<&str> = HashSet::new();
     for r in itemrefs {
@@ -403,10 +408,7 @@ fn check_duplicate_itemrefs(
             continue;
         }
         if !seen.insert(r.idref.as_str()) && reported.insert(r.idref.as_str()) {
-            report.emit(
-                "R7.5",
-                format!("Duplicate itemref idref=\"{}\".", r.idref),
-            );
+            report.emit("R7.5", format!("Duplicate itemref idref=\"{}\".", r.idref));
         }
     }
 }
@@ -485,8 +487,7 @@ fn check_spine_media_types(
     itemrefs: &[crate::opf::SpineItemRef],
     report: &mut ValidationReport,
 ) {
-    let by_id: HashMap<&str, &ManifestItem> =
-        items.iter().map(|i| (i.id.as_str(), i)).collect();
+    let by_id: HashMap<&str, &ManifestItem> = items.iter().map(|i| (i.id.as_str(), i)).collect();
 
     for r in itemrefs {
         if r.idref.is_empty() {
@@ -534,10 +535,7 @@ fn is_core_media_type(media_type: &str) -> bool {
 
 /// Walk the fallback chain starting at `item` and return true if any link
 /// lands on a core media-type without cycling.
-fn fallback_chain_reaches_core(
-    item: &ManifestItem,
-    by_id: &HashMap<&str, &ManifestItem>,
-) -> bool {
+fn fallback_chain_reaches_core(item: &ManifestItem, by_id: &HashMap<&str, &ManifestItem>) -> bool {
     let mut visited: HashSet<&str> = HashSet::new();
     visited.insert(item.id.as_str());
     let mut current = item;
@@ -723,10 +721,7 @@ mod tests {
         check_media_type_magic(&dir, &[item], &mut report);
 
         assert!(
-            report
-                .findings
-                .iter()
-                .any(|f| f.rule_id == Some("R7.2")),
+            report.findings.iter().any(|f| f.rule_id == Some("R7.2")),
             "expected R7.2 to fire"
         );
         std::fs::remove_dir_all(&dir).ok();
@@ -751,10 +746,7 @@ mod tests {
         check_media_type_magic(&dir, &[item], &mut report);
 
         assert!(
-            report
-                .findings
-                .iter()
-                .any(|f| f.rule_id == Some("R7.3")),
+            report.findings.iter().any(|f| f.rule_id == Some("R7.3")),
             "expected R7.3 to fire"
         );
         std::fs::remove_dir_all(&dir).ok();
@@ -776,10 +768,12 @@ mod tests {
         let item = mk_item("img", "real.jpg", "image/jpeg", None, None);
         let mut report = empty_report();
         check_media_type_magic(&dir, &[item], &mut report);
-        assert!(report
-            .findings
-            .iter()
-            .all(|f| f.rule_id != Some("R7.2") && f.rule_id != Some("R7.3")));
+        assert!(
+            report
+                .findings
+                .iter()
+                .all(|f| f.rule_id != Some("R7.2") && f.rule_id != Some("R7.3"))
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -840,7 +834,10 @@ mod tests {
 
     #[test]
     fn r7_6_xhtml_declared_clean() {
-        assert!(!is_text_html_for_xhtml("page.xhtml", "application/xhtml+xml"));
+        assert!(!is_text_html_for_xhtml(
+            "page.xhtml",
+            "application/xhtml+xml"
+        ));
     }
 
     #[test]
@@ -870,9 +867,13 @@ mod tests {
 
     #[test]
     fn r7_8_dangling_fallback_fires() {
-        let items = vec![
-            mk_item("pdf", "a.pdf", "application/pdf", Some("missing"), None),
-        ];
+        let items = vec![mk_item(
+            "pdf",
+            "a.pdf",
+            "application/pdf",
+            Some("missing"),
+            None,
+        )];
         let mut report = empty_report();
         check_fallback_targets(&items, &mut report);
         assert!(report.findings.iter().any(|f| f.rule_id == Some("R7.8")));
@@ -880,9 +881,13 @@ mod tests {
 
     #[test]
     fn r7_9_dangling_fallback_style_fires() {
-        let items = vec![
-            mk_item("pdf", "a.pdf", "application/pdf", None, Some("gone")),
-        ];
+        let items = vec![mk_item(
+            "pdf",
+            "a.pdf",
+            "application/pdf",
+            None,
+            Some("gone"),
+        )];
         let mut report = empty_report();
         check_fallback_targets(&items, &mut report);
         assert!(report.findings.iter().any(|f| f.rule_id == Some("R7.9")));
@@ -903,13 +908,7 @@ mod tests {
 
     #[test]
     fn r7_10_non_permissible_no_fallback_fires() {
-        let items = vec![mk_item(
-            "pdf",
-            "a.pdf",
-            "application/pdf",
-            None,
-            None,
-        )];
+        let items = vec![mk_item("pdf", "a.pdf", "application/pdf", None, None)];
         let refs = vec![mk_ref("pdf", "")];
         let mut report = empty_report();
         check_spine_media_types(&items, &refs, &mut report);
@@ -937,9 +936,12 @@ mod tests {
         let refs = vec![mk_ref("pdf", "")];
         let mut report = empty_report();
         check_spine_media_types(&items, &refs, &mut report);
-        assert!(report.findings.iter().all(|f| {
-            f.rule_id != Some("R7.10") && f.rule_id != Some("R7.11")
-        }));
+        assert!(
+            report
+                .findings
+                .iter()
+                .all(|f| { f.rule_id != Some("R7.10") && f.rule_id != Some("R7.11") })
+        );
     }
 
     #[test]
@@ -954,9 +956,12 @@ mod tests {
         let refs = vec![mk_ref("html", "")];
         let mut report = empty_report();
         check_spine_media_types(&items, &refs, &mut report);
-        assert!(report.findings.iter().all(|f| {
-            f.rule_id != Some("R7.10") && f.rule_id != Some("R7.11")
-        }));
+        assert!(
+            report
+                .findings
+                .iter()
+                .all(|f| { f.rule_id != Some("R7.10") && f.rule_id != Some("R7.11") })
+        );
     }
 
     #[test]

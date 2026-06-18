@@ -23,7 +23,6 @@
 ///     per-file warning. This matches bsdtar's own behavior.
 ///   * Solid / multi-volume archives are passed through to bsdtar; whatever
 ///     libarchive can read, we can read.
-
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -63,8 +62,7 @@ fn bsdtar_missing_err() -> Box<dyn std::error::Error> {
 /// precise error rather than a generic "extraction failed".
 fn stderr_indicates_encryption(stderr: &str) -> bool {
     let lower = stderr.to_lowercase();
-    lower.contains("encryption is not supported")
-        || lower.contains("encrypted file is unsupported")
+    lower.contains("encryption is not supported") || lower.contains("encrypted file is unsupported")
 }
 
 /// Check if bsdtar's stderr suggests the archive is damaged or not a RAR.
@@ -86,7 +84,14 @@ fn is_image_entry(name: &str) -> bool {
     let ext = Path::new(&lower).extension().and_then(|e| e.to_str());
     matches!(
         ext,
-        Some("jpg") | Some("jpeg") | Some("png") | Some("gif") | Some("webp") | Some("bmp") | Some("tiff") | Some("tif")
+        Some("jpg")
+            | Some("jpeg")
+            | Some("png")
+            | Some("gif")
+            | Some("webp")
+            | Some("bmp")
+            | Some("tiff")
+            | Some("tif")
     )
 }
 
@@ -98,10 +103,7 @@ fn is_comic_info_entry(name: &str) -> bool {
 
 /// Entry names we want to keep should be neither directories nor macOS cruft.
 fn entry_is_noise(name: &str) -> bool {
-    name.is_empty()
-        || name.ends_with('/')
-        || name.starts_with("__MACOSX")
-        || name.contains("/.")
+    name.is_empty() || name.ends_with('/') || name.starts_with("__MACOSX") || name.contains("/.")
 }
 
 /// List entry names in a RAR archive via `bsdtar -tf`.
@@ -119,11 +121,9 @@ fn list_entries(bsdtar: &Path, cbr_path: &Path) -> Result<Vec<String>, Box<dyn s
 
     if !output.status.success() {
         if stderr_indicates_encryption(&stderr) {
-            return Err(
-                "encrypted CBRs are not supported (header-encrypted RAR \
+            return Err("encrypted CBRs are not supported (header-encrypted RAR \
                  archive). Remove the password with an external tool first."
-                    .into(),
-            );
+                .into());
         }
         if stderr_indicates_bad_archive(&stderr) {
             return Err(format!("corrupted or unreadable CBR archive: {}", stderr.trim()).into());
@@ -158,11 +158,9 @@ fn extract_entry_to_file(
 
     if !output.status.success() {
         if stderr_indicates_encryption(&stderr) {
-            return Err(
-                "encrypted CBRs are not supported (header-encrypted RAR \
+            return Err("encrypted CBRs are not supported (header-encrypted RAR \
                  archive). Remove the password with an external tool first."
-                    .into(),
-            );
+                .into());
         }
         return Err(format!(
             "bsdtar failed to extract '{}': {}",
@@ -273,14 +271,18 @@ fn natural_sort_key(path: &Path) -> Vec<NaturalSortPart> {
             current_num.push(ch);
         } else {
             if !current_num.is_empty() {
-                parts.push(NaturalSortPart::Number(current_num.parse::<u64>().unwrap_or(0)));
+                parts.push(NaturalSortPart::Number(
+                    current_num.parse::<u64>().unwrap_or(0),
+                ));
                 current_num.clear();
             }
             current_text.push(ch);
         }
     }
     if !current_num.is_empty() {
-        parts.push(NaturalSortPart::Number(current_num.parse::<u64>().unwrap_or(0)));
+        parts.push(NaturalSortPart::Number(
+            current_num.parse::<u64>().unwrap_or(0),
+        ));
     }
     if !current_text.is_empty() {
         parts.push(NaturalSortPart::Text(current_text.to_lowercase()));
@@ -330,8 +332,12 @@ mod tests {
 
     #[test]
     fn stderr_encryption_detection() {
-        assert!(stderr_indicates_encryption("bsdtar: Encryption is not supported"));
+        assert!(stderr_indicates_encryption(
+            "bsdtar: Encryption is not supported"
+        ));
         assert!(stderr_indicates_encryption("ENCRYPTION IS NOT SUPPORTED"));
-        assert!(!stderr_indicates_encryption("bsdtar: Unrecognized archive format"));
+        assert!(!stderr_indicates_encryption(
+            "bsdtar: Unrecognized archive format"
+        ));
     }
 }

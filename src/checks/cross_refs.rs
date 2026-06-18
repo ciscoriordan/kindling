@@ -111,7 +111,9 @@ impl Check for CrossRefsChecks {
                 continue;
             }
 
-            let Some(text) = epub.read(&clean) else { continue };
+            let Some(text) = epub.read(&clean) else {
+                continue;
+            };
 
             scan_content(
                 &clean,
@@ -141,7 +143,10 @@ fn scan_content(
     report: &mut ValidationReport,
 ) {
     let file = Some(PathBuf::from(file_href));
-    let file_dir = Path::new(file_href).parent().map(|p| p.to_path_buf()).unwrap_or_default();
+    let file_dir = Path::new(file_href)
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_default();
 
     // R9.5 SVG <use xlink:href="..."> without a fragment identifier.
     if is_svg {
@@ -154,7 +159,12 @@ fn scan_content(
 
     // Collect every attribute reference so we only scan once.
     for attr_ref in collect_attr_refs(text) {
-        let AttrRef { attr_name, value, element_name, .. } = &attr_ref;
+        let AttrRef {
+            attr_name,
+            value,
+            element_name,
+            ..
+        } = &attr_ref;
         // Skip xmlns:* style namespace declarations which are not URL refs.
         if attr_name.starts_with("xmlns") {
             continue;
@@ -293,12 +303,7 @@ fn classify_and_check(
     if attr_name == "href" && element_name == "a" {
         if let Some(media_type) = manifest_by_href.get(&resolved_str) {
             if is_xhtml_media_type(media_type) && !spine_hrefs.contains(&resolved_str) {
-                report.emit_at(
-                    "R9.2",
-                    format!("href=\"{}\"", value),
-                    file.clone(),
-                    None,
-                );
+                report.emit_at("R9.2", format!("href=\"{}\"", value), file.clone(), None);
             }
         }
     }
@@ -374,8 +379,8 @@ fn check_svg_use_without_fragment(
     report: &mut ValidationReport,
 ) {
     for tag in find_tags(text, "use") {
-        let href = extract_attr_generic(tag, "xlink:href")
-            .or_else(|| extract_attr_generic(tag, "href"));
+        let href =
+            extract_attr_generic(tag, "xlink:href").or_else(|| extract_attr_generic(tag, "href"));
         let Some(value) = href else { continue };
         if !value.contains('#') {
             report.emit_at(
@@ -391,8 +396,12 @@ fn check_svg_use_without_fragment(
 /// R9.1: `<img src="foo.png#fragment">` where foo is not SVG.
 fn check_img_fragment(text: &str, file: &Option<PathBuf>, report: &mut ValidationReport) {
     for tag in find_tags(text, "img") {
-        let Some(src) = extract_attr_generic(tag, "src") else { continue };
-        let Some(hash_pos) = src.find('#') else { continue };
+        let Some(src) = extract_attr_generic(tag, "src") else {
+            continue;
+        };
+        let Some(hash_pos) = src.find('#') else {
+            continue;
+        };
         // Skip if the path points at an .svg resource.
         let path_part = &src[..hash_pos];
         let lower = path_part.to_ascii_lowercase();
@@ -432,7 +441,9 @@ fn strip_fragment(href: &str) -> String {
 /// True if the value has ASCII whitespace, control characters, or bare angle
 /// brackets. These make a URL genuinely unparseable from an attribute value.
 fn has_control_or_space(value: &str) -> bool {
-    value.chars().any(|c| c.is_ascii_whitespace() || c.is_control() || c == '<' || c == '>')
+    value
+        .chars()
+        .any(|c| c.is_ascii_whitespace() || c.is_control() || c == '<' || c == '>')
 }
 
 /// True if `mt` is an XHTML / HTML media type.
@@ -544,13 +555,7 @@ fn collect_attr_refs(text: &str) -> Vec<AttrRef> {
         let mut name_end = name_start;
         while name_end < bytes.len() {
             let c = bytes[name_end];
-            if c == b' '
-                || c == b'\t'
-                || c == b'\n'
-                || c == b'\r'
-                || c == b'>'
-                || c == b'/'
-            {
+            if c == b' ' || c == b'\t' || c == b'\n' || c == b'\r' || c == b'>' || c == b'/' {
                 break;
             }
             name_end += 1;
@@ -714,13 +719,7 @@ fn find_tags<'a>(text: &'a str, needle: &str) -> Vec<&'a str> {
         let mut name_end = name_start;
         while name_end < bytes.len() {
             let c = bytes[name_end];
-            if c == b' '
-                || c == b'\t'
-                || c == b'\n'
-                || c == b'\r'
-                || c == b'>'
-                || c == b'/'
-            {
+            if c == b' ' || c == b'\t' || c == b'\n' || c == b'\r' || c == b'>' || c == b'/' {
                 break;
             }
             name_end += 1;
@@ -865,12 +864,20 @@ mod tests {
 
     #[test]
     fn r9_8_data_scheme() {
-        assert!("data:image/png;base64,abcd".to_ascii_lowercase().starts_with("data:"));
+        assert!(
+            "data:image/png;base64,abcd"
+                .to_ascii_lowercase()
+                .starts_with("data:")
+        );
     }
 
     #[test]
     fn r9_9_file_scheme() {
-        assert!("file:///etc/passwd".to_ascii_lowercase().starts_with("file:"));
+        assert!(
+            "file:///etc/passwd"
+                .to_ascii_lowercase()
+                .starts_with("file:")
+        );
     }
 
     #[test]

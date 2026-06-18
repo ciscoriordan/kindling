@@ -15,15 +15,14 @@
 ///   4. Write processed images + OPF + XHTML to a temp directory
 ///   5. Call mobi::build_mobi() on the temp directory's OPF
 ///   6. Clean up temp dir
-
 use std::fs;
 use std::io::Read;
 
 use std::path::{Path, PathBuf};
 
+use crate::DEFAULT_AUTHOR;
 use crate::cbr;
 use crate::epub;
-use crate::DEFAULT_AUTHOR;
 
 use image::imageops::FilterType;
 use image::{DynamicImage, GenericImageView, GrayImage, Luma, Rgb, RgbImage};
@@ -43,15 +42,60 @@ pub struct DeviceProfile {
 
 /// All supported device profiles.
 const PROFILES: &[DeviceProfile] = &[
-    DeviceProfile { width: 1072, height: 1448, grayscale: true, name: "paperwhite" },
-    DeviceProfile { width: 1264, height: 1680, grayscale: true, name: "oasis" },
-    DeviceProfile { width: 1860, height: 2480, grayscale: true, name: "scribe" },
-    DeviceProfile { width: 1072, height: 1448, grayscale: true, name: "basic" },
-    DeviceProfile { width: 1264, height: 1680, grayscale: false, name: "colorsoft" },
-    DeviceProfile { width: 1200, height: 1920, grayscale: false, name: "fire-hd-10" },
-    DeviceProfile { width: 1236, height: 1648, grayscale: true, name: "kpw5" },
-    DeviceProfile { width: 1986, height: 2648, grayscale: true, name: "scribe2025" },
-    DeviceProfile { width: 1240, height: 1860, grayscale: true, name: "kindle2024" },
+    DeviceProfile {
+        width: 1072,
+        height: 1448,
+        grayscale: true,
+        name: "paperwhite",
+    },
+    DeviceProfile {
+        width: 1264,
+        height: 1680,
+        grayscale: true,
+        name: "oasis",
+    },
+    DeviceProfile {
+        width: 1860,
+        height: 2480,
+        grayscale: true,
+        name: "scribe",
+    },
+    DeviceProfile {
+        width: 1072,
+        height: 1448,
+        grayscale: true,
+        name: "basic",
+    },
+    DeviceProfile {
+        width: 1264,
+        height: 1680,
+        grayscale: false,
+        name: "colorsoft",
+    },
+    DeviceProfile {
+        width: 1200,
+        height: 1920,
+        grayscale: false,
+        name: "fire-hd-10",
+    },
+    DeviceProfile {
+        width: 1236,
+        height: 1648,
+        grayscale: true,
+        name: "kpw5",
+    },
+    DeviceProfile {
+        width: 1986,
+        height: 2648,
+        grayscale: true,
+        name: "scribe2025",
+    },
+    DeviceProfile {
+        width: 1240,
+        height: 1860,
+        grayscale: true,
+        name: "kindle2024",
+    },
 ];
 
 /// Look up a device profile by name (case-insensitive).
@@ -62,7 +106,11 @@ pub fn get_profile(name: &str) -> Option<DeviceProfile> {
 
 /// Return a comma-separated list of valid device names.
 pub fn valid_device_names() -> String {
-    PROFILES.iter().map(|p| p.name).collect::<Vec<_>>().join(", ")
+    PROFILES
+        .iter()
+        .map(|p| p.name)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Specifies how the cover image should be chosen.
@@ -280,9 +328,17 @@ pub fn build_comic_with_options(
     }
 
     // Step 3: Process images in parallel (with spread splitting, cropping, enhancement)
-    eprintln!("Processing images for {} ({}x{}, {})...",
-        profile.name, profile.width, profile.height,
-        if profile.grayscale { "grayscale" } else { "color" });
+    eprintln!(
+        "Processing images for {} ({}x{}, {})...",
+        profile.name,
+        profile.width,
+        profile.height,
+        if profile.grayscale {
+            "grayscale"
+        } else {
+            "color"
+        }
+    );
 
     // Determine which source image index is the cover page (for cover_fill).
     // For external file covers, cover_fill is applied separately below.
@@ -312,7 +368,8 @@ pub fn build_comic_with_options(
         .collect();
 
     // Filter out skipped images and unwrap
-    let processed_groups: Vec<(usize, Vec<Vec<u8>>)> = processed_groups.into_iter().flatten().collect();
+    let processed_groups: Vec<(usize, Vec<Vec<u8>>)> =
+        processed_groups.into_iter().flatten().collect();
 
     if processed_groups.is_empty() {
         return Err("All images failed to load - no valid images to process".into());
@@ -351,9 +408,11 @@ pub fn build_comic_with_options(
     }
 
     let total_image_bytes: usize = processed.iter().map(|p| p.jpeg_data.len()).sum();
-    eprintln!("Processed into {} pages ({:.1} MB total JPEG data)",
+    eprintln!(
+        "Processed into {} pages ({:.1} MB total JPEG data)",
         processed.len(),
-        total_image_bytes as f64 / (1024.0 * 1024.0));
+        total_image_bytes as f64 / (1024.0 * 1024.0)
+    );
 
     // Step 3b: Detect panels for Panel View if enabled
     if options.panel_view {
@@ -367,12 +426,15 @@ pub fn build_comic_with_options(
             }
             processed[i].panels = panels;
         }
-        eprintln!("Panel View: detected panels on {}/{} pages", panel_count, processed.len());
+        eprintln!(
+            "Panel View: detected panels on {}/{} pages",
+            panel_count,
+            processed.len()
+        );
 
         // Sort panels according to reading order
-        let reading_order = resolve_panel_reading_order(
-            options.panel_reading_order.as_deref(), options.rtl,
-        );
+        let reading_order =
+            resolve_panel_reading_order(options.panel_reading_order.as_deref(), options.rtl);
         if reading_order != "horizontal-lr" {
             eprintln!("Panel View: sorting panels in {} order", reading_order);
         }
@@ -386,7 +448,13 @@ pub fn build_comic_with_options(
     // Step 4: Write OPF + XHTML + images to temp directory
     let temp_dir = create_temp_dir(output)?;
     let opf_path = write_fixed_layout_epub_v2(
-        &temp_dir, &processed, profile, rtl, metadata.as_ref(), options.panel_view, options,
+        &temp_dir,
+        &processed,
+        profile,
+        rtl,
+        metadata.as_ref(),
+        options.panel_view,
+        options,
     )?;
 
     // Step 4b: Run KDP validation on the generated OPF. Errors fail the
@@ -412,11 +480,7 @@ pub fn build_comic_with_options(
                         let _ = fs::remove_dir_all(cbz_dir);
                     }
                 }
-                return Err(format!(
-                    "Comic OPF validation failed with {} errors",
-                    errors
-                )
-                .into());
+                return Err(format!("Comic OPF validation failed with {} errors", errors).into());
             }
         }
         Err(e) => {
@@ -440,30 +504,38 @@ pub fn build_comic_with_options(
     let result = mobi::build_mobi(
         &opf_path,
         output,
-        false,  // compress
-        false,  // headwords_only (N/A for books)
+        false, // compress
+        false, // headwords_only (N/A for books)
         srcs_data.as_deref(),
-        false,  // no CMET
-        true,   // skip HD images (KCC doesn't emit HD container)
-        false,  // default creator identity
+        false, // no CMET
+        true,  // skip HD images (KCC doesn't emit HD container)
+        false, // default creator identity
         options.kf8_only,
         options.doc_type.as_deref(),
         options.kindle_limits,
         options.self_check,
         options.kindlegen_parity,
-        false,  // strict_accents (dictionary-only flag, no effect on comics)
+        false, // strict_accents (dictionary-only flag, no effect on comics)
     );
 
     // Step 6: Clean up temp dirs
     if temp_dir.exists() {
         if let Err(e) = fs::remove_dir_all(&temp_dir) {
-            eprintln!("Warning: failed to clean up temp dir {}: {}", temp_dir.display(), e);
+            eprintln!(
+                "Warning: failed to clean up temp dir {}: {}",
+                temp_dir.display(),
+                e
+            );
         }
     }
     if let Some(cbz_dir) = cbz_temp_dir {
         if cbz_dir.exists() {
             if let Err(e) = fs::remove_dir_all(&cbz_dir) {
-                eprintln!("Warning: failed to clean up archive extraction dir {}: {}", cbz_dir.display(), e);
+                eprintln!(
+                    "Warning: failed to clean up archive extraction dir {}: {}",
+                    cbz_dir.display(),
+                    e
+                );
             }
         }
     }
@@ -479,7 +551,11 @@ pub fn build_comic_with_options(
     };
     let expected = crate::mobi_check::ExpectedMetadata {
         title: if title.is_empty() { None } else { Some(title) },
-        author: if author.is_empty() { None } else { Some(author) },
+        author: if author.is_empty() {
+            None
+        } else {
+            Some(author)
+        },
         is_comic: true,
         is_dictionary: false,
     };
@@ -493,7 +569,9 @@ pub fn build_comic_with_options(
 ///
 /// Returns (image_paths, optional_temp_dir). The temp dir, if present,
 /// should be cleaned up by the caller after processing.
-fn collect_images(input: &Path) -> Result<(Vec<PathBuf>, Option<PathBuf>), Box<dyn std::error::Error>> {
+fn collect_images(
+    input: &Path,
+) -> Result<(Vec<PathBuf>, Option<PathBuf>), Box<dyn std::error::Error>> {
     if input.is_dir() {
         Ok((collect_images_from_dir(input)?, None))
     } else if let Some(ext) = input.extension() {
@@ -527,7 +605,9 @@ fn collect_images(input: &Path) -> Result<(Vec<PathBuf>, Option<PathBuf>), Box<d
 /// in spine order, which is critical for correct page ordering in manga/comics.
 ///
 /// Returns (image_paths, temp_extraction_dir).
-fn extract_epub_images(epub_path: &Path) -> Result<(Vec<PathBuf>, PathBuf), Box<dyn std::error::Error>> {
+fn extract_epub_images(
+    epub_path: &Path,
+) -> Result<(Vec<PathBuf>, PathBuf), Box<dyn std::error::Error>> {
     use crate::opf::OPFData;
 
     let (temp_dir, opf_path) = epub::extract_epub(epub_path)?;
@@ -591,8 +671,8 @@ fn extract_epub_images(epub_path: &Path) -> Result<(Vec<PathBuf>, PathBuf), Box<
 ///   2. `<image xlink:href="...">` or `<image href="...">` - SVG image elements
 ///   3. CSS background-image references (less common, but seen in some EPUBs)
 pub fn extract_image_refs_from_xhtml(content: &str) -> Vec<String> {
-    use quick_xml::events::Event;
     use quick_xml::Reader;
+    use quick_xml::events::Event;
 
     let mut refs = Vec::new();
     let mut reader = Reader::from_str(content);
@@ -664,12 +744,9 @@ pub fn extract_image_refs_regex(content: &str) -> Vec<String> {
     static IMG_SRC_RE: OnceLock<Regex> = OnceLock::new();
     static IMAGE_HREF_RE: OnceLock<Regex> = OnceLock::new();
 
-    let img_re = IMG_SRC_RE.get_or_init(|| {
-        Regex::new(r#"<img\s[^>]*src="([^"]+)""#).unwrap()
-    });
-    let image_re = IMAGE_HREF_RE.get_or_init(|| {
-        Regex::new(r#"<image\s[^>]*(?:xlink:)?href="([^"]+)""#).unwrap()
-    });
+    let img_re = IMG_SRC_RE.get_or_init(|| Regex::new(r#"<img\s[^>]*src="([^"]+)""#).unwrap());
+    let image_re = IMAGE_HREF_RE
+        .get_or_init(|| Regex::new(r#"<image\s[^>]*(?:xlink:)?href="([^"]+)""#).unwrap());
 
     let mut refs = Vec::new();
     for cap in img_re.captures_iter(content) {
@@ -704,10 +781,11 @@ fn collect_images_from_dir(dir: &Path) -> Result<Vec<PathBuf>, Box<dyn std::erro
 }
 
 /// Recursively collect image files from a directory.
-fn collect_images_recursive(dir: &Path, images: &mut Vec<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
-    let mut entries: Vec<_> = fs::read_dir(dir)?
-        .filter_map(|e| e.ok())
-        .collect();
+fn collect_images_recursive(
+    dir: &Path,
+    images: &mut Vec<PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut entries: Vec<_> = fs::read_dir(dir)?.filter_map(|e| e.ok()).collect();
     entries.sort_by_key(|e| e.file_name());
 
     for entry in entries {
@@ -726,7 +804,10 @@ fn is_image_file(path: &Path) -> bool {
     match path.extension().and_then(|e| e.to_str()) {
         Some(ext) => {
             let lower = ext.to_lowercase();
-            matches!(lower.as_str(), "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" | "tiff" | "tif")
+            matches!(
+                lower.as_str(),
+                "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" | "tiff" | "tif"
+            )
         }
         None => false,
     }
@@ -748,14 +829,18 @@ fn natural_sort_key(path: &Path) -> Vec<NaturalSortPart> {
             current_num.push(ch);
         } else {
             if !current_num.is_empty() {
-                parts.push(NaturalSortPart::Number(current_num.parse::<u64>().unwrap_or(0)));
+                parts.push(NaturalSortPart::Number(
+                    current_num.parse::<u64>().unwrap_or(0),
+                ));
                 current_num.clear();
             }
             current_text.push(ch);
         }
     }
     if !current_num.is_empty() {
-        parts.push(NaturalSortPart::Number(current_num.parse::<u64>().unwrap_or(0)));
+        parts.push(NaturalSortPart::Number(
+            current_num.parse::<u64>().unwrap_or(0),
+        ));
     }
     if !current_text.is_empty() {
         parts.push(NaturalSortPart::Text(current_text.to_lowercase()));
@@ -960,7 +1045,9 @@ fn cover_fill_crop(img: &DynamicImage, target_width: u32, target_height: u32) ->
     let x = (w - crop_w) / 2;
     let y = (h - crop_h) / 2;
 
-    image::imageops::crop_imm(img, x, y, crop_w, crop_h).to_image().into()
+    image::imageops::crop_imm(img, x, y, crop_w, crop_h)
+        .to_image()
+        .into()
 }
 
 /// Encode a DynamicImage as JPEG with a specific quality level (1-100).
@@ -1185,14 +1272,32 @@ pub fn crop_page_numbers(img: &DynamicImage) -> DynamicImage {
 
     // --- Bottom strip ---
     let crop_bottom = if h > strip_h {
-        is_page_number_strip(&gray, w, h.saturating_sub(strip_h), h, bg, COLOR_TOL, MIN_INK_FRAC, MAX_INK_FRAC)
+        is_page_number_strip(
+            &gray,
+            w,
+            h.saturating_sub(strip_h),
+            h,
+            bg,
+            COLOR_TOL,
+            MIN_INK_FRAC,
+            MAX_INK_FRAC,
+        )
     } else {
         0
     };
 
     // --- Top strip ---
     let crop_top = if h > strip_h {
-        is_page_number_strip(&gray, w, 0, strip_h, bg, COLOR_TOL, MIN_INK_FRAC, MAX_INK_FRAC)
+        is_page_number_strip(
+            &gray,
+            w,
+            0,
+            strip_h,
+            bg,
+            COLOR_TOL,
+            MIN_INK_FRAC,
+            MAX_INK_FRAC,
+        )
     } else {
         0
     };
@@ -1226,7 +1331,10 @@ fn detect_strip_background(gray: &GrayImage, w: u32, h: u32) -> u8 {
         (0, h / 2),
         (w - 1, h / 2),
     ];
-    let sum: u32 = samples.iter().map(|&(x, y)| gray.get_pixel(x, y).0[0] as u32).sum();
+    let sum: u32 = samples
+        .iter()
+        .map(|&(x, y)| gray.get_pixel(x, y).0[0] as u32)
+        .sum();
     (sum / samples.len() as u32) as u8
 }
 
@@ -1266,10 +1374,18 @@ fn is_page_number_strip(
             let diff = if v > bg { v - bg } else { bg - v };
             if diff > tol {
                 ink_count += 1;
-                if x < ink_x_min { ink_x_min = x; }
-                if x > ink_x_max { ink_x_max = x; }
-                if y < ink_y_min { ink_y_min = y; }
-                if y > ink_y_max { ink_y_max = y; }
+                if x < ink_x_min {
+                    ink_x_min = x;
+                }
+                if x > ink_x_max {
+                    ink_x_max = x;
+                }
+                if y < ink_y_min {
+                    ink_y_min = y;
+                }
+                if y > ink_y_max {
+                    ink_y_max = y;
+                }
             }
         }
     }
@@ -1373,11 +1489,15 @@ pub fn enhance_image(img: &DynamicImage) -> DynamicImage {
             let rgb = img.to_rgb8();
             let mut out = RgbImage::new(w, h);
             for (x, y, pixel) in rgb.enumerate_pixels() {
-                out.put_pixel(x, y, Rgb([
-                    lut[pixel.0[0] as usize],
-                    lut[pixel.0[1] as usize],
-                    lut[pixel.0[2] as usize],
-                ]));
+                out.put_pixel(
+                    x,
+                    y,
+                    Rgb([
+                        lut[pixel.0[0] as usize],
+                        lut[pixel.0[1] as usize],
+                        lut[pixel.0[2] as usize],
+                    ]),
+                );
             }
             DynamicImage::ImageRgb8(out)
         }
@@ -1393,12 +1513,12 @@ pub fn detect_webtoon(images: &[PathBuf]) -> bool {
     if images.is_empty() {
         return false;
     }
-    images.iter().all(|path| {
-        match image::image_dimensions(path) {
+    images
+        .iter()
+        .all(|path| match image::image_dimensions(path) {
             Ok((w, h)) => h > 3 * w,
             Err(_) => false,
-        }
-    })
+        })
 }
 
 /// Full webtoon preprocessing: load images, merge into a tall strip, split at gutters.
@@ -1420,7 +1540,12 @@ fn webtoon_preprocess(
             Ok(img) => {
                 let (w, h) = img.dimensions();
                 if w == 0 || h == 0 {
-                    eprintln!("Warning: skipping {} (zero dimensions {}x{})", p.display(), w, h);
+                    eprintln!(
+                        "Warning: skipping {} (zero dimensions {}x{})",
+                        p.display(),
+                        w,
+                        h
+                    );
                     continue;
                 }
                 images.push(img);
@@ -1484,7 +1609,12 @@ fn webtoon_preprocess(
         let strip = webtoon_merge(chunk_images);
         let (strip_w, strip_h) = strip.dimensions();
         if chunks.len() > 1 {
-            eprintln!("Chunk {}: merged strip {}x{}", chunk_idx + 1, strip_w, strip_h);
+            eprintln!(
+                "Chunk {}: merged strip {}x{}",
+                chunk_idx + 1,
+                strip_w,
+                strip_h
+            );
         } else {
             eprintln!("Merged webtoon strip: {}x{}", strip_w, strip_h);
         }
@@ -1675,13 +1805,7 @@ pub fn webtoon_split(strip: &DynamicImage, device_height: u32) -> Vec<DynamicIma
 /// in webtoons with thick panel gaps), we average variance over a small window
 /// of rows. This makes the detector more robust to single-row noise that might
 /// appear inside a gutter band.
-fn find_best_gutter(
-    gray: &GrayImage,
-    y_start: u32,
-    lo: u32,
-    hi: u32,
-    width: u32,
-) -> (u32, bool) {
+fn find_best_gutter(gray: &GrayImage, y_start: u32, lo: u32, hi: u32, width: u32) -> (u32, bool) {
     let target_mid = (lo + hi) / 2;
     let mut best_offset = target_mid;
     let mut best_score = f64::MAX;
@@ -1706,7 +1830,11 @@ fn find_best_gutter(
             var_sum += row_variance(gray, wy, width);
             count += 1;
         }
-        let avg_variance = if count > 0 { var_sum / count as f64 } else { f64::MAX };
+        let avg_variance = if count > 0 {
+            var_sum / count as f64
+        } else {
+            f64::MAX
+        };
 
         if avg_variance < best_score {
             best_score = avg_variance;
@@ -1779,7 +1907,7 @@ pub fn detect_panels(img: &DynamicImage) -> Vec<PanelRect> {
 
     let variance_threshold: f64 = 50.0;
     let min_gutter_height = ((h as f64) * 0.005).max(2.0) as u32; // 0.5% of height, min 2px
-    let min_gutter_width = ((w as f64) * 0.005).max(2.0) as u32;  // 0.5% of width, min 2px
+    let min_gutter_width = ((w as f64) * 0.005).max(2.0) as u32; // 0.5% of width, min 2px
 
     // Step 1: Find horizontal gutters
     let h_gutters = find_horizontal_gutters(&gray, w, h, variance_threshold, min_gutter_height);
@@ -1812,7 +1940,12 @@ pub fn detect_panels(img: &DynamicImage) -> Vec<PanelRect> {
     let mut panels = Vec::new();
     for &(y_start, y_end) in &h_strips {
         let v_gutters = find_vertical_gutters(
-            &gray, y_start, y_end, w, variance_threshold, min_gutter_width,
+            &gray,
+            y_start,
+            y_end,
+            w,
+            variance_threshold,
+            min_gutter_width,
         );
         let v_strips = strips_from_gutters(&v_gutters, w);
 
@@ -1845,11 +1978,22 @@ pub fn resolve_panel_reading_order(explicit: Option<&str>, rtl: bool) -> &'stati
         Some("vertical-lr") => "vertical-lr",
         Some("vertical-rl") => "vertical-rl",
         Some(other) => {
-            eprintln!("Warning: unknown panel-reading-order '{}', using default", other);
-            if rtl { "horizontal-rl" } else { "horizontal-lr" }
+            eprintln!(
+                "Warning: unknown panel-reading-order '{}', using default",
+                other
+            );
+            if rtl {
+                "horizontal-rl"
+            } else {
+                "horizontal-lr"
+            }
         }
         None => {
-            if rtl { "horizontal-rl" } else { "horizontal-lr" }
+            if rtl {
+                "horizontal-rl"
+            } else {
+                "horizontal-lr"
+            }
         }
     }
 }
@@ -1879,7 +2023,9 @@ pub fn sort_panels_by_reading_order(panels: &mut Vec<PanelRect>, reading_order: 
             panels.sort_by(|a, b| {
                 let row_a = (a.y / tolerance).floor() as i64;
                 let row_b = (b.y / tolerance).floor() as i64;
-                row_a.cmp(&row_b).then_with(|| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal))
+                row_a
+                    .cmp(&row_b)
+                    .then_with(|| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal))
             });
         }
         "horizontal-rl" => {
@@ -1887,7 +2033,9 @@ pub fn sort_panels_by_reading_order(panels: &mut Vec<PanelRect>, reading_order: 
             panels.sort_by(|a, b| {
                 let row_a = (a.y / tolerance).floor() as i64;
                 let row_b = (b.y / tolerance).floor() as i64;
-                row_a.cmp(&row_b).then_with(|| b.x.partial_cmp(&a.x).unwrap_or(std::cmp::Ordering::Equal))
+                row_a
+                    .cmp(&row_b)
+                    .then_with(|| b.x.partial_cmp(&a.x).unwrap_or(std::cmp::Ordering::Equal))
             });
         }
         "vertical-lr" => {
@@ -1895,7 +2043,9 @@ pub fn sort_panels_by_reading_order(panels: &mut Vec<PanelRect>, reading_order: 
             panels.sort_by(|a, b| {
                 let col_a = (a.x / tolerance).floor() as i64;
                 let col_b = (b.x / tolerance).floor() as i64;
-                col_a.cmp(&col_b).then_with(|| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal))
+                col_a
+                    .cmp(&col_b)
+                    .then_with(|| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal))
             });
         }
         "vertical-rl" => {
@@ -1903,7 +2053,9 @@ pub fn sort_panels_by_reading_order(panels: &mut Vec<PanelRect>, reading_order: 
             panels.sort_by(|a, b| {
                 let col_a = (a.x / tolerance).floor() as i64;
                 let col_b = (b.x / tolerance).floor() as i64;
-                col_b.cmp(&col_a).then_with(|| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal))
+                col_b
+                    .cmp(&col_a)
+                    .then_with(|| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal))
             });
         }
         _ => {
@@ -2068,10 +2220,7 @@ fn detect_panels_for_pages(pages: &[ProcessedImage]) -> Vec<Option<Vec<PanelRect
 // ---------------------------------------------------------------------------
 
 /// Find and parse ComicInfo.xml from the input source.
-fn find_and_parse_comic_info(
-    input: &Path,
-    cbz_temp_dir: Option<&Path>,
-) -> Option<ComicMetadata> {
+fn find_and_parse_comic_info(input: &Path, cbz_temp_dir: Option<&Path>) -> Option<ComicMetadata> {
     // Check in CBZ extraction directory first
     if let Some(temp_dir) = cbz_temp_dir {
         let path = temp_dir.join("ComicInfo.xml");
@@ -2117,8 +2266,8 @@ pub fn parse_comic_info(path: &Path) -> Result<ComicMetadata, Box<dyn std::error
 
 /// Parse ComicInfo.xml content string into ComicMetadata.
 pub fn parse_comic_info_xml(xml: &str) -> Result<ComicMetadata, Box<dyn std::error::Error>> {
-    use quick_xml::events::Event;
     use quick_xml::Reader;
+    use quick_xml::events::Event;
 
     let mut reader = Reader::from_str(xml);
     let mut metadata = ComicMetadata::default();
@@ -2196,7 +2345,10 @@ pub fn parse_comic_info_xml(xml: &str) -> Result<ComicMetadata, Box<dyn std::err
     }
 
     if metadata.title.is_some() || metadata.series.is_some() {
-        eprintln!("Parsed ComicInfo.xml: {}", metadata.effective_title().unwrap_or_default());
+        eprintln!(
+            "Parsed ComicInfo.xml: {}",
+            metadata.effective_title().unwrap_or_default()
+        );
     }
     if metadata.manga_rtl {
         eprintln!("ComicInfo.xml specifies manga (RTL) reading direction");
@@ -2245,7 +2397,13 @@ fn write_fixed_layout_epub_v2(
 
     // Write XHTML pages
     for page in pages {
-        let xhtml = build_page_xhtml(page.index, page.width, page.height, page.panels.as_deref(), options.kindlegen_parity);
+        let xhtml = build_page_xhtml(
+            page.index,
+            page.width,
+            page.height,
+            page.panels.as_deref(),
+            options.kindlegen_parity,
+        );
         let filename = format!("page_{:04}.xhtml", page.index);
         fs::write(temp_dir.join(&filename), xhtml.as_bytes())?;
     }
@@ -2256,13 +2414,11 @@ fn write_fixed_layout_epub_v2(
     // Handle external cover image if provided
     let external_cover_id = if let Some(CoverSource::FilePath(ref path)) = options.cover {
         let cover_filename = "cover_override.jpg";
-        let cover_data = fs::read(path).map_err(|e| {
-            format!("Could not read cover image {}: {}", path.display(), e)
-        })?;
+        let cover_data = fs::read(path)
+            .map_err(|e| format!("Could not read cover image {}: {}", path.display(), e))?;
         // Re-encode cover image as JPEG to ensure Kindle compatibility
-        let cover_img = image::load_from_memory(&cover_data).map_err(|e| {
-            format!("Could not decode cover image {}: {}", path.display(), e)
-        })?;
+        let cover_img = image::load_from_memory(&cover_data)
+            .map_err(|e| format!("Could not decode cover image {}: {}", path.display(), e))?;
         let cover_img = if options.cover_fill {
             cover_fill_crop(&cover_img, profile.width, profile.height)
         } else {
@@ -2285,7 +2441,16 @@ fn write_fixed_layout_epub_v2(
     );
 
     // Write OPF
-    let opf = build_comic_opf_v2(pages.len(), profile, rtl, metadata, any_panels, options, external_cover_id.as_deref(), &uid);
+    let opf = build_comic_opf_v2(
+        pages.len(),
+        profile,
+        rtl,
+        metadata,
+        any_panels,
+        options,
+        external_cover_id.as_deref(),
+        &uid,
+    );
     let opf_path = temp_dir.join("content.opf");
     fs::write(&opf_path, opf.as_bytes())?;
 
@@ -2311,7 +2476,9 @@ fn build_comic_opf_v2(
     let mut spine_items = String::new();
 
     // NCX + CSS
-    manifest_items.push_str("    <item id=\"ncx\" href=\"toc.ncx\" media-type=\"application/x-dtbncx+xml\"/>\n");
+    manifest_items.push_str(
+        "    <item id=\"ncx\" href=\"toc.ncx\" media-type=\"application/x-dtbncx+xml\"/>\n",
+    );
     manifest_items.push_str("    <item id=\"css\" href=\"comic.css\" media-type=\"text/css\"/>\n");
 
     for i in 0..num_pages {
@@ -2323,38 +2490,51 @@ fn build_comic_opf_v2(
             "    <item id=\"img{:04}\" href=\"images/page_{:04}.jpg\" media-type=\"image/jpeg\"/>\n",
             i, i
         ));
-        spine_items.push_str(&format!(
-            "    <itemref idref=\"page{:04}\"/>\n",
-            i
-        ));
+        spine_items.push_str(&format!("    <itemref idref=\"page{:04}\"/>\n", i));
     }
 
     // Handle cover: external file, page number override, or default (first page)
-    let (cover_meta, cover_manifest_entry) = if let Some(ref cover_filename) = external_cover_filename {
-        // External cover image file
-        let entry = format!(
-            "    <item id=\"cover_img\" href=\"images/{}\" media-type=\"image/jpeg\"/>\n",
-            cover_filename
-        );
-        ("  <meta name=\"cover\" content=\"cover_img\"/>\n".to_string(), entry)
-    } else if let Some(CoverSource::PageNumber(page_num)) = options.cover {
-        // 1-based page number
-        let idx = page_num.saturating_sub(1);
-        if idx < num_pages {
-            (format!("  <meta name=\"cover\" content=\"img{:04}\"/>\n", idx), String::new())
-        } else {
-            eprintln!("Warning: cover page {} exceeds page count {}, using first page", page_num, num_pages);
-            if num_pages > 0 {
-                ("  <meta name=\"cover\" content=\"img0000\"/>\n".to_string(), String::new())
+    let (cover_meta, cover_manifest_entry) =
+        if let Some(ref cover_filename) = external_cover_filename {
+            // External cover image file
+            let entry = format!(
+                "    <item id=\"cover_img\" href=\"images/{}\" media-type=\"image/jpeg\"/>\n",
+                cover_filename
+            );
+            (
+                "  <meta name=\"cover\" content=\"cover_img\"/>\n".to_string(),
+                entry,
+            )
+        } else if let Some(CoverSource::PageNumber(page_num)) = options.cover {
+            // 1-based page number
+            let idx = page_num.saturating_sub(1);
+            if idx < num_pages {
+                (
+                    format!("  <meta name=\"cover\" content=\"img{:04}\"/>\n", idx),
+                    String::new(),
+                )
             } else {
-                (String::new(), String::new())
+                eprintln!(
+                    "Warning: cover page {} exceeds page count {}, using first page",
+                    page_num, num_pages
+                );
+                if num_pages > 0 {
+                    (
+                        "  <meta name=\"cover\" content=\"img0000\"/>\n".to_string(),
+                        String::new(),
+                    )
+                } else {
+                    (String::new(), String::new())
+                }
             }
-        }
-    } else if num_pages > 0 {
-        ("  <meta name=\"cover\" content=\"img0000\"/>\n".to_string(), String::new())
-    } else {
-        (String::new(), String::new())
-    };
+        } else if num_pages > 0 {
+            (
+                "  <meta name=\"cover\" content=\"img0000\"/>\n".to_string(),
+                String::new(),
+            )
+        } else {
+            (String::new(), String::new())
+        };
 
     // Determine title: CLI override > ComicInfo.xml > fallback
     let title = if let Some(ref t) = options.title_override {
@@ -2463,10 +2643,10 @@ fn build_comic_opf_v2(
 /// Escape special XML characters.
 fn escape_xml(s: &str) -> String {
     s.replace('&', "&amp;")
-     .replace('<', "&lt;")
-     .replace('>', "&gt;")
-     .replace('"', "&quot;")
-     .replace('\'', "&apos;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 /// Build an XHTML page for a single comic page, with optional Panel View markup.
@@ -2646,7 +2826,10 @@ mod tests {
     <manga>yesandrighttoleft</manga>
 </ComicInfo>"#;
         let meta = parse_comic_info_xml(xml).expect("parse should succeed");
-        assert!(meta.manga_rtl, "manga RTL should be detected case-insensitively");
+        assert!(
+            meta.manga_rtl,
+            "manga RTL should be detected case-insensitively"
+        );
     }
 
     #[test]
@@ -2663,24 +2846,21 @@ mod tests {
 
         // Minimal 1x1 JPEG.
         let jpeg: Vec<u8> = vec![
-            0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01,
-            0x01, 0x01, 0x00, 0x48, 0x00, 0x48, 0x00, 0x00, 0xFF, 0xDB, 0x00, 0x43,
-            0x00, 0x08, 0x06, 0x06, 0x07, 0x06, 0x05, 0x08, 0x07, 0x07, 0x07, 0x09,
-            0x09, 0x08, 0x0A, 0x0C, 0x14, 0x0D, 0x0C, 0x0B, 0x0B, 0x0C, 0x19, 0x12,
-            0x13, 0x0F, 0x14, 0x1D, 0x1A, 0x1F, 0x1E, 0x1D, 0x1A, 0x1C, 0x1C, 0x20,
-            0x24, 0x2E, 0x27, 0x20, 0x22, 0x2C, 0x23, 0x1C, 0x1C, 0x28, 0x37, 0x29,
-            0x2C, 0x30, 0x31, 0x34, 0x34, 0x34, 0x1F, 0x27, 0x39, 0x3D, 0x38, 0x32,
-            0x3C, 0x2E, 0x33, 0x34, 0x32, 0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x01,
-            0x00, 0x01, 0x01, 0x01, 0x11, 0x00, 0xFF, 0xC4, 0x00, 0x1F, 0x00, 0x00,
-            0x01, 0x05, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-            0x09, 0x0A, 0x0B, 0xFF, 0xC4, 0x00, 0xB5, 0x10, 0x00, 0x02, 0x01, 0x03,
-            0x03, 0x02, 0x04, 0x03, 0x05, 0x05, 0x04, 0x04, 0x00, 0x00, 0x01, 0x7D,
-            0x01, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05, 0x12, 0x21, 0x31, 0x41, 0x06,
-            0x13, 0x51, 0x61, 0x07, 0x22, 0x71, 0x14, 0x32, 0x81, 0x91, 0xA1, 0x08,
-            0x23, 0x42, 0xB1, 0xC1, 0x15, 0x52, 0xD1, 0xF0, 0x24, 0x33, 0x62, 0x72,
-            0x82, 0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3F, 0x00, 0xFB,
-            0xD0, 0xFF, 0xD9,
+            0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x01,
+            0x00, 0x48, 0x00, 0x48, 0x00, 0x00, 0xFF, 0xDB, 0x00, 0x43, 0x00, 0x08, 0x06, 0x06,
+            0x07, 0x06, 0x05, 0x08, 0x07, 0x07, 0x07, 0x09, 0x09, 0x08, 0x0A, 0x0C, 0x14, 0x0D,
+            0x0C, 0x0B, 0x0B, 0x0C, 0x19, 0x12, 0x13, 0x0F, 0x14, 0x1D, 0x1A, 0x1F, 0x1E, 0x1D,
+            0x1A, 0x1C, 0x1C, 0x20, 0x24, 0x2E, 0x27, 0x20, 0x22, 0x2C, 0x23, 0x1C, 0x1C, 0x28,
+            0x37, 0x29, 0x2C, 0x30, 0x31, 0x34, 0x34, 0x34, 0x1F, 0x27, 0x39, 0x3D, 0x38, 0x32,
+            0x3C, 0x2E, 0x33, 0x34, 0x32, 0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x01, 0x00, 0x01,
+            0x01, 0x01, 0x11, 0x00, 0xFF, 0xC4, 0x00, 0x1F, 0x00, 0x00, 0x01, 0x05, 0x01, 0x01,
+            0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02,
+            0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0xFF, 0xC4, 0x00, 0xB5, 0x10,
+            0x00, 0x02, 0x01, 0x03, 0x03, 0x02, 0x04, 0x03, 0x05, 0x05, 0x04, 0x04, 0x00, 0x00,
+            0x01, 0x7D, 0x01, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05, 0x12, 0x21, 0x31, 0x41, 0x06,
+            0x13, 0x51, 0x61, 0x07, 0x22, 0x71, 0x14, 0x32, 0x81, 0x91, 0xA1, 0x08, 0x23, 0x42,
+            0xB1, 0xC1, 0x15, 0x52, 0xD1, 0xF0, 0x24, 0x33, 0x62, 0x72, 0x82, 0xFF, 0xDA, 0x00,
+            0x08, 0x01, 0x01, 0x00, 0x00, 0x3F, 0x00, 0xFB, 0xD0, 0xFF, 0xD9,
         ];
         std::fs::write(dir.join("cover.jpg"), &jpeg).unwrap();
         std::fs::write(
@@ -2716,8 +2896,8 @@ mod tests {
         let opf_path = dir.join("content.opf");
         std::fs::write(&opf_path, opf).unwrap();
 
-        let report = crate::validate::validate_opf(&opf_path)
-            .expect("validate should parse the OPF");
+        let report =
+            crate::validate::validate_opf(&opf_path).expect("validate should parse the OPF");
         assert_eq!(
             report.error_count(),
             0,

@@ -35,7 +35,11 @@ impl fmt::Display for Finding {
                 )?;
             }
             None => {
-                write!(f, "[{}] section {}: {}", self.level, self.section, self.message)?;
+                write!(
+                    f,
+                    "[{}] section {}: {}",
+                    self.level, self.section, self.message
+                )?;
             }
         }
         if let Some(ref file) = self.file {
@@ -57,7 +61,9 @@ pub struct ValidationReport {
 
 impl ValidationReport {
     pub fn new() -> Self {
-        ValidationReport { findings: Vec::new() }
+        ValidationReport {
+            findings: Vec::new(),
+        }
     }
 
     pub fn push(&mut self, f: Finding) {
@@ -109,15 +115,24 @@ impl ValidationReport {
     }
 
     pub fn error_count(&self) -> usize {
-        self.findings.iter().filter(|f| f.level == Level::Error).count()
+        self.findings
+            .iter()
+            .filter(|f| f.level == Level::Error)
+            .count()
     }
 
     pub fn warning_count(&self) -> usize {
-        self.findings.iter().filter(|f| f.level == Level::Warning).count()
+        self.findings
+            .iter()
+            .filter(|f| f.level == Level::Warning)
+            .count()
     }
 
     pub fn info_count(&self) -> usize {
-        self.findings.iter().filter(|f| f.level == Level::Info).count()
+        self.findings
+            .iter()
+            .filter(|f| f.level == Level::Info)
+            .count()
     }
 }
 

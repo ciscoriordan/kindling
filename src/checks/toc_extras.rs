@@ -15,8 +15,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::helpers::extract_attr;
 use super::Check;
+use super::helpers::extract_attr;
 use crate::extracted::ExtractedEpub;
 use crate::validate::ValidationReport;
 
@@ -57,12 +57,7 @@ impl Check for TocExtrasChecks {
             if spine_has_pagebreak(epub) {
                 if let Ok(nav_text) = fs::read_to_string(&nav_path) {
                     if !nav_has_page_list(&nav_text) {
-                        report.emit_at(
-                            "R5.4",
-                            "",
-                            Some(nav_path.clone()),
-                            None,
-                        );
+                        report.emit_at("R5.4", "", Some(nav_path.clone()), None);
                     }
                 }
             }
@@ -137,12 +132,7 @@ impl Check for TocExtrasChecks {
 
                 // R5.9: empty navPoint <text> labels.
                 for empty_line in find_empty_navpoint_text(&ncx_text) {
-                    report.emit_at(
-                        "R5.9",
-                        "",
-                        Some(ncx_path.clone()),
-                        Some(empty_line),
-                    );
+                    report.emit_at("R5.9", "", Some(ncx_path.clone()), Some(empty_line));
                 }
             }
         }
@@ -164,9 +154,7 @@ impl Check for TocExtrasChecks {
                     // and the mobi pipeline explicitly supports it. Accept
                     // NCX as a guide target even though epubcheck OPF_032
                     // considers it non-conformant.
-                    if mt != "application/xhtml+xml"
-                        && mt != "application/x-dtbncx+xml"
-                    {
+                    if mt != "application/xhtml+xml" && mt != "application/x-dtbncx+xml" {
                         report.emit_at(
                             "R5.10",
                             format!(
@@ -331,7 +319,9 @@ fn extract_nav_toc_hrefs(nav_text: &str) -> Vec<String> {
         let abs_open_start = offset + idx;
         rest = &rest[idx + "<nav".len()..];
         offset = abs_open_start + "<nav".len();
-        let Some(end) = rest.find('>') else { return out };
+        let Some(end) = rest.find('>') else {
+            return out;
+        };
         let tag = &rest[..end];
         let epub_type = extract_attr(tag, "epub:type").unwrap_or_default();
         if epub_type.split_whitespace().any(|t| t == "toc") {
@@ -342,16 +332,22 @@ fn extract_nav_toc_hrefs(nav_text: &str) -> Vec<String> {
         offset += end;
     }
 
-    let Some(start) = toc_body_start else { return out };
+    let Some(start) = toc_body_start else {
+        return out;
+    };
     let remaining = &nav_text[start..];
-    let Some(end_idx) = remaining.find("</nav>") else { return out };
+    let Some(end_idx) = remaining.find("</nav>") else {
+        return out;
+    };
     let body = &remaining[..end_idx];
 
     // Collect every <a href="..."> in document order.
     let mut body_rest = body;
     while let Some(idx) = body_rest.find("<a") {
         body_rest = &body_rest[idx + "<a".len()..];
-        let Some(tag_end) = body_rest.find('>') else { break };
+        let Some(tag_end) = body_rest.find('>') else {
+            break;
+        };
         let tag = &body_rest[..tag_end];
         if let Some(href) = extract_attr(tag, "href") {
             let file_part = strip_fragment(&href);
@@ -366,10 +362,7 @@ fn extract_nav_toc_hrefs(nav_text: &str) -> Vec<String> {
 }
 
 /// Return an error message if the nav TOC hrefs are not in spine order.
-fn nav_toc_out_of_spine_order(
-    nav_text: &str,
-    spine_items: &[(String, String)],
-) -> Option<String> {
+fn nav_toc_out_of_spine_order(nav_text: &str, spine_items: &[(String, String)]) -> Option<String> {
     let nav_hrefs = extract_nav_toc_hrefs(nav_text);
     if nav_hrefs.len() < 2 {
         return None;
@@ -414,7 +407,9 @@ fn extract_ncx_dtb_uid(ncx_text: &str) -> Option<String> {
     let mut rest = ncx_text;
     while let Some(idx) = rest.find("<meta") {
         rest = &rest[idx + "<meta".len()..];
-        let Some(end) = rest.find('>') else { return None };
+        let Some(end) = rest.find('>') else {
+            return None;
+        };
         let tag = &rest[..end];
         let name = extract_attr(tag, "name").unwrap_or_default();
         if name == "dtb:uid" {
@@ -501,7 +496,9 @@ fn opf_unique_identifier_value(opf_text: &str) -> Option<String> {
     let mut rest = opf_text;
     while let Some(idx) = rest.find("<dc:identifier") {
         rest = &rest[idx + "<dc:identifier".len()..];
-        let Some(tag_end) = rest.find('>') else { return None };
+        let Some(tag_end) = rest.find('>') else {
+            return None;
+        };
         let tag = &rest[..tag_end];
         let id_attr = extract_attr(tag, "id").unwrap_or_default();
         if id_attr == unique_id {
@@ -515,7 +512,9 @@ fn opf_unique_identifier_value(opf_text: &str) -> Option<String> {
     let mut rest = opf_text;
     while let Some(idx) = rest.find("<identifier") {
         rest = &rest[idx + "<identifier".len()..];
-        let Some(tag_end) = rest.find('>') else { return None };
+        let Some(tag_end) = rest.find('>') else {
+            return None;
+        };
         let tag = &rest[..tag_end];
         let id_attr = extract_attr(tag, "id").unwrap_or_default();
         if id_attr == unique_id {

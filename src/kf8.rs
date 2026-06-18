@@ -25,7 +25,6 @@
 /// footer; data records carry the per-entry control-byte-prefixed
 /// tag value stream and an IDXT footer pointing at each entry's
 /// starting offset.
-
 use regex::Regex;
 
 use crate::cncx::CncxBuilder;
@@ -161,8 +160,7 @@ pub fn build_kf8_section(
 
     // Step 7: NCX INDX with proper 5-tag structure + CNCX label record.
     // Title is used as the TOC label in the NCX CNCX. Must be non-empty.
-    let (ncx_indx, ncx_cncx_records) =
-        build_ncx_indx(title, &skeleton_entries, html_length);
+    let (ncx_indx, ncx_cncx_records) = build_ncx_indx(title, &skeleton_entries, html_length);
 
     // Step 8: DATP record (stub).
     let datp = build_datp();
@@ -220,7 +218,12 @@ fn build_kf8_html(
         // 1. Normalize this spine item into Calibre-style KF8 output:
         //    add aid attributes to aid-able tags and rewrite image src
         //    URLs to `kindle:embed:....`.
-        let processed = process_kf8_part(raw_part, &mut aid_counter, &path_to_recindex, kindlegen_parity);
+        let processed = process_kf8_part(
+            raw_part,
+            &mut aid_counter,
+            &path_to_recindex,
+            kindlegen_parity,
+        );
         if !kindlegen_parity {
             global_aid_counter = aid_counter;
         }
@@ -568,7 +571,9 @@ fn build_image_path_lookup(
     for (href, &recindex) in href_to_recindex {
         path_to_recindex.insert(href.clone(), recindex);
         if let Some(fname) = href.rsplit('/').next() {
-            path_to_recindex.entry(fname.to_string()).or_insert(recindex);
+            path_to_recindex
+                .entry(fname.to_string())
+                .or_insert(recindex);
         }
     }
 
@@ -604,7 +609,11 @@ fn append_kf8_tbs(record: &mut Vec<u8>, record_index: usize, num_skeletons: usiz
         // First text record: type 2 = NCX entry starts here.
         // Value encodes fragment/skeleton info. KCC uses (2*num_skeletons - 1)
         // for a comic with N pages: 3 pages → value 5, matching kindlegen.
-        let value = if num_skeletons > 0 { (2 * num_skeletons - 1) as u32 } else { 0 };
+        let value = if num_skeletons > 0 {
+            (2 * num_skeletons - 1) as u32
+        } else {
+            0
+        };
         let value_bytes = encode_vwi_inv(value);
         let tbs_size = 1 + value_bytes.len() + 1; // type + value + size
         record.push(0x82); // type 2
@@ -784,11 +793,7 @@ fn control_byte_for(tag_defs: &[TagMeta], nvals_per_tag: &[usize]) -> u8 {
 /// The label length is a single byte that mirrors Calibre's
 /// `raw.insert(0, len(index_num))`. The control byte marks which tag
 /// groups are present in `values`.
-fn encode_indx_entry(
-    label: &[u8],
-    tag_defs: &[TagMeta],
-    values_by_tag: &[Vec<u32>],
-) -> Vec<u8> {
+fn encode_indx_entry(label: &[u8], tag_defs: &[TagMeta], values_by_tag: &[Vec<u32>]) -> Vec<u8> {
     assert_eq!(tag_defs.len(), values_by_tag.len());
     let nvals_per_tag: Vec<usize> = values_by_tag.iter().map(|v| v.len()).collect();
     let control = control_byte_for(tag_defs, &nvals_per_tag);
@@ -948,8 +953,16 @@ fn build_skeleton_indx(skels: &[SkeletonEntry]) -> Vec<Vec<u8>> {
     }
 
     let tag_defs = [
-        TagMeta { number: 1, values_per_entry: 1, mask: 3 },
-        TagMeta { number: 6, values_per_entry: 2, mask: 12 },
+        TagMeta {
+            number: 1,
+            values_per_entry: 1,
+            mask: 3,
+        },
+        TagMeta {
+            number: 6,
+            values_per_entry: 2,
+            mask: 12,
+        },
     ];
     let tagx = build_tagx(&[(1, 1, 3), (6, 2, 12)]);
 
@@ -991,18 +1004,32 @@ fn build_skeleton_indx(skels: &[SkeletonEntry]) -> Vec<Vec<u8>> {
 ///   tag 3 (file_number,     vpe=1, mask=2)
 ///   tag 4 (sequence_number, vpe=1, mask=4)
 ///   tag 6 (geometry,        vpe=2, mask=8) -- values = (start_pos, length)
-fn build_fragment_indx_with_cncx(
-    frags: &[FragmentEntry],
-) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+fn build_fragment_indx_with_cncx(frags: &[FragmentEntry]) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
     if frags.is_empty() {
         return (minimal_indx(), Vec::new());
     }
 
     let tag_defs = [
-        TagMeta { number: 2, values_per_entry: 1, mask: 1 },
-        TagMeta { number: 3, values_per_entry: 1, mask: 2 },
-        TagMeta { number: 4, values_per_entry: 1, mask: 4 },
-        TagMeta { number: 6, values_per_entry: 2, mask: 8 },
+        TagMeta {
+            number: 2,
+            values_per_entry: 1,
+            mask: 1,
+        },
+        TagMeta {
+            number: 3,
+            values_per_entry: 1,
+            mask: 2,
+        },
+        TagMeta {
+            number: 4,
+            values_per_entry: 1,
+            mask: 4,
+        },
+        TagMeta {
+            number: 6,
+            values_per_entry: 2,
+            mask: 8,
+        },
     ];
     let tagx = build_tagx(&[(2, 1, 1), (3, 1, 2), (4, 1, 4), (6, 2, 8)]);
 
@@ -1033,8 +1060,7 @@ fn build_fragment_indx_with_cncx(
     let num_cncx = cncx_records.len();
 
     let data_record = build_indx_data_record(&entries);
-    let last_label = format!("{:010}", frags.last().unwrap().insert_pos)
-        .into_bytes();
+    let last_label = format!("{:010}", frags.last().unwrap().insert_pos).into_bytes();
     let primary = build_indx_primary(
         &tagx,
         1,
@@ -1072,26 +1098,60 @@ fn build_ncx_indx(
     //   tag 4: depth (1 val, mask 0x08)
     //   tag 6: pos_fid (2 vals, mask 0x10)
     let tag_defs = [
-        TagMeta { number: 1, values_per_entry: 1, mask: 0x01 },
-        TagMeta { number: 2, values_per_entry: 1, mask: 0x02 },
-        TagMeta { number: 3, values_per_entry: 1, mask: 0x04 },
-        TagMeta { number: 4, values_per_entry: 1, mask: 0x08 },
-        TagMeta { number: 6, values_per_entry: 2, mask: 0x10 },
+        TagMeta {
+            number: 1,
+            values_per_entry: 1,
+            mask: 0x01,
+        },
+        TagMeta {
+            number: 2,
+            values_per_entry: 1,
+            mask: 0x02,
+        },
+        TagMeta {
+            number: 3,
+            values_per_entry: 1,
+            mask: 0x04,
+        },
+        TagMeta {
+            number: 4,
+            values_per_entry: 1,
+            mask: 0x08,
+        },
+        TagMeta {
+            number: 6,
+            values_per_entry: 2,
+            mask: 0x10,
+        },
     ];
-    let tagx = build_tagx(&[(1, 1, 0x01), (2, 1, 0x02), (3, 1, 0x04), (4, 1, 0x08), (6, 2, 0x10)]);
+    let tagx = build_tagx(&[
+        (1, 1, 0x01),
+        (2, 1, 0x02),
+        (3, 1, 0x04),
+        (4, 1, 0x08),
+        (6, 2, 0x10),
+    ]);
 
     // Single NCX entry covering the entire book.
-    let offset = if skeleton_entries.is_empty() { 0 } else { skeleton_entries[0].start_pos };
-    let length = if text_length > offset { text_length - offset } else { 0 };
+    let offset = if skeleton_entries.is_empty() {
+        0
+    } else {
+        skeleton_entries[0].start_pos
+    };
+    let length = if text_length > offset {
+        text_length - offset
+    } else {
+        0
+    };
 
     // Label "0" matches kindlegen's minimal NCX label format.
     let label = b"0";
     let values: [Vec<u32>; 5] = [
-        vec![offset as u32],        // tag 1: byte offset in text
-        vec![length as u32],        // tag 2: length of region
-        vec![label_offset],         // tag 3: CNCX offset for title
-        vec![0],                    // tag 4: depth (flat)
-        vec![0, 0],                 // tag 6: pos_fid (frag 0, offset 0)
+        vec![offset as u32], // tag 1: byte offset in text
+        vec![length as u32], // tag 2: length of region
+        vec![label_offset],  // tag 3: CNCX offset for title
+        vec![0],             // tag 4: depth (flat)
+        vec![0, 0],          // tag 6: pos_fid (frag 0, offset 0)
     ];
     let entry = encode_indx_entry(label, &tag_defs, &values);
 
@@ -1112,12 +1172,8 @@ fn build_datp() -> Vec<u8> {
     vec![
         0x44, 0x41, 0x54, 0x50, // "DATP"
         0x00, 0x00, 0x00, 0x0D, // header value
-        0x01, 0x04, 0x00, 0x04,
-        0x02, 0x00, 0x00, 0x06,
-        0x19, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x01,
-        0x6D, 0x02, 0x46, 0x02,
-        0x66, 0x00, 0x00, 0x00,
+        0x01, 0x04, 0x00, 0x04, 0x02, 0x00, 0x00, 0x06, 0x19, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x01, 0x6D, 0x02, 0x46, 0x02, 0x66, 0x00, 0x00, 0x00,
     ]
 }
 
@@ -1198,7 +1254,10 @@ mod tests {
         // Skeleton must have an empty body.
         assert!(split.skeleton.contains("<body aid=\"0\"></body>"));
         // body_inner_offset must point at the first byte after `<body aid="0">`.
-        assert_eq!(&split.skeleton[split.body_inner_offset..split.body_inner_offset + 7], "</body>");
+        assert_eq!(
+            &split.skeleton[split.body_inner_offset..split.body_inner_offset + 7],
+            "</body>"
+        );
         // body_inner should be the original body contents.
         assert!(split.body_inner.starts_with("<div aid=\"1\">"));
         assert!(split.body_inner.contains("<img src=\"img1.jpg\"/>"));
@@ -1272,8 +1331,16 @@ mod tests {
         // Calibre SkelIndex: tag 1 (mask=3, vpe=1) nvals=2, tag 6
         // (mask=12, vpe=2) nvals=4 → expected control byte 0x0A.
         let tag_defs = [
-            TagMeta { number: 1, values_per_entry: 1, mask: 3 },
-            TagMeta { number: 6, values_per_entry: 2, mask: 12 },
+            TagMeta {
+                number: 1,
+                values_per_entry: 1,
+                mask: 3,
+            },
+            TagMeta {
+                number: 6,
+                values_per_entry: 2,
+                mask: 12,
+            },
         ];
         assert_eq!(control_byte_for(&tag_defs, &[2, 4]), 0x0A);
     }
@@ -1283,10 +1350,26 @@ mod tests {
         // Calibre ChunkIndex: 1+1+1+2 values, masks 1/2/4/8, all with
         // nentries=1 → expected control byte 0x0F.
         let tag_defs = [
-            TagMeta { number: 2, values_per_entry: 1, mask: 1 },
-            TagMeta { number: 3, values_per_entry: 1, mask: 2 },
-            TagMeta { number: 4, values_per_entry: 1, mask: 4 },
-            TagMeta { number: 6, values_per_entry: 2, mask: 8 },
+            TagMeta {
+                number: 2,
+                values_per_entry: 1,
+                mask: 1,
+            },
+            TagMeta {
+                number: 3,
+                values_per_entry: 1,
+                mask: 2,
+            },
+            TagMeta {
+                number: 4,
+                values_per_entry: 1,
+                mask: 4,
+            },
+            TagMeta {
+                number: 6,
+                values_per_entry: 2,
+                mask: 8,
+            },
         ];
         assert_eq!(control_byte_for(&tag_defs, &[1, 1, 1, 2]), 0x0F);
     }
@@ -1308,9 +1391,15 @@ mod tests {
         // Primary: type = 2 at offset 16
         assert_eq!(u32::from_be_bytes(recs[0][16..20].try_into().unwrap()), 2);
         // Primary: encoding = 65001 at offset 28
-        assert_eq!(u32::from_be_bytes(recs[0][28..32].try_into().unwrap()), 65001);
+        assert_eq!(
+            u32::from_be_bytes(recs[0][28..32].try_into().unwrap()),
+            65001
+        );
         // Primary: tagx_offset = 192 at offset 180
-        assert_eq!(u32::from_be_bytes(recs[0][180..184].try_into().unwrap()), 192);
+        assert_eq!(
+            u32::from_be_bytes(recs[0][180..184].try_into().unwrap()),
+            192
+        );
         // Data record: "type=1" marker at offset 12
         assert_eq!(u32::from_be_bytes(recs[1][12..16].try_into().unwrap()), 1);
     }
@@ -1330,7 +1419,9 @@ mod tests {
         assert_eq!(cncx.len(), 1, "should emit one CNCX record");
         // CNCX record should embed the selector string
         assert!(
-            cncx[0].windows(b"P-//*[@aid='0']".len()).any(|w| w == b"P-//*[@aid='0']"),
+            cncx[0]
+                .windows(b"P-//*[@aid='0']".len())
+                .any(|w| w == b"P-//*[@aid='0']"),
             "selector not found in CNCX record"
         );
         // Primary INDX header should report num_of_cncx = 1 at offset 52.
@@ -1350,7 +1441,11 @@ mod tests {
         assert!(len >= 4, "record too short for trailing bytes");
         // TBS for 1 skeleton: [0x82, 0x81, 0x83] (type 2, value=2*1-1=1, size 3)
         assert_eq!(rec[len - 1], 0x83, "TBS size byte should be 0x83");
-        assert_eq!(rec[len - 2], 0x81, "TBS value byte should be 0x81 (inv VWI for 1)");
+        assert_eq!(
+            rec[len - 2],
+            0x81,
+            "TBS value byte should be 0x81 (inv VWI for 1)"
+        );
         assert_eq!(rec[len - 3], 0x82, "TBS type byte should be 0x82");
         // Multibyte byte is before TBS
         assert_eq!(rec[len - 4], 0x00, "multibyte byte should be 0x00");
@@ -1383,7 +1478,11 @@ mod tests {
         assert_eq!(section.fragment_indx.len(), 2); // primary + data
         assert_eq!(section.skeleton_indx.len(), 2);
         assert_eq!(section.ncx_indx.len(), 2);
-        assert_eq!(section.cncx_records.len(), 1, "one CNCX record for the deduped selector");
+        assert_eq!(
+            section.cncx_records.len(),
+            1,
+            "one CNCX record for the deduped selector"
+        );
         // Skeleton and fragment primaries should declare 2 entries each.
         assert_eq!(
             u32::from_be_bytes(section.skeleton_indx[0][36..40].try_into().unwrap()),
@@ -1406,7 +1505,10 @@ mod tests {
             if i == 0 {
                 assert_eq!(last, 0x83, "first text record TBS size byte should be 0x83");
             } else {
-                assert_eq!(last, 0x81, "subsequent text record TBS size byte should be 0x81");
+                assert_eq!(
+                    last, 0x81,
+                    "subsequent text record TBS size byte should be 0x81"
+                );
             }
         }
     }
@@ -1420,9 +1522,11 @@ mod tests {
         let recs = b.into_records();
         assert_eq!(recs.len(), 1);
         // First byte should be 0x8F (inverted VWI for 15: 0x0F | 0x80)
-        assert_eq!(recs[0][0], 0x8F,
+        assert_eq!(
+            recs[0][0], 0x8F,
             "CNCX length prefix must be inverted VWI (0x8F for len 15), got 0x{:02X}",
-            recs[0][0]);
+            recs[0][0]
+        );
     }
 
     #[test]
@@ -1445,17 +1549,24 @@ mod tests {
         // Primary record: check TAGX has 5 tag definitions
         let primary = &ncx_recs[0];
         let tagx_off = u32::from_be_bytes(primary[180..184].try_into().unwrap()) as usize;
-        assert_eq!(&primary[tagx_off..tagx_off+4], b"TAGX");
-        let tagx_len = u32::from_be_bytes(primary[tagx_off+4..tagx_off+8].try_into().unwrap()) as usize;
+        assert_eq!(&primary[tagx_off..tagx_off + 4], b"TAGX");
+        let tagx_len =
+            u32::from_be_bytes(primary[tagx_off + 4..tagx_off + 8].try_into().unwrap()) as usize;
         // Count tags (4 bytes each, ending with sentinel [0,0,0,1])
         let mut tag_count = 0;
         let mut pos = tagx_off + 12;
         while pos < tagx_off + tagx_len {
-            if primary[pos+3] == 1 { break; } // sentinel
+            if primary[pos + 3] == 1 {
+                break;
+            } // sentinel
             tag_count += 1;
             pos += 4;
         }
-        assert_eq!(tag_count, 5, "NCX TAGX must define 5 tags, got {}", tag_count);
+        assert_eq!(
+            tag_count, 5,
+            "NCX TAGX must define 5 tags, got {}",
+            tag_count
+        );
 
         // Primary: num_cncx should be >= 1
         let num_cncx = u32::from_be_bytes(primary[52..56].try_into().unwrap());
@@ -1480,9 +1591,12 @@ mod tests {
         let cncx = &ncx_cncx[0];
         let title = b"My Comic Title";
         // First byte: inverted VWI for 14 = 0x0E | 0x80 = 0x8E
-        assert_eq!(cncx[0], 0x8E,
-            "CNCX title length should be 0x8E (inv VWI for 14), got 0x{:02X}", cncx[0]);
-        assert_eq!(&cncx[1..1+title.len()], title);
+        assert_eq!(
+            cncx[0], 0x8E,
+            "CNCX title length should be 0x8E (inv VWI for 14), got 0x{:02X}",
+            cncx[0]
+        );
+        assert_eq!(&cncx[1..1 + title.len()], title);
     }
 
     #[test]
@@ -1492,19 +1606,28 @@ mod tests {
         assert_eq!(&datp[0..4], b"DATP");
         // Must NOT be all zeros after header (crashes Kindle renderer)
         let content = &datp[8..];
-        assert!(content.iter().any(|&b| b != 0),
-            "DATP content must not be all zeros");
+        assert!(
+            content.iter().any(|&b| b != 0),
+            "DATP content must not be all zeros"
+        );
     }
 
     #[test]
     fn kf8_section_has_ncx_cncx_records() {
         let parts = vec![make_comic_page("0", "p1.jpg")];
         let section = build_kf8_section(
-            &parts, "", &std::collections::HashMap::new(),
-            &Vec::new(), true, false, "Test",
+            &parts,
+            "",
+            &std::collections::HashMap::new(),
+            &Vec::new(),
+            true,
+            false,
+            "Test",
         );
-        assert!(!section.ncx_cncx_records.is_empty(),
-            "KF8 section must include NCX CNCX records");
+        assert!(
+            !section.ncx_cncx_records.is_empty(),
+            "KF8 section must include NCX CNCX records"
+        );
     }
 
     #[test]
@@ -1534,8 +1657,8 @@ mod tests {
         // Decompress text (no_compress=true so text is uncompressed, but
         // we still need to strip the trailing bytes). Just check html_bytes
         // which is the uncompressed HTML flow snapshot.
-        let html = std::str::from_utf8(&section.html_bytes)
-            .expect("KF8 HTML should be valid UTF-8");
+        let html =
+            std::str::from_utf8(&section.html_bytes).expect("KF8 HTML should be valid UTF-8");
 
         // All kindle:embed references should use image/jpg
         assert!(

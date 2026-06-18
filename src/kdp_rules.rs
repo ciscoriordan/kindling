@@ -1,6 +1,6 @@
 // Amazon Kindle Publishing Guidelines rule catalog.
 
-use crate::profile::{Profile, ALL_PROFILES};
+use crate::profile::{ALL_PROFILES, Profile};
 
 /// Version of the Amazon Kindle Publishing Guidelines PDF these rules target.
 pub const KPG_VERSION: &str = "2026.1";
@@ -121,7 +121,6 @@ pub const RULES: &[Rule] = &[
                       conversion. Remove the HTML page from the spine.",
         profile_mask: ALL_PROFILES,
     },
-
     // ---- Section 5: Navigation Guidelines ----
     Rule {
         id: "R5.1",
@@ -177,7 +176,6 @@ pub const RULES: &[Rule] = &[
                       reference.",
         profile_mask: ALL_PROFILES,
     },
-
     // ---- Section 6: HTML and CSS Guidelines ----
     Rule {
         id: "R6.1",
@@ -308,7 +306,6 @@ pub const RULES: &[Rule] = &[
                       by kindlegen.",
         profile_mask: ALL_PROFILES,
     },
-
     // ---- Section 10: Text-Heavy Reflowable Books ----
     Rule {
         id: "R10.3.1",
@@ -359,7 +356,6 @@ pub const RULES: &[Rule] = &[
                       below 100 rows and 10 columns; large tables may render poorly.",
         profile_mask: ALL_PROFILES,
     },
-
     // ---- Section 17/18.1: Supported Tags ----
     Rule {
         id: "R17.1",
@@ -371,7 +367,6 @@ pub const RULES: &[Rule] = &[
                       JavaScript as unsupported; section 18.1 lists supported tags.",
         profile_mask: ALL_PROFILES,
     },
-
     // ---- Section 15: Dictionaries (Amazon-legacy KDP format) ----
     Rule {
         id: "R15.1",
@@ -450,7 +445,6 @@ pub const RULES: &[Rule] = &[
                       section.",
         profile_mask: Profile::Dict.as_bit(),
     },
-
     // ---- Section 15: Dictionaries (epubcheck EPUB 3 DICT rules, gated on EPUB 3) ----
     Rule {
         id: "R15.e1",

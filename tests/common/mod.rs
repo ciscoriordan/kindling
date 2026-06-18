@@ -433,9 +433,13 @@ pub fn parse_mobi_file(data: &[u8]) -> Result<ParsedMobi, String> {
     }
     let rec0 = palmdb.record(data, 0);
     let kf7 = parse_mobi_section(rec0, 0)?;
-    let kf8_boundary = kf7
-        .exth_first(121)
-        .and_then(|d| if d.len() == 4 { Some(u32_be(d, 0)) } else { None });
+    let kf8_boundary = kf7.exth_first(121).and_then(|d| {
+        if d.len() == 4 {
+            Some(u32_be(d, 0))
+        } else {
+            None
+        }
+    });
 
     let kf8 = if let Some(b) = kf8_boundary {
         if (b as usize) < palmdb.num_records {
@@ -567,7 +571,10 @@ pub struct IndxHeader {
 
 pub fn parse_indx_header(rec: &[u8]) -> Result<IndxHeader, String> {
     if rec.len() < 48 || &rec[0..4] != b"INDX" {
-        return Err(format!("not an INDX record (got {:?})", &rec[..4.min(rec.len())]));
+        return Err(format!(
+            "not an INDX record (got {:?})",
+            &rec[..4.min(rec.len())]
+        ));
     }
     Ok(IndxHeader {
         header_len: u32_be(rec, 4),
@@ -608,8 +615,16 @@ pub fn first_indx_label_prefix(parsed: &ParsedMobi, primary_idx: usize, n: usize
     }
     // DATA INDX layout: INDX header (192 bytes). Entries start right after
     // the header and end at the IDXT table.
-    let header_len = if rec.len() >= 8 { u32_be(rec, 4) as usize } else { 0 };
-    let idxt_off = if rec.len() >= 24 { u32_be(rec, 20) as usize } else { rec.len() };
+    let header_len = if rec.len() >= 8 {
+        u32_be(rec, 4) as usize
+    } else {
+        0
+    };
+    let idxt_off = if rec.len() >= 24 {
+        u32_be(rec, 20) as usize
+    } else {
+        rec.len()
+    };
     if header_len == 0 || idxt_off <= header_len || idxt_off > rec.len() {
         return Vec::new();
     }
@@ -1183,9 +1198,8 @@ fn parse_indx_entry(
         if let Some(vc) = row.value_count {
             let total = vc as usize * row.values_per_entry as usize;
             for _ in 0..total {
-                let (v, n) = read_forward_varlen(entry, cursor).ok_or_else(|| {
-                    format!("varlen read failed mid-tag {} at {cursor}", row.tag)
-                })?;
+                let (v, n) = read_forward_varlen(entry, cursor)
+                    .ok_or_else(|| format!("varlen read failed mid-tag {} at {cursor}", row.tag))?;
                 cursor += n;
                 values.push(v);
             }
@@ -1472,14 +1486,14 @@ fn ordt2_roundtrip_greek_bmp_labels() {
     //   \u{03C3} s (small sigma)
     //   \u{03C2} s (small final sigma)
     let labels = [
-        "\u{03B1}\u{03BB}\u{03C6}\u{03B1}",             // alpha
-        "\u{03B2}\u{03AE}\u{03C4}\u{03B1}",             // accented vowels included
-        "\u{03B3}\u{03AC}\u{03BC}\u{03BC}\u{03B1}",     //
-        "\u{03C3}\u{03AF}\u{03B3}\u{03BC}\u{03B1}",     //
-        "\u{03BB}\u{03CC}\u{03B3}\u{03BF}\u{03C2}",     // ends in final sigma
+        "\u{03B1}\u{03BB}\u{03C6}\u{03B1}",         // alpha
+        "\u{03B2}\u{03AE}\u{03C4}\u{03B1}",         // accented vowels included
+        "\u{03B3}\u{03AC}\u{03BC}\u{03BC}\u{03B1}", //
+        "\u{03C3}\u{03AF}\u{03B3}\u{03BC}\u{03B1}", //
+        "\u{03BB}\u{03CC}\u{03B3}\u{03BF}\u{03C2}", // ends in final sigma
     ];
-    let (codepoints, encoded) = test_encode_ordt2_labels(&labels)
-        .expect("inline encoder must accept BMP Greek labels");
+    let (codepoints, encoded) =
+        test_encode_ordt2_labels(&labels).expect("inline encoder must accept BMP Greek labels");
     assert!(
         codepoints.iter().all(|&cp| cp <= 0xFFFF),
         "all codepoints must be BMP"

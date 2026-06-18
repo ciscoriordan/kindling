@@ -35,7 +35,9 @@ fn build_and_parse(opf_name: &str, fixture: &str, out_ext: &str) -> ParsedMobi {
 
 fn build_comic_and_parse() -> ParsedMobi {
     let cbz = parity_fixture("simple_comic").join("simple_comic.cbz");
-    let tmp = std::env::temp_dir().join("kindling_roundtrip").join("comic");
+    let tmp = std::env::temp_dir()
+        .join("kindling_roundtrip")
+        .join("comic");
     let _ = fs::remove_dir_all(&tmp);
     fs::create_dir_all(&tmp).unwrap();
     let out = tmp.join("out.azw3");
@@ -59,10 +61,7 @@ fn assert_palmdb_shape(parsed: &ParsedMobi, ctx: &str) {
         "{ctx}: PalmDB creator is {:?}, expected MOBI",
         parsed.palmdb.creator
     );
-    assert!(
-        parsed.palmdb.num_records > 0,
-        "{ctx}: record count is 0"
-    );
+    assert!(parsed.palmdb.num_records > 0, "{ctx}: record count is 0");
     for (i, pair) in parsed.palmdb.offsets.windows(2).enumerate() {
         assert!(
             pair[1] > pair[0],

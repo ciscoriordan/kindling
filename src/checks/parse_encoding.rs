@@ -21,9 +21,7 @@ pub struct ParseEncodingChecks;
 
 impl Check for ParseEncodingChecks {
     fn ids(&self) -> &'static [&'static str] {
-        &[
-            "R6.6", "R6.7", "R6.8", "R6.9", "R6.10", "R6.11", "R6.12",
-        ]
+        &["R6.6", "R6.7", "R6.8", "R6.9", "R6.10", "R6.11", "R6.12"]
     }
 
     fn run(&self, epub: &ExtractedEpub, report: &mut ValidationReport) {
@@ -125,12 +123,7 @@ fn scan_xhtml(href: &str, bytes: &[u8], report: &mut ValidationReport) {
 
     // R6.10 Undeclared named entity.
     if let Some(name) = find_undeclared_entity(&content) {
-        report.emit_at(
-            "R6.10",
-            format!("Entity: &{};", name),
-            file.clone(),
-            None,
-        );
+        report.emit_at("R6.10", format!("Entity: &{};", name), file.clone(), None);
     }
 }
 
@@ -140,7 +133,12 @@ fn scan_css(href: &str, bytes: &[u8], report: &mut ValidationReport) {
 
     // R6.12 CSS must be UTF-8. BOM check first.
     if starts_with_utf16_bom(bytes) {
-        report.emit_at("R6.12", "File begins with a UTF-16 BOM.", file.clone(), None);
+        report.emit_at(
+            "R6.12",
+            "File begins with a UTF-16 BOM.",
+            file.clone(),
+            None,
+        );
         return;
     }
 
@@ -343,10 +341,9 @@ fn wrong_epub_namespace(content: &str) -> Option<String> {
 /// Whitelist of named entities we allow without an explicit declaration.
 const ALLOWED_ENTITIES: &[&str] = &[
     // XML 1.0 predefined set.
-    "amp", "lt", "gt", "quot", "apos",
-    // Common HTML5 entities used in publishing.
-    "nbsp", "copy", "reg", "trade", "ndash", "mdash", "hellip", "lsquo",
-    "rsquo", "ldquo", "rdquo", "bull",
+    "amp", "lt", "gt", "quot", "apos", // Common HTML5 entities used in publishing.
+    "nbsp", "copy", "reg", "trade", "ndash", "mdash", "hellip", "lsquo", "rsquo", "ldquo", "rdquo",
+    "bull",
 ];
 
 /// Return the name of the first undeclared named entity found in `content`.
@@ -541,18 +538,17 @@ mod tests {
     #[test]
     fn r6_11_non_utf8_encoding_fires() {
         let s = "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><html/>";
-        assert_eq!(
-            xml_declaration_encoding(s).as_deref(),
-            Some("ISO-8859-1")
-        );
+        assert_eq!(xml_declaration_encoding(s).as_deref(), Some("ISO-8859-1"));
     }
 
     #[test]
     fn r6_11_utf8_encoding_clean() {
         let s = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><html/>";
-        assert!(xml_declaration_encoding(s)
-            .unwrap()
-            .eq_ignore_ascii_case("utf-8"));
+        assert!(
+            xml_declaration_encoding(s)
+                .unwrap()
+                .eq_ignore_ascii_case("utf-8")
+        );
     }
 
     // ---- R6.12 CSS encoding ----

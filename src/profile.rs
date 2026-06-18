@@ -66,7 +66,9 @@ fn is_comic(opf: &OPFData, root: &Path) -> bool {
     }
     for (_, href) in &opf.spine_items {
         let path = root.join(href);
-        let Ok(content) = fs::read_to_string(&path) else { continue };
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
         if has_viewport_meta(&content) {
             return true;
         }
@@ -82,10 +84,7 @@ fn has_viewport_meta(content: &str) -> bool {
         rest = &rest[idx + 5..];
         let Some(end) = rest.find('>') else { break };
         let tag = &rest[..end];
-        if tag.contains("name=\"viewport\"")
-            && tag.contains("width=")
-            && tag.contains("height=")
-        {
+        if tag.contains("name=\"viewport\"") && tag.contains("width=") && tag.contains("height=") {
             return true;
         }
         rest = &rest[end..];

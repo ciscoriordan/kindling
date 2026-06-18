@@ -6,7 +6,6 @@
 /// - Compressed text content records
 /// - INDX records with dictionary index (dictionaries only)
 /// - FLIS, FCIS, EOF records
-
 use std::collections::HashSet;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -98,12 +97,26 @@ pub fn build_mobi_from_extracted(
 
     if is_dictionary {
         if kf8_only {
-            return Err("KF8-only output is not supported for dictionaries (dictionaries use MOBI7 format)".into());
+            return Err(
+                "KF8-only output is not supported for dictionaries (dictionaries use MOBI7 format)"
+                    .into(),
+            );
         }
         eprintln!("Detected dictionary content");
         // kindlegen_parity is a no-op for dictionaries (MOBI7 / KF7 path).
         let _ = kindlegen_parity;
-        build_dictionary_mobi(opf, output_path, no_compress, headwords_only, srcs_data, include_cmet, creator_tag, kindle_limits, self_check, strict_accents)
+        build_dictionary_mobi(
+            opf,
+            output_path,
+            no_compress,
+            headwords_only,
+            srcs_data,
+            include_cmet,
+            creator_tag,
+            kindle_limits,
+            self_check,
+            strict_accents,
+        )
     } else {
         if kf8_only {
             eprintln!("Detected book content, building KF8-only (.azw3)");
@@ -112,7 +125,20 @@ pub fn build_mobi_from_extracted(
         }
         // strict_accents only affects the dictionary orth INDX; books have no INDX.
         let _ = strict_accents;
-        build_book_mobi(opf, output_path, no_compress, srcs_data, include_cmet, !no_hd_images, creator_tag, kf8_only, doc_type, kindle_limits, self_check, kindlegen_parity)
+        build_book_mobi(
+            opf,
+            output_path,
+            no_compress,
+            srcs_data,
+            include_cmet,
+            !no_hd_images,
+            creator_tag,
+            kf8_only,
+            doc_type,
+            kindle_limits,
+            self_check,
+            kindlegen_parity,
+        )
     }
 }
 
@@ -177,7 +203,8 @@ fn build_dictionary_mobi(
     let cover_href = opf.get_cover_image_href();
 
     let mut image_records: Vec<Vec<u8>> = Vec::new();
-    let mut href_to_recindex: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut href_to_recindex: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
     let mut cover_offset: Option<u32> = None;
     let mut total_image_bytes: usize = 0;
 
@@ -193,8 +220,10 @@ fn build_dictionary_mobi(
         if let Ok(mut data) = data {
             // Patch JFIF density units: Kindle firmware needs DPI units (0x01)
             if data.len() > 13
-                && data[0] == 0xFF && data[1] == 0xD8
-                && data[2] == 0xFF && data[3] == 0xE0
+                && data[0] == 0xFF
+                && data[1] == 0xD8
+                && data[2] == 0xFF
+                && data[3] == 0xE0
                 && data[6..11] == *b"JFIF\0"
                 && data[13] == 0x00
             {
@@ -210,7 +239,10 @@ fn build_dictionary_mobi(
                 }
             }
         } else {
-            eprintln!("Warning: could not read image file: {}", image_path.display());
+            eprintln!(
+                "Warning: could not read image file: {}",
+                image_path.display()
+            );
             href_to_recindex.insert(href.clone(), recindex);
             image_records.push(Vec::new());
         }
@@ -371,7 +403,8 @@ fn build_dictionary_mobi(
     } else {
         None
     };
-    let num_optional = srcs_record.as_ref().map_or(0, |_| 1) + cmet_record.as_ref().map_or(0, |_| 1);
+    let num_optional =
+        srcs_record.as_ref().map_or(0, |_| 1) + cmet_record.as_ref().map_or(0, |_| 1);
 
     // Calculate record indices
     // Layout: record0 | text | image records | orth_INDX | infl_INDX | FLIS | FCIS | [SRCS] | [CMET] | EOF
@@ -390,8 +423,8 @@ fn build_dictionary_mobi(
     } else {
         None
     };
-    let total_records = 1 + text_records.len() + num_image_records
-        + indx_records.len() + 3 + num_optional;
+    let total_records =
+        1 + text_records.len() + num_image_records + indx_records.len() + 3 + num_optional;
 
     // Collect unique headword characters for fontsignature
     let mut headword_chars: HashSet<u32> = HashSet::new();
@@ -497,7 +530,8 @@ fn build_book_mobi(
     // Build the href-to-recindex mapping and load image data
     // Image recindex is 1-based (first image = "00001")
     let mut image_records: Vec<Vec<u8>> = Vec::new();
-    let mut href_to_recindex: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut href_to_recindex: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
     let mut cover_offset: Option<u32> = None;
     let mut total_image_bytes: usize = 0;
 
@@ -521,7 +555,8 @@ fn build_book_mobi(
                 && data[0] == 0xFF && data[1] == 0xD8  // SOI marker
                 && data[2] == 0xFF && data[3] == 0xE0  // APP0 marker
                 && data[6..11] == *b"JFIF\0"           // JFIF identifier
-                && data[13] == 0x00                     // units = aspect ratio only
+                && data[13] == 0x00
+            // units = aspect ratio only
             {
                 data[13] = 0x01; // patch to DPI
             }
@@ -536,7 +571,10 @@ fn build_book_mobi(
                 }
             }
         } else {
-            eprintln!("Warning: could not read image file: {}", image_path.display());
+            eprintln!(
+                "Warning: could not read image file: {}",
+                image_path.display()
+            );
             // Still push an empty record to keep recindex alignment
             href_to_recindex.insert(href.clone(), recindex);
             image_records.push(Vec::new());
@@ -621,14 +659,20 @@ fn build_book_mobi(
             if part_size > KINDLE_HTML_SIZE_LIMIT {
                 eprintln!(
                     "Warning: HTML part {} is {} bytes, exceeds 30 MB Kindle limit ({} bytes)",
-                    i + 1, part_size, KINDLE_HTML_SIZE_LIMIT
+                    i + 1,
+                    part_size,
+                    KINDLE_HTML_SIZE_LIMIT
                 );
             }
         }
     }
 
     let css_content = extract_css_content(opf);
-    let kf8_title = if opf.title.is_empty() { "Book" } else { &opf.title };
+    let kf8_title = if opf.title.is_empty() {
+        "Book"
+    } else {
+        &opf.title
+    };
     let kf8_section = crate::kf8::build_kf8_section(
         &html_parts,
         &css_content,
@@ -671,7 +715,8 @@ fn build_book_mobi(
     } else {
         None
     };
-    let num_optional = srcs_record.as_ref().map_or(0, |_| 1) + cmet_record.as_ref().map_or(0, |_| 1);
+    let num_optional =
+        srcs_record.as_ref().map_or(0, |_| 1) + cmet_record.as_ref().map_or(0, |_| 1);
 
     let num_image_records = image_records.len();
 
@@ -721,13 +766,11 @@ fn build_book_mobi(
         // CNCX records sit between fragment INDX and skeleton INDX so Kindle
         // firmware can resolve the fragment selectors referenced by the
         // fragment index header (num_of_cncx + walk via PDB record table).
-        let kf8_skeleton_start = kf8_fragment_start
-            + kf8_section.fragment_indx.len()
-            + kf8_section.cncx_records.len();
+        let kf8_skeleton_start =
+            kf8_fragment_start + kf8_section.fragment_indx.len() + kf8_section.cncx_records.len();
         let kf8_ncx_start = kf8_skeleton_start + kf8_section.skeleton_indx.len();
-        let kf8_fdst_idx = kf8_ncx_start
-            + kf8_section.ncx_indx.len()
-            + kf8_section.ncx_cncx_records.len();
+        let kf8_fdst_idx =
+            kf8_ncx_start + kf8_section.ncx_indx.len() + kf8_section.ncx_cncx_records.len();
         // Record order must match kindlegen: FDST, FLIS, FCIS, DATP, EOF
         let kf8_flis_idx = kf8_fdst_idx + 1;
         let kf8_fcis_idx = kf8_flis_idx + 1;
@@ -747,8 +790,11 @@ fn build_book_mobi(
         } else {
             None
         };
-        let hd_record_count = hd_container.as_ref().map_or(0, |hd| hd.total_record_count());
-        let hd_geometry_string: Option<String> = hd_container.as_ref().map(|hd| hd.geometry_string());
+        let hd_record_count = hd_container
+            .as_ref()
+            .map_or(0, |hd| hd.total_record_count());
+        let hd_geometry_string: Option<String> =
+            hd_container.as_ref().map(|hd| hd.geometry_string());
 
         let total_records = 1 + kf8_text_count + 1 + num_image_records
             + kf8_section.fragment_indx.len()
@@ -825,11 +871,7 @@ fn build_book_mobi(
         } else {
             String::new()
         };
-        eprintln!(
-            "KF8-only: {} total records{}",
-            all_records.len(),
-            hd_str,
-        );
+        eprintln!("KF8-only: {} total records{}", all_records.len(), hd_str,);
 
         let palmdb = build_palmdb(title, &all_records);
         std::fs::write(output_path, &palmdb)?;
@@ -895,13 +937,11 @@ fn build_book_mobi(
         // CNCX records follow the fragment INDX and precede the skeleton INDX
         // so the Kindle firmware can walk the PDB record table to resolve the
         // CNCX references made by the fragment index header.
-        let kf8_skeleton_start = kf8_fragment_start
-            + kf8_section.fragment_indx.len()
-            + kf8_section.cncx_records.len();
+        let kf8_skeleton_start =
+            kf8_fragment_start + kf8_section.fragment_indx.len() + kf8_section.cncx_records.len();
         let kf8_ncx_start = kf8_skeleton_start + kf8_section.skeleton_indx.len();
-        let kf8_fdst_idx = kf8_ncx_start
-            + kf8_section.ncx_indx.len()
-            + kf8_section.ncx_cncx_records.len();
+        let kf8_fdst_idx =
+            kf8_ncx_start + kf8_section.ncx_indx.len() + kf8_section.ncx_cncx_records.len();
         // Record order must match kindlegen: FDST, FLIS, FCIS, DATP, EOF
         let kf8_flis_idx = kf8_fdst_idx + 1;
         let kf8_fcis_idx = kf8_flis_idx + 1;
@@ -916,8 +956,11 @@ fn build_book_mobi(
         } else {
             None
         };
-        let hd_record_count = hd_container.as_ref().map_or(0, |hd| hd.total_record_count());
-        let hd_geometry_string: Option<String> = hd_container.as_ref().map(|hd| hd.geometry_string());
+        let hd_record_count = hd_container
+            .as_ref()
+            .map_or(0, |hd| hd.total_record_count());
+        let hd_geometry_string: Option<String> =
+            hd_container.as_ref().map(|hd| hd.geometry_string());
 
         let total_global_records = kf7_total + 1 + 1 + kf8_text_count + 1
             + kf8_section.fragment_indx.len()
@@ -977,9 +1020,9 @@ fn build_book_mobi(
             fixed_layout.as_ref(),
             kf8_fdst_idx, // KF8 first_image = fdst_idx (matches KCC/kindlegen)
             creator_tag,
-            None,  // no SRCS in KF8 section of dual format
-            None,  // no HD geometry in KF8 section of dual format
-            0,     // total_records not used for KF8 section in dual format
+            None, // no SRCS in KF8 section of dual format
+            None, // no HD geometry in KF8 section of dual format
+            0,    // total_records not used for KF8 section in dual format
             doc_type,
         );
 
@@ -1126,7 +1169,11 @@ fn build_hd_container(
     image_records: &[Vec<u8>],
     hd_skip: &std::collections::HashSet<usize>,
 ) -> HdContainer {
-    let title = if opf.title.is_empty() { "Book" } else { &opf.title };
+    let title = if opf.title.is_empty() {
+        "Book"
+    } else {
+        &opf.title
+    };
     let num_images = image_records.len();
 
     let mut cres_records: Vec<Vec<u8>> = Vec::new();
@@ -1155,8 +1202,12 @@ fn build_hd_container(
             cres_records.push(cres);
 
             hd_image_count += 1;
-            if w > max_width { max_width = w; }
-            if h > max_height { max_height = h; }
+            if w > max_width {
+                max_width = w;
+            }
+            if h > max_height {
+                max_height = h;
+            }
 
             // Build kindle:embed reference for this HD image
             // recindex is 1-based
@@ -1247,19 +1298,29 @@ fn build_cont_record(
         exth::exth_record(204, &202u32.to_be_bytes()), // creator platform
         exth::exth_record(205, &0u32.to_be_bytes()),   // major
         exth::exth_record(206, &1u32.to_be_bytes()),   // minor
-        exth::exth_record(535, format!("kindling-{}", env!("CARGO_PKG_VERSION")).as_bytes()),
-        exth::exth_record(207, &0u32.to_be_bytes()),   // build
-        exth::exth_record(539, b"application/image"),   // container MIME
+        exth::exth_record(
+            535,
+            format!("kindling-{}", env!("CARGO_PKG_VERSION")).as_bytes(),
+        ),
+        exth::exth_record(207, &0u32.to_be_bytes()), // build
+        exth::exth_record(539, b"application/image"), // container MIME
     ];
     let dims_str = format!("{}x{}", max_width, max_height);
-    exth_records.push(exth::exth_record(538, dims_str.as_bytes()));   // HD dimensions
+    exth_records.push(exth::exth_record(538, dims_str.as_bytes())); // HD dimensions
     // EXTH 542 - content hash (4 bytes from MD5 of title)
-    let title_bytes = if title.is_empty() { b"Book".to_vec() } else { title.as_bytes().to_vec() };
+    let title_bytes = if title.is_empty() {
+        b"Book".to_vec()
+    } else {
+        title.as_bytes().to_vec()
+    };
     let title_hash = md5_simple(&title_bytes);
     exth_records.push(exth::exth_record(542, &title_hash[..4]));
-    exth_records.push(exth::exth_record(543, b"HD_CONTAINER"));      // container type
+    exth_records.push(exth::exth_record(543, b"HD_CONTAINER")); // container type
 
-    let exth_record_data: Vec<u8> = exth_records.iter().flat_map(|r| r.iter().copied()).collect();
+    let exth_record_data: Vec<u8> = exth_records
+        .iter()
+        .flat_map(|r| r.iter().copied())
+        .collect();
     let exth_length = 12 + exth_record_data.len();
     let exth_padding = (4 - (exth_length % 4)) % 4;
     let exth_padded_length = exth_length + exth_padding;
@@ -1292,14 +1353,14 @@ fn build_cont_record(
     record.extend_from_slice(&(total_size as u32).to_be_bytes());
     record.extend_from_slice(&((1u32 << 16) | container_total as u32).to_be_bytes());
     record.extend_from_slice(&65001u32.to_be_bytes()); // UTF-8
-    record.extend_from_slice(&0u32.to_be_bytes());     // offset 16: 0
-    record.extend_from_slice(&1u32.to_be_bytes());     // offset 20: 1
+    record.extend_from_slice(&0u32.to_be_bytes()); // offset 16: 0
+    record.extend_from_slice(&1u32.to_be_bytes()); // offset 20: 1
     record.extend_from_slice(&(num_cres_slots as u32).to_be_bytes()); // offset 24
-    record.extend_from_slice(&num_hd_images.to_be_bytes());           // offset 28
+    record.extend_from_slice(&num_hd_images.to_be_bytes()); // offset 28
     record.extend_from_slice(&(kindle_embed_index as u32).to_be_bytes()); // offset 32
-    record.extend_from_slice(&1u32.to_be_bytes());     // offset 36: 1
+    record.extend_from_slice(&1u32.to_be_bytes()); // offset 36: 1
     record.extend_from_slice(&(exth_offset as u32).to_be_bytes()); // offset 40
-    record.extend_from_slice(&(title_len as u32).to_be_bytes());   // offset 44
+    record.extend_from_slice(&(title_len as u32).to_be_bytes()); // offset 44
 
     // EXTH block
     record.extend_from_slice(&exth_block);
@@ -1348,8 +1409,7 @@ fn build_thumbnail_record(cover_bytes: &[u8]) -> Option<Vec<u8>> {
     let mut buf: Vec<u8> = Vec::with_capacity(16 * 1024);
     {
         let cursor = std::io::Cursor::new(&mut buf);
-        let encoder =
-            image::codecs::jpeg::JpegEncoder::new_with_quality(cursor, THUMB_QUALITY);
+        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(cursor, THUMB_QUALITY);
         thumb.write_with_encoder(encoder).ok()?;
     }
     Some(buf)
@@ -1400,10 +1460,12 @@ fn get_jpeg_dimensions(data: &[u8]) -> Option<(u32, u32)> {
         }
         let marker = data[i + 1];
         match marker {
-            0xD8 => { // SOI
+            0xD8 => {
+                // SOI
                 i += 2;
             }
-            0xD9 | 0xDA => { // EOI or SOS - stop searching
+            0xD9 | 0xDA => {
+                // EOI or SOS - stop searching
                 break;
             }
             // SOF markers: C0, C1, C2, C3
@@ -1589,7 +1651,11 @@ fn build_text_content_by_letter(opf: &OPFData, entries: &[DictionaryEntry]) -> V
         dict_sections.push(current_chunk);
     }
 
-    eprintln!("Kindle limits: split {} entries into {} sections", entries.len(), dict_sections.len());
+    eprintln!(
+        "Kindle limits: split {} entries into {} sections",
+        entries.len(),
+        dict_sections.len()
+    );
 
     // Check total section count
     let total_sections = front_matter_sections.len() + dict_sections.len();
@@ -1683,8 +1749,7 @@ fn strip_idx_markup(html: &str) -> String {
         STYLE_ATTR_SQ.get_or_init(|| Regex::new(r#"\s+style\s*=\s*'[^']*'"#).unwrap());
     let ws = WS.get_or_init(|| Regex::new(r"\s+").unwrap());
     let tag_space = TAG_SPACE.get_or_init(|| Regex::new(r">\s+<").unwrap());
-    let doctype_re =
-        DOCTYPE_RE.get_or_init(|| Regex::new(r"(?i)<!DOCTYPE[^>]*>\s*").unwrap());
+    let doctype_re = DOCTYPE_RE.get_or_init(|| Regex::new(r"(?i)<!DOCTYPE[^>]*>\s*").unwrap());
     let html_open = HTML_OPEN.get_or_init(|| Regex::new(r"(?i)<html\b[^>]*>\s*").unwrap());
     let html_close = HTML_CLOSE.get_or_init(|| Regex::new(r"(?i)\s*</html\s*>").unwrap());
     let body_open = BODY_OPEN.get_or_init(|| Regex::new(r"(?i)<body\b[^>]*>\s*").unwrap());
@@ -1720,9 +1785,8 @@ fn strip_idx_markup(html: &str) -> String {
         } else {
             format!("<head>{}<guide></guide></head>", style_block)
         };
-        result = std::borrow::Cow::Owned(
-            head_re.replace_all(&result, new_head.as_str()).to_string(),
-        );
+        result =
+            std::borrow::Cow::Owned(head_re.replace_all(&result, new_head.as_str()).to_string());
     }
 
     if result.contains("<idx:iform") {
@@ -1820,7 +1884,6 @@ fn strip_idx_markup(html: &str) -> String {
     result.trim().to_string()
 }
 
-
 /// Clean book HTML for non-dictionary content.
 ///
 /// Minimal cleanup: drops any prefixed `xmlns:foo="..."` attributes
@@ -1872,7 +1935,9 @@ fn rewrite_image_src(
 
         // Filename only (last path component)
         if let Some(fname) = href.rsplit('/').next() {
-            path_to_recindex.entry(fname.to_string()).or_insert(recindex);
+            path_to_recindex
+                .entry(fname.to_string())
+                .or_insert(recindex);
         }
     }
 
@@ -1896,7 +1961,9 @@ fn rewrite_image_src(
                     } else {
                         // Same directory - just the filename
                         let fname = img_dir.1;
-                        path_to_recindex.entry(fname.to_string()).or_insert(recindex);
+                        path_to_recindex
+                            .entry(fname.to_string())
+                            .or_insert(recindex);
                     }
                 }
             }
@@ -1943,10 +2010,7 @@ fn percent_decode(s: &str) -> String {
             let h1 = chars.next();
             let h2 = chars.next();
             if let (Some(h1), Some(h2)) = (h1, h2) {
-                if let Ok(byte) = u8::from_str_radix(
-                    &format!("{}{}", h1 as char, h2 as char),
-                    16,
-                ) {
+                if let Ok(byte) = u8::from_str_radix(&format!("{}{}", h1 as char, h2 as char), 16) {
                     result.push(byte as char);
                     continue;
                 }
@@ -1974,7 +2038,8 @@ fn insert_guide_reference(text_bytes: &[u8]) -> Vec<u8> {
     };
 
     // The reference tag template has a fixed-width filepos (10 digits)
-    let ref_template_zero = b"<guide><reference title=\"IndexName\" type=\"index\"  filepos=0000000000 /></guide>";
+    let ref_template_zero =
+        b"<guide><reference title=\"IndexName\" type=\"index\"  filepos=0000000000 /></guide>";
     let insert_delta = ref_template_zero.len() - empty_guide.len();
 
     let filepos = first_b + insert_delta;
@@ -2437,7 +2502,6 @@ mod record_split_tests {
         let unbalanced = b"<p>hello<p>world</p>";
         assert_eq!(count_tag_balance(unbalanced, "p"), 1);
     }
-
 }
 
 /// Scan `text_bytes` for the first occurrence of `needle` that lands at an
@@ -2479,7 +2543,8 @@ fn find_entry_positions(text_bytes: &[u8], entries: &[DictionaryEntry]) -> Vec<(
         // HTML-escape the headword to match the text blob, which retains entities
         // like &#x27; for apostrophes. The headword was unescaped during parsing,
         // so we need to re-escape for searching.
-        let escaped_hw = entry.headword
+        let escaped_hw = entry
+            .headword
             .replace('&', "&amp;")
             .replace('\'', "&#x27;")
             .replace('"', "&quot;")
@@ -2496,10 +2561,13 @@ fn find_entry_positions(text_bytes: &[u8], entries: &[DictionaryEntry]) -> Vec<(
         // variant (just `<`/`>`, which can never appear raw in valid HTML
         // text) and try it when the fully-escaped form misses.
         let raw_entities_hw = if entry.headword.contains('&') || entry.headword.contains('\'') {
-            Some(entry.headword
-                .replace('"', "&quot;")
-                .replace('<', "&lt;")
-                .replace('>', "&gt;"))
+            Some(
+                entry
+                    .headword
+                    .replace('"', "&quot;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;"),
+            )
         } else {
             None
         };
@@ -2572,8 +2640,8 @@ fn find_entry_positions(text_bytes: &[u8], entries: &[DictionaryEntry]) -> Vec<(
         let text_len = match hr_pos {
             Some(hr) => hr - block_start,
             None => {
-                let block_end =
-                    find_bytes_from(text_bytes, b"<mbp:pagebreak/>", pos).unwrap_or(text_bytes.len());
+                let block_end = find_bytes_from(text_bytes, b"<mbp:pagebreak/>", pos)
+                    .unwrap_or(text_bytes.len());
                 block_end - block_start
             }
         };
@@ -2582,12 +2650,18 @@ fn find_entry_positions(text_bytes: &[u8], entries: &[DictionaryEntry]) -> Vec<(
         search_start = pos + headword_bytes.len();
     }
 
-    let unfound: Vec<_> = entries.iter().zip(positions.iter())
+    let unfound: Vec<_> = entries
+        .iter()
+        .zip(positions.iter())
         .filter(|(_, (s, l))| *s == 0 && *l == 0)
         .map(|(e, _)| e.headword.clone())
         .collect();
     if !unfound.is_empty() {
-        eprintln!("Warning: {} / {} entries not found in text blob", unfound.len(), entries.len());
+        eprintln!(
+            "Warning: {} / {} entries not found in text blob",
+            unfound.len(),
+            entries.len()
+        );
         for hw in unfound.iter().take(20) {
             eprintln!("  Not found: {:?}", hw);
         }
@@ -2735,9 +2809,7 @@ fn build_lookup_terms(
             entries.iter().zip(positions.iter()).enumerate()
         {
             for iform in &entry.inflections {
-                if !terms.contains_key(iform)
-                    && !iform.chars().any(|c| bad_chars.contains(&c))
-                {
+                if !terms.contains_key(iform) && !iform.chars().any(|c| bad_chars.contains(&c)) {
                     let hw = &entry.headword;
                     let hw_display_len = if let Some((_, _, hdl, _)) = terms.get(hw) {
                         *hdl
@@ -2917,11 +2989,7 @@ fn build_record0(
     // FDST flow count composite (KF7 only): high word = 1 (flow count),
     // low word = index of last content record before FLIS/FCIS.
     // KCC/kindlegen uses (flis_record - 1), NOT total_records.
-    put32(
-        &mut mobi,
-        176,
-        (1u32 << 16) | ((flis_record - 1) as u32),
-    );
+    put32(&mut mobi, 176, (1u32 << 16) | ((flis_record - 1) as u32));
     put32(&mut mobi, 180, 1);
 
     // FLIS/FCIS pointers (kindlegen puts FCIS at 184, FLIS at 192)
@@ -3310,8 +3378,7 @@ fn build_palmdb(title: &str, records: &[Vec<u8>]) -> Vec<u8> {
     // truncate the prefix to 28 bytes (at a UTF-8 character boundary) and
     // append "..." for a total of 31 bytes.
     let strip_chars: &[char] = &[
-        '(', ')', '[', ']',
-        ':', '/', '\\', '*', '?', '"', '<', '>', '|',
+        '(', ')', '[', ']', ':', '/', '\\', '*', '?', '"', '<', '>', '|',
     ];
     let mut palmdb_name = title.to_string();
     for ch in strip_chars {
@@ -3319,10 +3386,7 @@ fn build_palmdb(title: &str, records: &[Vec<u8>]) -> Vec<u8> {
     }
     // Collapse whitespace runs to a single underscore. This avoids things
     // like "Star_Wars__Vader" (double underscore from ": ").
-    palmdb_name = palmdb_name
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join("_");
+    palmdb_name = palmdb_name.split_whitespace().collect::<Vec<_>>().join("_");
     if palmdb_name.len() > 31 {
         // Truncate to the largest char boundary <= 28 bytes, then append "...".
         let mut cutoff = 28.min(palmdb_name.len());
@@ -3370,7 +3434,9 @@ fn build_palmdb(title: &str, records: &[Vec<u8>]) -> Vec<u8> {
     let gap = [0u8; 2];
 
     // Assemble
-    let total_size: usize = header.len() + record_list.len() + gap.len()
+    let total_size: usize = header.len()
+        + record_list.len()
+        + gap.len()
         + records.iter().map(|r| r.len()).sum::<usize>();
     let mut output = Vec::with_capacity(total_size);
     output.extend_from_slice(&header);
@@ -3455,10 +3521,9 @@ fn md5_simple(data: &[u8]) -> [u8; 16] {
     let mut d0: u32 = 0x10325476;
 
     const S: [u32; 64] = [
-        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
-        5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
-        4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
-        6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5,
+        9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10,
+        15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
     ];
     const K: [u32; 64] = [
         0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613,
@@ -3553,4 +3618,3 @@ fn rfind_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     }
     memchr::memmem::rfind(haystack, needle)
 }
-

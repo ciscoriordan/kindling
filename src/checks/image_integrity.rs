@@ -144,9 +144,7 @@ fn detect_format(bytes: &[u8]) -> Option<ImageFormat> {
     }
 
     // PNG: 89 50 4E 47 0D 0A 1A 0A
-    if bytes.len() >= 8
-        && bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
-    {
+    if bytes.len() >= 8 && bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) {
         return Some(ImageFormat::Png);
     }
 
@@ -160,9 +158,7 @@ fn detect_format(bytes: &[u8]) -> Option<ImageFormat> {
     }
 
     // WEBP: RIFF xxxx WEBP
-    if bytes.len() >= 12
-        && bytes.starts_with(&[0x52, 0x49, 0x46, 0x46])
-        && &bytes[8..12] == b"WEBP"
+    if bytes.len() >= 12 && bytes.starts_with(&[0x52, 0x49, 0x46, 0x46]) && &bytes[8..12] == b"WEBP"
     {
         return Some(ImageFormat::Webp);
     }
@@ -267,7 +263,9 @@ mod tests {
     }
 
     fn minimal_jpeg() -> Vec<u8> {
-        vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0xFF, 0xD9]
+        vec![
+            0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0xFF, 0xD9,
+        ]
     }
 
     fn minimal_gif() -> Vec<u8> {
@@ -390,7 +388,10 @@ mod tests {
 
     #[test]
     fn extension_from_href_handles_plain_path() {
-        assert_eq!(extension_from_href("images/foo.jpg").as_deref(), Some("jpg"));
+        assert_eq!(
+            extension_from_href("images/foo.jpg").as_deref(),
+            Some("jpg")
+        );
     }
 
     #[test]
@@ -400,10 +401,7 @@ mod tests {
 
     #[test]
     fn extension_from_href_handles_fragment() {
-        assert_eq!(
-            extension_from_href("a/b.png#frag").as_deref(),
-            Some("png")
-        );
+        assert_eq!(extension_from_href("a/b.png#frag").as_deref(), Some("png"));
     }
 
     #[test]

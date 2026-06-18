@@ -33,7 +33,11 @@ impl Check for FilenameChecks {
             if let Some(bad) = ocf_illegal_char(href) {
                 report.emit_at(
                     "R13.1",
-                    format!("Illegal character {} in href '{}'.", describe_char(bad), href),
+                    format!(
+                        "Illegal character {} in href '{}'.",
+                        describe_char(bad),
+                        href
+                    ),
                     file.clone(),
                     None,
                 );

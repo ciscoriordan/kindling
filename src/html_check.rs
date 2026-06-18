@@ -1,3 +1,4 @@
+use quick_xml::Reader;
 /// HTML/XHTML self-check for MOBI text blobs.
 ///
 /// Runs a set of relaxed well-formedness checks on the text content of a
@@ -16,16 +17,26 @@
 /// The functions in this module are also used from `#[cfg(test)]` via thin
 /// wrappers in `src/tests.rs`, so any behavior change should keep existing
 /// HTML-validation tests passing.
-
 use quick_xml::events::Event;
-use quick_xml::Reader;
 
 /// Void element names that are allowed to appear without a matching close
 /// tag when walking MOBI HTML. Includes standard HTML voids used in book/
 /// comic output (`<br/>`, `<img/>`, etc.) plus MOBI-specific empties.
 pub const VOID_ELEMENTS: &[&str] = &[
-    "area", "base", "br", "col", "embed", "hr", "img", "input", "link",
-    "meta", "param", "source", "track", "wbr",
+    "area",
+    "base",
+    "br",
+    "col",
+    "embed",
+    "hr",
+    "img",
+    "input",
+    "link",
+    "meta",
+    "param",
+    "source",
+    "track",
+    "wbr",
     // MOBI-specific empties
     "mbp:pagebreak",
     // XHTML processing tags occasionally seen empty in kindling output
@@ -43,8 +54,8 @@ pub const VOID_ELEMENTS: &[&str] = &[
 /// catch token-level corruption (unclosed attributes, missing `>`, stray
 /// null bytes), not to validate schema compliance.
 pub fn parse_mobi_html(content: &[u8]) -> Result<(), String> {
-    let content_str = std::str::from_utf8(content)
-        .map_err(|e| format!("text blob is not valid UTF-8: {}", e))?;
+    let content_str =
+        std::str::from_utf8(content).map_err(|e| format!("text blob is not valid UTF-8: {}", e))?;
 
     let mut reader = Reader::from_str(content_str);
     {
@@ -78,8 +89,8 @@ pub fn parse_mobi_html(content: &[u8]) -> Result<(), String> {
 /// namespaces don't blow up the walker, but we enforce our own stack
 /// discipline. Returns `Err` with a descriptive message on mismatch.
 pub fn check_balanced_tags(content: &[u8]) -> Result<(), String> {
-    let content_str = std::str::from_utf8(content)
-        .map_err(|e| format!("text blob is not valid UTF-8: {}", e))?;
+    let content_str =
+        std::str::from_utf8(content).map_err(|e| format!("text blob is not valid UTF-8: {}", e))?;
 
     let mut reader = Reader::from_str(content_str);
     {
@@ -122,10 +133,7 @@ pub fn check_balanced_tags(content: &[u8]) -> Result<(), String> {
                         }
                     }
                     None => {
-                        return Err(format!(
-                            "close </{}> with no matching open",
-                            name
-                        ));
+                        return Err(format!("close </{}> with no matching open", name));
                     }
                 }
             }
@@ -145,10 +153,7 @@ pub fn check_balanced_tags(content: &[u8]) -> Result<(), String> {
     }
 
     if !stack.is_empty() {
-        return Err(format!(
-            "unclosed tags at EOF: {:?}",
-            stack
-        ));
+        return Err(format!("unclosed tags at EOF: {:?}", stack));
     }
     Ok(())
 }
@@ -275,11 +280,7 @@ pub fn validate_text_blob(blob: &[u8]) -> Vec<String> {
 /// which is the pre-compression text. Returns human-readable issue
 /// strings for every record that fails balance. Reports up to
 /// `max_issues` entries to keep the error list bounded.
-pub fn validate_records(
-    blob: &[u8],
-    records: &[(usize, usize)],
-    max_issues: usize,
-) -> Vec<String> {
+pub fn validate_records(blob: &[u8], records: &[(usize, usize)], max_issues: usize) -> Vec<String> {
     let mut issues = Vec::new();
     let mut unbalanced_b = 0usize;
     let mut unbalanced_i = 0usize;
@@ -369,7 +370,5 @@ pub fn print_self_check_warnings(issues: &[String]) {
         "These may indicate a kindling bug. Please report at \
          https://github.com/ciscoriordan/kindling/issues"
     );
-    eprintln!(
-        "The MOBI will still be written; use --no-self-check to suppress these warnings."
-    );
+    eprintln!("The MOBI will still be written; use --no-self-check to suppress these warnings.");
 }

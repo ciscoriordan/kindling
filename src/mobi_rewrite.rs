@@ -361,8 +361,7 @@ fn parse_mobi(data: &[u8]) -> Result<ParsedMobi, RewriteError> {
     }
 
     // PalmDOC encryption byte at offset 12.
-    let encryption_type =
-        read_u16_be(record0, PALMDOC_ENCRYPTION_TYPE_OFFSET).unwrap_or(0);
+    let encryption_type = read_u16_be(record0, PALMDOC_ENCRYPTION_TYPE_OFFSET).unwrap_or(0);
 
     if &record0[MOBI_MAGIC_OFFSET..MOBI_MAGIC_OFFSET + 4] != b"MOBI" {
         return Err(RewriteError::MalformedHeader(format!(
@@ -372,9 +371,9 @@ fn parse_mobi(data: &[u8]) -> Result<ParsedMobi, RewriteError> {
         )));
     }
 
-    let mobi_header_length = read_u32_be(record0, MOBI_HEADER_LENGTH_OFFSET).ok_or_else(|| {
-        RewriteError::MalformedHeader("MOBI header length field truncated".into())
-    })? as usize;
+    let mobi_header_length = read_u32_be(record0, MOBI_HEADER_LENGTH_OFFSET)
+        .ok_or_else(|| RewriteError::MalformedHeader("MOBI header length field truncated".into()))?
+        as usize;
     if mobi_header_length < 232 {
         return Err(RewriteError::MalformedHeader(format!(
             "MOBI header length {} is too short (expected >= 232)",
@@ -392,10 +391,8 @@ fn parse_mobi(data: &[u8]) -> Result<ParsedMobi, RewriteError> {
         (Vec::new(), exth_start)
     };
 
-    let full_name_offset =
-        read_u32_be(record0, MOBI_FULL_NAME_OFFSET_FIELD).unwrap_or(0) as usize;
-    let full_name_length =
-        read_u32_be(record0, MOBI_FULL_NAME_LENGTH_FIELD).unwrap_or(0) as usize;
+    let full_name_offset = read_u32_be(record0, MOBI_FULL_NAME_OFFSET_FIELD).unwrap_or(0) as usize;
+    let full_name_length = read_u32_be(record0, MOBI_FULL_NAME_LENGTH_FIELD).unwrap_or(0) as usize;
     if full_name_offset + full_name_length > record0.len() {
         return Err(RewriteError::MalformedHeader(format!(
             "full_name range [{}..{}] exceeds record 0 length {}",
@@ -407,9 +404,7 @@ fn parse_mobi(data: &[u8]) -> Result<ParsedMobi, RewriteError> {
 
     // DRM detection: PalmDOC encryption byte OR any of EXTH 401/402/403.
     let has_drm_exth = exth_records.iter().any(|(t, _)| {
-        *t == EXTH_DRM_SERVER_ID
-            || *t == EXTH_DRM_COMMERCE_ID
-            || *t == EXTH_DRM_EBOOKBASE_BOOK_ID
+        *t == EXTH_DRM_SERVER_ID || *t == EXTH_DRM_COMMERCE_ID || *t == EXTH_DRM_EBOOKBASE_BOOK_ID
     });
     let is_drm_encrypted = encryption_type != 0 || has_drm_exth;
 
@@ -424,11 +419,7 @@ fn parse_mobi(data: &[u8]) -> Result<ParsedMobi, RewriteError> {
             if d.len() == 4 {
                 let off = u32::from_be_bytes([d[0], d[1], d[2], d[3]]) as usize;
                 let idx = first_image_record + off;
-                if idx < num_records {
-                    Some(idx)
-                } else {
-                    None
-                }
+                if idx < num_records { Some(idx) } else { None }
             } else {
                 None
             }
@@ -468,12 +459,12 @@ fn parse_exth_block(
         )));
     }
 
-    let exth_padded_len = read_u32_be(record0, exth_start + 4).ok_or_else(|| {
-        RewriteError::MalformedHeader("EXTH header length field truncated".into())
-    })? as usize;
-    let exth_count = read_u32_be(record0, exth_start + 8).ok_or_else(|| {
-        RewriteError::MalformedHeader("EXTH count field truncated".into())
-    })? as usize;
+    let exth_padded_len = read_u32_be(record0, exth_start + 4)
+        .ok_or_else(|| RewriteError::MalformedHeader("EXTH header length field truncated".into()))?
+        as usize;
+    let exth_count = read_u32_be(record0, exth_start + 8)
+        .ok_or_else(|| RewriteError::MalformedHeader("EXTH count field truncated".into()))?
+        as usize;
 
     if exth_start + exth_padded_len > record0.len() {
         return Err(RewriteError::MalformedHeader(format!(
@@ -689,7 +680,10 @@ fn plan_changes(parsed: &ParsedMobi, updates: &MetadataUpdates) -> Result<Plan, 
                 // EXTH 542 = first 4 bytes of md5(title_bytes), matching
                 // build_book_exth's formula exactly.
                 let new_542 = md5_first4(new_title.as_bytes());
-                let old_542 = existing.get(&EXTH_TITLE_HASH).and_then(|v| v.first()).map(|s| s.to_vec());
+                let old_542 = existing
+                    .get(&EXTH_TITLE_HASH)
+                    .and_then(|v| v.first())
+                    .map(|s| s.to_vec());
                 let hash_matches = old_542.as_deref() == Some(new_542.as_slice());
                 if !hash_matches {
                     match old_542 {
@@ -798,11 +792,7 @@ fn is_recognized_image(bytes: &[u8]) -> bool {
 // shift downstream PalmDB offsets and write the new file.
 // ---------------------------------------------------------------------------
 
-fn apply_plan(
-    input: &[u8],
-    parsed: &ParsedMobi,
-    plan: &Plan,
-) -> Result<Vec<u8>, RewriteError> {
+fn apply_plan(input: &[u8], parsed: &ParsedMobi, plan: &Plan) -> Result<Vec<u8>, RewriteError> {
     // Step 1: construct new EXTH records Vec by applying exth_field_plans
     // on top of parsed.exth_records.
     let mut new_exth = parsed.exth_records.clone();
@@ -841,8 +831,9 @@ fn apply_plan(
     record0_new.extend_from_slice(&record0_old[..PALMDOC_HEADER_LEN]);
     // MOBI header unchanged (we will patch the full_name_offset/length
     // fields after the fact).
-    record0_new
-        .extend_from_slice(&record0_old[PALMDOC_HEADER_LEN..PALMDOC_HEADER_LEN + parsed.mobi_header_length]);
+    record0_new.extend_from_slice(
+        &record0_old[PALMDOC_HEADER_LEN..PALMDOC_HEADER_LEN + parsed.mobi_header_length],
+    );
     // New EXTH block.
     record0_new.extend_from_slice(&new_exth_block);
     // New full_name bytes.
@@ -1013,9 +1004,9 @@ fn md5_simple(data: &[u8]) -> [u8; 16] {
         0xeb86d391,
     ];
     let s: [u32; 64] = [
-        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20,
-        5, 9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
-        6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5,
+        9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10,
+        15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
     ];
     let mut a0: u32 = 0x67452301;
     let mut b0: u32 = 0xefcdab89;
@@ -1044,7 +1035,10 @@ fn md5_simple(data: &[u8]) -> [u8; 16] {
             d = c;
             c = b;
             b = b.wrapping_add(
-                a.wrapping_add(f).wrapping_add(k[i]).wrapping_add(m[g]).rotate_left(s[i]),
+                a.wrapping_add(f)
+                    .wrapping_add(k[i])
+                    .wrapping_add(m[g])
+                    .rotate_left(s[i]),
             );
             a = temp;
         }
@@ -1118,8 +1112,16 @@ mod tests {
             record0.push(0);
         }
         // Patch full_name_offset/length.
-        put_u32_be(&mut record0, MOBI_FULL_NAME_OFFSET_FIELD, full_name_offset as u32);
-        put_u32_be(&mut record0, MOBI_FULL_NAME_LENGTH_FIELD, full_name.len() as u32);
+        put_u32_be(
+            &mut record0,
+            MOBI_FULL_NAME_OFFSET_FIELD,
+            full_name_offset as u32,
+        );
+        put_u32_be(
+            &mut record0,
+            MOBI_FULL_NAME_LENGTH_FIELD,
+            full_name.len() as u32,
+        );
 
         let dummy_text = vec![0u8; 128];
         let records: Vec<Vec<u8>> = vec![record0, dummy_text, image_record];
@@ -1173,7 +1175,11 @@ mod tests {
 
     fn tmp_path(name: &str) -> PathBuf {
         let mut p = std::env::temp_dir();
-        p.push(format!("kindling_mobi_rewrite_test_{}_{}", std::process::id(), name));
+        p.push(format!(
+            "kindling_mobi_rewrite_test_{}_{}",
+            std::process::id(),
+            name
+        ));
         p
     }
 
@@ -1223,7 +1229,9 @@ mod tests {
             .changes
             .iter()
             .any(|c| matches!(c, ExthChange::Replaced { exth_type, .. } if *exth_type == EXTH_UPDATED_TITLE)));
-        assert!(report.changes.iter().any(|c| matches!(c, ExthChange::Replaced { exth_type, .. } if *exth_type == EXTH_TITLE_HASH)));
+        assert!(report.changes.iter().any(
+            |c| matches!(c, ExthChange::Replaced { exth_type, .. } if *exth_type == EXTH_TITLE_HASH)
+        ));
         // Parse output and verify.
         let out_bytes = fs::read(&output).unwrap();
         let parsed = parse_mobi(&out_bytes).unwrap();
@@ -1410,7 +1418,11 @@ mod tests {
         let input = write_tmp("tags_in", &bytes);
         let output = tmp_path("tags_out");
         let updates = MetadataUpdates {
-            subjects: Some(vec!["new_one".to_string(), "new_two".to_string(), "new_three".to_string()]),
+            subjects: Some(vec![
+                "new_one".to_string(),
+                "new_two".to_string(),
+                "new_three".to_string(),
+            ]),
             ..Default::default()
         };
         rewrite_mobi_metadata(&input, &output, &updates).unwrap();
@@ -1421,11 +1433,14 @@ mod tests {
             .filter(|(t, _)| *t == EXTH_SUBJECT)
             .map(|(_, d)| d.clone())
             .collect();
-        assert_eq!(subjects, vec![
-            b"new_one".to_vec(),
-            b"new_two".to_vec(),
-            b"new_three".to_vec(),
-        ]);
+        assert_eq!(
+            subjects,
+            vec![
+                b"new_one".to_vec(),
+                b"new_two".to_vec(),
+                b"new_three".to_vec(),
+            ]
+        );
     }
 
     #[test]
@@ -1560,7 +1575,11 @@ mod tests {
         let r1 = rewrite_mobi_metadata(&input, &output1, &updates).unwrap();
         assert!(!r1.no_op);
         let r2 = rewrite_mobi_metadata(&output1, &output2, &updates).unwrap();
-        assert!(r2.no_op, "second run should be a no-op, got {:?}", r2.changes);
+        assert!(
+            r2.no_op,
+            "second run should be a no-op, got {:?}",
+            r2.changes
+        );
         let out1 = fs::read(&output1).unwrap();
         let out2 = fs::read(&output2).unwrap();
         assert_eq!(out1, out2);
@@ -1668,14 +1687,18 @@ mod tests {
         };
         rewrite_mobi_metadata(&input, &output, &updates).unwrap();
         let parsed = parse_mobi(&fs::read(&output).unwrap()).unwrap();
-        assert!(parsed
-            .exth_records
-            .iter()
-            .any(|(t, d)| *t == 99999 && d == &vec![1, 2, 3, 4]));
-        assert!(parsed
-            .exth_records
-            .iter()
-            .any(|(t, d)| *t == EXTH_CDE_TYPE && d == b"PDOC"));
+        assert!(
+            parsed
+                .exth_records
+                .iter()
+                .any(|(t, d)| *t == 99999 && d == &vec![1, 2, 3, 4])
+        );
+        assert!(
+            parsed
+                .exth_records
+                .iter()
+                .any(|(t, d)| *t == EXTH_CDE_TYPE && d == b"PDOC")
+        );
     }
 
     #[test]
@@ -1689,11 +1712,13 @@ mod tests {
         };
         rewrite_mobi_metadata(&input, &output, &updates).unwrap();
         let parsed = parse_mobi(&fs::read(&output).unwrap()).unwrap();
-        assert!(parsed
-            .exth_records
-            .iter()
-            .find(|(t, _)| *t == EXTH_DESCRIPTION)
-            .is_none());
+        assert!(
+            parsed
+                .exth_records
+                .iter()
+                .find(|(t, _)| *t == EXTH_DESCRIPTION)
+                .is_none()
+        );
     }
 
     #[test]
@@ -1712,7 +1737,10 @@ mod tests {
         let out_bytes = fs::read(&output).unwrap();
         let parsed_in = parse_mobi(&bytes).unwrap();
         let parsed_out = parse_mobi(&out_bytes).unwrap();
-        assert_eq!(parsed_in.record_offsets.len(), parsed_out.record_offsets.len());
+        assert_eq!(
+            parsed_in.record_offsets.len(),
+            parsed_out.record_offsets.len()
+        );
         // Text record (index 1) bytes must be identical.
         let in_text_start = parsed_in.record_offsets[1] as usize;
         let in_text_end = parsed_in.record_offsets[2] as usize;

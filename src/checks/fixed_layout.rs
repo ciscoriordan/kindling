@@ -31,8 +31,7 @@ pub struct FixedLayoutChecks;
 impl Check for FixedLayoutChecks {
     fn ids(&self) -> &'static [&'static str] {
         &[
-            "R11.1", "R11.2", "R11.3", "R11.4", "R11.5", "R11.6", "R11.7",
-            "R11.8", "R11.9",
+            "R11.1", "R11.2", "R11.3", "R11.4", "R11.5", "R11.6", "R11.7", "R11.8", "R11.9",
         ]
     }
 
@@ -237,8 +236,10 @@ fn find_viewport_meta(content: &str) -> Option<ViewportMeta> {
             let content_val = extract_attr_value(tag_raw, "content").unwrap_or_default();
             let low = content_val.to_ascii_lowercase();
             // Match either `width=` or `width :`.
-            let has_width = low.contains("width=") || low.contains("width :") || low.contains("width=");
-            let has_height = low.contains("height=") || low.contains("height :") || low.contains("height=");
+            let has_width =
+                low.contains("width=") || low.contains("width :") || low.contains("width=");
+            let has_height =
+                low.contains("height=") || low.contains("height :") || low.contains("height=");
             // Also accept CSS-style separation `width: 1072`.
             let has_width = has_width || low.contains("width:");
             let has_height = has_height || low.contains("height:");
@@ -361,8 +362,12 @@ fn iter_rendition_meta(content: &str) -> Vec<(String, String)> {
             Some(b) => *b,
             None => break,
         };
-        if !(next == b' ' || next == b'\t' || next == b'\n' || next == b'\r'
-             || next == b'/' || next == b'>')
+        if !(next == b' '
+            || next == b'\t'
+            || next == b'\n'
+            || next == b'\r'
+            || next == b'/'
+            || next == b'>')
         {
             cursor = after;
             continue;
@@ -404,10 +409,7 @@ fn iter_rendition_meta(content: &str) -> Vec<(String, String)> {
 
 /// Permitted values for `rendition:spread`.
 fn is_valid_spread(value: &str) -> bool {
-    matches!(
-        value,
-        "none" | "landscape" | "portrait" | "both" | "auto"
-    )
+    matches!(value, "none" | "landscape" | "portrait" | "both" | "auto")
 }
 
 /// Permitted values for `rendition:orientation`.
@@ -537,8 +539,14 @@ mod tests {
         </metadata></package>"##;
         let items = iter_rendition_meta(opf);
         assert_eq!(items.len(), 2);
-        assert_eq!(items[0], ("rendition:layout".to_string(), "pre-paginated".to_string()));
-        assert_eq!(items[1], ("rendition:spread".to_string(), "landscape".to_string()));
+        assert_eq!(
+            items[0],
+            ("rendition:layout".to_string(), "pre-paginated".to_string())
+        );
+        assert_eq!(
+            items[1],
+            ("rendition:spread".to_string(), "landscape".to_string())
+        );
     }
 
     #[test]
@@ -601,9 +609,10 @@ mod tests {
         let mut r = ValidationReport::new();
         check_rendition_values(opf, &None, &mut r);
         assert_eq!(
-            r.findings.iter().filter(|f| {
-                matches!(f.rule_id, Some("R11.4") | Some("R11.5") | Some("R11.6"))
-            }).count(),
+            r.findings
+                .iter()
+                .filter(|f| { matches!(f.rule_id, Some("R11.4") | Some("R11.5") | Some("R11.6")) })
+                .count(),
             0
         );
     }
@@ -675,13 +684,19 @@ mod tests {
     #[test]
     fn extract_attr_value_handles_single_quotes() {
         let body = r##"name='viewport' content='width=1072'"##;
-        assert_eq!(extract_attr_value(body, "content"), Some("width=1072".to_string()));
+        assert_eq!(
+            extract_attr_value(body, "content"),
+            Some("width=1072".to_string())
+        );
     }
 
     #[test]
     fn extract_attr_value_handles_double_quotes() {
         let body = r##"name="viewport" content="width=1072""##;
-        assert_eq!(extract_attr_value(body, "content"), Some("width=1072".to_string()));
+        assert_eq!(
+            extract_attr_value(body, "content"),
+            Some("width=1072".to_string())
+        );
     }
 
     // ---- iter_rendition_meta edge cases ----

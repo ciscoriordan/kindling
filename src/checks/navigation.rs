@@ -2,8 +2,8 @@
 
 use std::fs;
 
-use super::helpers::strip_tags_len;
 use super::Check;
+use super::helpers::strip_tags_len;
 use crate::extracted::ExtractedEpub;
 use crate::validate::ValidationReport;
 

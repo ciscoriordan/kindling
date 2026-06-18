@@ -16,7 +16,6 @@
 /// Records are aligned to 4-byte boundaries and capped at
 /// `RECORD_LIMIT = 0x10000 - 1024 = 64512` bytes per record, matching
 /// the margin kindlegen leaves for safety.
-
 use std::collections::HashMap;
 
 use crate::vwi::encode_vwi_inv;
@@ -164,7 +163,11 @@ mod tests {
         // A late add should end up in a higher record.
         let late = b.add("last_one");
         // record index appears in the upper 16 bits.
-        assert!(late >> 16 >= 1, "late offset {} should include record index >=1", late);
+        assert!(
+            late >> 16 >= 1,
+            "late offset {} should include record index >=1",
+            late
+        );
     }
 
     #[test]

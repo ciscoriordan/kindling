@@ -24,7 +24,8 @@ fn main() {
     let f = File::create(&epub_path).unwrap();
     let mut zip = zip::ZipWriter::new(f);
     let stored = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
-    let deflated = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let deflated =
+        SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
     zip.start_file("mimetype", stored).unwrap();
     zip.write_all(b"application/epub+zip").unwrap();
@@ -81,7 +82,8 @@ fn main() {
 <body><div><img src="{name}" alt="page {page}"/></div></body>
 </html>"#
         );
-        zip.start_file(format!("OEBPS/p{page}.xhtml"), deflated).unwrap();
+        zip.start_file(format!("OEBPS/p{page}.xhtml"), deflated)
+            .unwrap();
         zip.write_all(xhtml.as_bytes()).unwrap();
 
         let mut buf = Vec::new();

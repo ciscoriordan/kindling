@@ -171,9 +171,7 @@ fn load_reference(fixture: &str) -> ParsedMobi {
 /// return the parsed output. Used for dict and book fixtures.
 fn kindling_build_parsed(fixture: &str, opf_name: &str, ext: &str) -> ParsedMobi {
     let opf = parity_fixture(fixture).join(opf_name);
-    let tmp = std::env::temp_dir()
-        .join("kindling_parity")
-        .join(fixture);
+    let tmp = std::env::temp_dir().join("kindling_parity").join(fixture);
     let _ = fs::remove_dir_all(&tmp);
     fs::create_dir_all(&tmp).unwrap();
     let out = tmp.join(format!("out.{ext}"));
@@ -184,9 +182,7 @@ fn kindling_build_parsed(fixture: &str, opf_name: &str, ext: &str) -> ParsedMobi
 
 fn kindling_comic_parsed(fixture: &str, src_name: &str, ext: &str) -> ParsedMobi {
     let input = parity_fixture(fixture).join(src_name);
-    let tmp = std::env::temp_dir()
-        .join("kindling_parity")
-        .join(fixture);
+    let tmp = std::env::temp_dir().join("kindling_parity").join(fixture);
     let _ = fs::remove_dir_all(&tmp);
     fs::create_dir_all(&tmp).unwrap();
     let out = tmp.join(format!("out.{ext}"));
@@ -455,15 +451,9 @@ fn reconstruct_simple_comic_kindling_vs_kindlegen() {
         let k = &k_parts[i];
         let g = &g_parts[i];
         if k != g {
-            diff_lines.push(format!(
-                "--- part[{i}] kindling ({} bytes) ---",
-                k.len()
-            ));
+            diff_lines.push(format!("--- part[{i}] kindling ({} bytes) ---", k.len()));
             diff_lines.push(String::from_utf8_lossy(k).into_owned());
-            diff_lines.push(format!(
-                "--- part[{i}] kindlegen ({} bytes) ---",
-                g.len()
-            ));
+            diff_lines.push(format!("--- part[{i}] kindlegen ({} bytes) ---", g.len()));
             diff_lines.push(String::from_utf8_lossy(g).into_owned());
         }
     }

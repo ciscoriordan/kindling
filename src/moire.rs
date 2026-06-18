@@ -13,7 +13,6 @@
 /// The filter should only be applied to grayscale source images destined for
 /// color device profiles (colorsoft, fire-hd-10). Applying it to already-color
 /// source images or grayscale-only devices is unnecessary.
-
 use image::DynamicImage;
 
 /// Remove moire/rainbow artifacts from a grayscale image intended for a color
@@ -85,7 +84,10 @@ mod tests {
             original_diff,
             filtered_diff,
         );
-        println!("  \u{2713} Grayscale moire: contrast diff {} -> {}", original_diff, filtered_diff);
+        println!(
+            "  \u{2713} Grayscale moire: contrast diff {} -> {}",
+            original_diff, filtered_diff
+        );
     }
 
     #[test]

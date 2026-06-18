@@ -51,7 +51,9 @@ impl Check for CssForbiddenChecks {
             if !is_css_media_type(media_type) {
                 continue;
             }
-            let Some(summary) = epub.css_summary(href) else { continue };
+            let Some(summary) = epub.css_summary(href) else {
+                continue;
+            };
             let file = Some(PathBuf::from(href));
 
             // R6.13 CSS parse error. lightningcss only returns an `Err` for
@@ -109,8 +111,7 @@ impl Check for CssForbiddenChecks {
                 if face.missing_src {
                     report.emit_at(
                         "R6.17",
-                        "@font-face block has no src descriptor; Kindle will drop it."
-                            .to_string(),
+                        "@font-face block has no src descriptor; Kindle will drop it.".to_string(),
                         file.clone(),
                         Some(face.line),
                     );
@@ -121,12 +122,7 @@ impl Check for CssForbiddenChecks {
                         continue;
                     }
                     if is_external_url(target)
-                        || !resolves_to_manifest(
-                            target,
-                            href,
-                            &manifest_hrefs,
-                            base_dir.as_path(),
-                        )
+                        || !resolves_to_manifest(target, href, &manifest_hrefs, base_dir.as_path())
                     {
                         report.emit_at(
                             "R6.17",
@@ -340,9 +336,7 @@ mod tests {
     fn r6_15_external_import_classified() {
         let base = std::env::temp_dir();
         let hrefs: HashSet<String> = HashSet::new();
-        assert!(
-            classify_import("https://cdn/reset.css", "a.css", &hrefs, &base).is_some()
-        );
+        assert!(classify_import("https://cdn/reset.css", "a.css", &hrefs, &base).is_some());
     }
 
     #[test]
@@ -366,9 +360,7 @@ mod tests {
     fn r6_16_external_url_classified() {
         let base = std::env::temp_dir();
         let hrefs: HashSet<String> = HashSet::new();
-        assert!(
-            classify_url("https://cdn/bg.png", "a.css", &hrefs, &base).is_some()
-        );
+        assert!(classify_url("https://cdn/bg.png", "a.css", &hrefs, &base).is_some());
     }
 
     #[test]
@@ -376,9 +368,7 @@ mod tests {
         let base = std::env::temp_dir();
         let mut hrefs = HashSet::new();
         hrefs.insert("images/bg.png".to_string());
-        assert!(
-            classify_url("../images/bg.png", "css/style.css", &hrefs, &base).is_none()
-        );
+        assert!(classify_url("../images/bg.png", "css/style.css", &hrefs, &base).is_none());
     }
 
     // ---- helpers ----

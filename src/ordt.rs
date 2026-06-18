@@ -142,7 +142,8 @@ const HIRA_VOWEL: [u8; 86] = [
     0, 0, 1, 1, 2, 2, 3, 3, 4, 4, // さざしじすずせぜそぞ
     0, 0, 1, 1, 2, 2, 2, 3, 3, 4, 4, // ただちぢっつづてでとど
     0, 1, 2, 3, 4, // なにぬねの
-    0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, // はばぱひびぴふぶぷへべぺほぼぽ
+    0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4,
+    4, // はばぱひびぴふぶぷへべぺほぼぽ
     0, 1, 2, 3, 4, // まみむめも
     0, 0, 2, 2, 4, 4, // ゃやゅゆょよ
     0, 1, 2, 3, 4, // らりるれろ
@@ -233,7 +234,11 @@ impl OrdtTables {
         let mut ordt2: Vec<u16> = Vec::with_capacity(256);
         let mut sym_of: HashMap<char, u16> = HashMap::new();
 
-        let add = |cp: u32, weight: u16, o1: &mut Vec<u16>, o2: &mut Vec<u16>, m: &mut HashMap<char, u16>| {
+        let add = |cp: u32,
+                   weight: u16,
+                   o1: &mut Vec<u16>,
+                   o2: &mut Vec<u16>,
+                   m: &mut HashMap<char, u16>| {
             let sym = o2.len() as u16;
             o2.push(cp as u16);
             o1.push(weight);
@@ -262,12 +267,24 @@ impl OrdtTables {
             add(0x0020, SPACE_WEIGHT, &mut ordt1, &mut ordt2, &mut sym_of); // space
             // Full hiragana block.
             for cp in HIRAGANA_FIRST..=HIRAGANA_LAST {
-                add(cp, kana_weight(cp).unwrap(), &mut ordt1, &mut ordt2, &mut sym_of);
+                add(
+                    cp,
+                    kana_weight(cp).unwrap(),
+                    &mut ordt1,
+                    &mut ordt2,
+                    &mut sym_of,
+                );
             }
             // Full katakana block, folded onto hiragana weights (ヴ ヵ ヶ
             // collate as う か け, like kindlegen).
             for cp in KATAKANA_FIRST..=KATAKANA_LAST {
-                add(cp, kana_weight(cp).unwrap(), &mut ordt1, &mut ordt2, &mut sym_of);
+                add(
+                    cp,
+                    kana_weight(cp).unwrap(),
+                    &mut ordt1,
+                    &mut ordt2,
+                    &mut sym_of,
+                );
             }
 
             // Long-vowel fold markers for ー, each carrying its plain
@@ -275,7 +292,13 @@ impl OrdtTables {
             // only for the vowels that folding actually produced.
             for (v, &fold_cp) in LONG_FOLD.iter().enumerate() {
                 if label_cps.iter().flatten().any(|&cp| cp == fold_cp) {
-                    add(fold_cp, vowel_weight(v), &mut ordt1, &mut ordt2, &mut sym_of);
+                    add(
+                        fold_cp,
+                        vowel_weight(v),
+                        &mut ordt1,
+                        &mut ordt2,
+                        &mut sym_of,
+                    );
                 }
             }
             // Ignorable katakana marks (unfoldable ー, middle dot, iteration
@@ -329,10 +352,13 @@ impl OrdtTables {
         // code points exceed one byte) or the table exceeds 256 symbols.
         // Pure-kana dictionaries have no literals once ー is folded, so
         // they come out one-byte, matching kindlegen.
-        let has_literal = label_cps.iter().flatten().any(|&cp| match char::from_u32(cp) {
-            Some(c) => !sym_of.contains_key(&c),
-            None => true,
-        });
+        let has_literal = label_cps
+            .iter()
+            .flatten()
+            .any(|&cp| match char::from_u32(cp) {
+                Some(c) => !sym_of.contains_key(&c),
+                None => true,
+            });
         let two_byte = has_literal || ordt2.len() > 256;
 
         OrdtTables {
@@ -352,11 +378,7 @@ impl OrdtTables {
     /// The `ordt_type` INDX header field: 0 for two-byte elements, 1 for
     /// single-byte elements.
     pub fn ordt_type(&self) -> u32 {
-        if self.two_byte {
-            0
-        } else {
-            1
-        }
+        if self.two_byte { 0 } else { 1 }
     }
 
     fn push_elem(&self, out: &mut Vec<u8>, v: u16) {
@@ -537,16 +559,21 @@ mod tests {
         // device because kindling stored ー as an out-of-table literal. It
         // now folds onto the preceding vowel, like kindlegen.
         let o = OrdtTables::new(&["ローゼマイン", "ヴィルフリート"]);
-        assert!(!o.sym_of.contains_key(&'ー'), "foldable ー is never a symbol");
+        assert!(
+            !o.sym_of.contains_key(&'ー'),
+            "foldable ー is never a symbol"
+        );
 
         // ローゼマイン: ロ ー ゼ マ イ ン — ー after ロ (o) -> U+309F.
         let e = elems(&o, &o.encode_label("ローゼマイン"));
         assert_eq!(e.len(), 6, "ー folds in place; no literal expansion");
-        assert!(e.iter().all(|&s| (s as u32) < o.count()), "all table symbols");
+        assert!(
+            e.iter().all(|&s| (s as u32) < o.count()),
+            "all table symbols"
+        );
         assert_eq!(o.ordt2[e[1] as usize], 0x309F, "ー after ロ -> o-marker");
         assert_eq!(
-            o.ordt1[e[1] as usize],
-            o.ordt1[o.sym_of[&'お'] as usize],
+            o.ordt1[e[1] as usize], o.ordt1[o.sym_of[&'お'] as usize],
             "the o-marker carries お's weight"
         );
 
@@ -571,8 +598,7 @@ mod tests {
         // matching kindlegen; this is why ヴィルフリート now lands early.
         let o = OrdtTables::new(&["ア", "ウ", "ヴ", "エ"]);
         assert_eq!(
-            o.ordt1[o.sym_of[&'ヴ'] as usize],
-            o.ordt1[o.sym_of[&'ウ'] as usize],
+            o.ordt1[o.sym_of[&'ヴ'] as usize], o.ordt1[o.sym_of[&'ウ'] as usize],
             "ヴ has ウ's weight"
         );
         let k = |s: &str| o.sort_key(&o.encode_label(s));
@@ -585,8 +611,14 @@ mod tests {
         // literal mark with weight 0: kept in the label but ignored in
         // collation, like kindlegen.
         let o = OrdtTables::new(&["ンー", "ン"]);
-        assert!(o.sym_of.contains_key(&'ー'), "unfoldable ー is an in-table symbol");
-        assert_eq!(o.ordt1[o.sym_of[&'ー'] as usize], 0, "ー is collation-ignorable");
+        assert!(
+            o.sym_of.contains_key(&'ー'),
+            "unfoldable ー is an in-table symbol"
+        );
+        assert_eq!(
+            o.ordt1[o.sym_of[&'ー'] as usize], 0,
+            "ー is collation-ignorable"
+        );
         assert_eq!(
             o.sort_key(&o.encode_label("ンー")),
             o.sort_key(&o.encode_label("ン")),
@@ -603,7 +635,10 @@ mod tests {
         assert_eq!(o.ordt2[e[1] as usize], 0x3097, "ー after ッ -> u-marker");
         let e = elems(&o, &o.encode_label("カーー"));
         assert_eq!(o.ordt2[e[1] as usize], 0x3095, "first ー -> a-marker");
-        assert_eq!(o.ordt2[e[2] as usize], 0x3095, "second ー keeps the a-marker");
+        assert_eq!(
+            o.ordt2[e[2] as usize], 0x3095,
+            "second ー keeps the a-marker"
+        );
     }
 
     #[test]
@@ -613,7 +648,10 @@ mod tests {
         // every kana (which a high-weight literal would do).
         let o = OrdtTables::new(&["ナカ・マ", "ナカマ"]);
         assert!(!o.two_byte, "・ is an in-table symbol, not a literal");
-        assert_eq!(o.ordt1[o.sym_of[&'・'] as usize], 0, "・ is collation-ignorable");
+        assert_eq!(
+            o.ordt1[o.sym_of[&'・'] as usize], 0,
+            "・ is collation-ignorable"
+        );
         assert_eq!(
             o.sort_key(&o.encode_label("ナカ・マ")),
             o.sort_key(&o.encode_label("ナカマ")),
@@ -648,8 +686,7 @@ mod tests {
         assert_eq!(ja.ordt2[ja.sym_of[&'あ'] as usize], 0x3042);
         assert_eq!(ja.ordt2[ja.sym_of[&'ア'] as usize], 0x30A2);
         assert_eq!(
-            ja.ordt1[ja.sym_of[&'ア'] as usize],
-            ja.ordt1[ja.sym_of[&'あ'] as usize],
+            ja.ordt1[ja.sym_of[&'ア'] as usize], ja.ordt1[ja.sym_of[&'あ'] as usize],
             "ア folds onto あ"
         );
         // A no-kana dictionary (Chinese/Korean/Arabic) keeps the minimal
@@ -688,7 +725,11 @@ mod tests {
         let (t1, t2) = one.serialize();
         assert_eq!(&t1[..4], b"ORDT");
         assert_eq!(t1.len(), 4 + one.count() as usize, "ORDT1 is 1 byte/symbol");
-        assert_eq!(t2.len(), 4 + one.count() as usize * 2, "ORDT2 stays 2 bytes");
+        assert_eq!(
+            t2.len(),
+            4 + one.count() as usize * 2,
+            "ORDT2 stays 2 bytes"
+        );
         // Each weight survives the one-byte cast and lands at byte N.
         for (i, &w) in one.ordt1.iter().enumerate() {
             assert!(w <= 0xFF, "weights fit in a byte");
@@ -699,7 +740,11 @@ mod tests {
         let two = OrdtTables::new(&["山", "あ"]);
         assert_eq!(two.ordt_type(), 0);
         let (t1, _) = two.serialize();
-        assert_eq!(t1.len(), 4 + two.count() as usize * 2, "ORDT1 is 2 bytes/symbol");
+        assert_eq!(
+            t1.len(),
+            4 + two.count() as usize * 2,
+            "ORDT1 is 2 bytes/symbol"
+        );
     }
 
     #[test]

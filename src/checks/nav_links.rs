@@ -3,8 +3,8 @@
 use std::collections::HashSet;
 use std::fs;
 
-use super::helpers::extract_attr;
 use super::Check;
+use super::helpers::extract_attr;
 use crate::extracted::ExtractedEpub;
 use crate::validate::ValidationReport;
 

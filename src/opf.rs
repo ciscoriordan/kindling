@@ -1,10 +1,9 @@
+use quick_xml::Reader;
 /// OPF and HTML parser for Kindle dictionary source files.
 ///
 /// Parses the OPF manifest/metadata and extracts dictionary entries
 /// from the HTML content files with idx:entry markup.
-
 use quick_xml::events::Event;
-use quick_xml::Reader;
 use regex::Regex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -65,11 +64,10 @@ pub struct OPFData {
 
 impl OPFData {
     pub fn parse(opf_path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
-        let opf_path = opf_path.canonicalize().unwrap_or_else(|_| opf_path.to_path_buf());
-        let base_dir = opf_path
-            .parent()
-            .unwrap_or(Path::new("."))
-            .to_path_buf();
+        let opf_path = opf_path
+            .canonicalize()
+            .unwrap_or_else(|_| opf_path.to_path_buf());
+        let base_dir = opf_path.parent().unwrap_or(Path::new(".")).to_path_buf();
 
         let content = std::fs::read_to_string(&opf_path)?;
         let mut data = OPFData {
@@ -145,9 +143,7 @@ impl OPFData {
                                 }
                             }
                         }
-                        "title" | "creator" | "language" | "identifier" | "date"
-                            if in_metadata =>
-                        {
+                        "title" | "creator" | "language" | "identifier" | "date" if in_metadata => {
                             current_tag = lower.clone();
                         }
                         "type" if in_metadata => {
@@ -176,10 +172,12 @@ impl OPFData {
                                         name_val = String::from_utf8_lossy(&attr.value).to_string();
                                     }
                                     b"content" => {
-                                        content_val = String::from_utf8_lossy(&attr.value).to_string();
+                                        content_val =
+                                            String::from_utf8_lossy(&attr.value).to_string();
                                     }
                                     b"property" => {
-                                        property_val = String::from_utf8_lossy(&attr.value).to_string();
+                                        property_val =
+                                            String::from_utf8_lossy(&attr.value).to_string();
                                     }
                                     _ => {}
                                 }
@@ -208,9 +206,7 @@ impl OPFData {
                             let mut fallback_style: Option<String> = None;
                             for attr in e.attributes().flatten() {
                                 match attr.key.as_ref() {
-                                    b"id" => {
-                                        id = String::from_utf8_lossy(&attr.value).to_string()
-                                    }
+                                    b"id" => id = String::from_utf8_lossy(&attr.value).to_string(),
                                     b"href" => {
                                         href = String::from_utf8_lossy(&attr.value).to_string()
                                     }
@@ -223,14 +219,12 @@ impl OPFData {
                                             String::from_utf8_lossy(&attr.value).to_string()
                                     }
                                     b"fallback" => {
-                                        fallback = Some(
-                                            String::from_utf8_lossy(&attr.value).to_string(),
-                                        );
+                                        fallback =
+                                            Some(String::from_utf8_lossy(&attr.value).to_string());
                                     }
                                     b"fallback-style" => {
-                                        fallback_style = Some(
-                                            String::from_utf8_lossy(&attr.value).to_string(),
-                                        );
+                                        fallback_style =
+                                            Some(String::from_utf8_lossy(&attr.value).to_string());
                                     }
                                     _ => {}
                                 }
@@ -240,7 +234,8 @@ impl OPFData {
                                 if properties.split_whitespace().any(|p| p == "coverimage") {
                                     self.coverimage_id = Some(id.clone());
                                 }
-                                self.manifest.insert(id.clone(), (href.clone(), media_type.clone()));
+                                self.manifest
+                                    .insert(id.clone(), (href.clone(), media_type.clone()));
                                 self.manifest_items.push(ManifestItem {
                                     id,
                                     href,
@@ -258,12 +253,10 @@ impl OPFData {
                             for attr in e.attributes().flatten() {
                                 match attr.key.as_ref() {
                                     b"idref" => {
-                                        idref =
-                                            String::from_utf8_lossy(&attr.value).to_string();
+                                        idref = String::from_utf8_lossy(&attr.value).to_string();
                                     }
                                     b"linear" => {
-                                        linear =
-                                            String::from_utf8_lossy(&attr.value).to_string();
+                                        linear = String::from_utf8_lossy(&attr.value).to_string();
                                     }
                                     b"properties" => {
                                         properties =
@@ -373,9 +366,8 @@ impl OPFData {
         use std::collections::BTreeSet;
         use std::sync::OnceLock;
         static IMG_SRC_RE: OnceLock<Regex> = OnceLock::new();
-        let img_src_re = IMG_SRC_RE.get_or_init(|| {
-            Regex::new(r#"(?i)<img\b[^>]*?\bsrc\s*=\s*"([^"]*)""#).unwrap()
-        });
+        let img_src_re = IMG_SRC_RE
+            .get_or_init(|| Regex::new(r#"(?i)<img\b[^>]*?\bsrc\s*=\s*"([^"]*)""#).unwrap());
 
         let manifest_hrefs: HashMap<String, ()> = self
             .manifest_items
@@ -433,9 +425,7 @@ impl OPFData {
 
         found
             .into_iter()
-            .filter_map(|href| {
-                guess_image_media_type(&href).map(|mt| (href, mt.to_string()))
-            })
+            .filter_map(|href| guess_image_media_type(&href).map(|mt| (href, mt.to_string())))
             .collect()
     }
 
@@ -485,12 +475,10 @@ impl OPFData {
                         for attr in e.attributes().flatten() {
                             match attr.key.as_ref() {
                                 b"name" => {
-                                    name_val =
-                                        String::from_utf8_lossy(&attr.value).to_string()
+                                    name_val = String::from_utf8_lossy(&attr.value).to_string()
                                 }
                                 b"content" => {
-                                    content_val =
-                                        String::from_utf8_lossy(&attr.value).to_string()
+                                    content_val = String::from_utf8_lossy(&attr.value).to_string()
                                 }
                                 _ => {}
                             }
@@ -575,12 +563,10 @@ impl OPFData {
                         for attr in e.attributes().flatten() {
                             match attr.key.as_ref() {
                                 b"name" => {
-                                    name_val =
-                                        String::from_utf8_lossy(&attr.value).to_string()
+                                    name_val = String::from_utf8_lossy(&attr.value).to_string()
                                 }
                                 b"content" => {
-                                    content_val =
-                                        String::from_utf8_lossy(&attr.value).to_string()
+                                    content_val = String::from_utf8_lossy(&attr.value).to_string()
                                 }
                                 _ => {}
                             }
@@ -905,11 +891,8 @@ mod tests {
     use std::fs;
 
     fn temp_dir(tag: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!(
-            "kindling_opf_test_{}_{}",
-            tag,
-            std::process::id()
-        ));
+        let d =
+            std::env::temp_dir().join(format!("kindling_opf_test_{}_{}", tag, std::process::id()));
         if d.exists() {
             fs::remove_dir_all(&d).unwrap();
         }

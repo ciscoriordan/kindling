@@ -16,8 +16,8 @@ pub struct DictChecks;
 impl Check for DictChecks {
     fn ids(&self) -> &'static [&'static str] {
         &[
-            "R15.1", "R15.2", "R15.3", "R15.4", "R15.5", "R15.6", "R15.7",
-            "R15.e1", "R15.e2", "R15.e3", "R15.e4", "R15.e5", "R15.e6", "R15.e7",
+            "R15.1", "R15.2", "R15.3", "R15.4", "R15.5", "R15.6", "R15.7", "R15.e1", "R15.e2",
+            "R15.e3", "R15.e4", "R15.e5", "R15.e6", "R15.e7",
         ]
     }
 
@@ -40,7 +40,10 @@ fn run_legacy_rules(epub: &ExtractedEpub, report: &mut ValidationReport) {
     } else if !is_valid_bcp47(&opf.dict_in_language) {
         report.emit(
             "R15.1",
-            format!("Value '{}' is not a valid BCP47 code.", opf.dict_in_language),
+            format!(
+                "Value '{}' is not a valid BCP47 code.",
+                opf.dict_in_language
+            ),
         );
     }
 
@@ -50,7 +53,10 @@ fn run_legacy_rules(epub: &ExtractedEpub, report: &mut ValidationReport) {
     } else if !is_valid_bcp47(&opf.dict_out_language) {
         report.emit(
             "R15.2",
-            format!("Value '{}' is not a valid BCP47 code.", opf.dict_out_language),
+            format!(
+                "Value '{}' is not a valid BCP47 code.",
+                opf.dict_out_language
+            ),
         );
     }
 
@@ -82,12 +88,7 @@ fn run_legacy_rules(epub: &ExtractedEpub, report: &mut ValidationReport) {
 
     // R15.5: Spine content wrapped in <mbp:frameset> (warning).
     for missing in &scan.spine_files_without_frameset {
-        report.emit_at(
-            "R15.5",
-            "",
-            Some(PathBuf::from(missing)),
-            None,
-        );
+        report.emit_at("R15.5", "", Some(PathBuf::from(missing)), None);
     }
 
     // R15.6: Every <idx:orth> has a non-empty value="...".
@@ -195,7 +196,10 @@ fn run_epub3_rules(epub: &ExtractedEpub, report: &mut ValidationReport) {
         if skm_count > 1 {
             report.emit(
                 "R15.e5",
-                format!("Collection contains {} Search Key Map documents.", skm_count),
+                format!(
+                    "Collection contains {} Search Key Map documents.",
+                    skm_count
+                ),
             );
         }
         // R15.e6 (OPF_083): at least one SKM per collection.
@@ -384,7 +388,9 @@ fn guide_has_index_reference(opf_path: &std::path::Path) -> bool {
     let mut rest = guide_block;
     while let Some(idx) = rest.find("<reference") {
         rest = &rest[idx + "<reference".len()..];
-        let Some(end) = rest.find('>') else { return false };
+        let Some(end) = rest.find('>') else {
+            return false;
+        };
         let tag = &rest[..end];
         if tag.contains("type=\"index\"") || tag.contains("type='index'") {
             return true;
@@ -428,7 +434,9 @@ fn parse_dictionary_collections(opf_path: &std::path::Path) -> Vec<DictCollectio
             let mut link_rest = body;
             while let Some(li) = link_rest.find("<link") {
                 link_rest = &link_rest[li + "<link".len()..];
-                let Some(link_end) = link_rest.find('>') else { break };
+                let Some(link_end) = link_rest.find('>') else {
+                    break;
+                };
                 let link_tag = &link_rest[..link_end];
                 if let Some(href) = extract_dq_attr(link_tag, "href") {
                     links.push(href);
@@ -483,7 +491,8 @@ mod tests {
 
     #[test]
     fn find_empty_orth_lines_flags_missing_value() {
-        let html = "<idx:entry>\n  <idx:orth value=\"\"/>\n  <idx:orth value=\"ok\"/>\n</idx:entry>";
+        let html =
+            "<idx:entry>\n  <idx:orth value=\"\"/>\n  <idx:orth value=\"ok\"/>\n</idx:entry>";
         let lines = find_empty_orth_lines(html);
         assert_eq!(lines, vec![2]);
     }
@@ -576,9 +585,6 @@ mod tests {
     fn extract_dq_attr_handles_mid_tag() {
         let tag = r#" name="default" scriptable="yes""#;
         assert_eq!(extract_dq_attr(tag, "name"), Some("default".to_string()));
-        assert_eq!(
-            extract_dq_attr(tag, "scriptable"),
-            Some("yes".to_string())
-        );
+        assert_eq!(extract_dq_attr(tag, "scriptable"), Some("yes".to_string()));
     }
 }

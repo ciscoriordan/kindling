@@ -36,8 +36,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use kindling::validate::{Finding, validate_opf};
 use kindling::kdp_rules::Severity;
+use kindling::validate::{Finding, validate_opf};
 
 const EXPECTED_CORPUS_SHA: &str = "45feac979d9b12b502f124db7bc5056977628417";
 
@@ -77,7 +77,9 @@ fn category_of(test_id: &str) -> &str {
 
 fn read_subdirs(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    let Ok(iter) = fs::read_dir(root) else { return out };
+    let Ok(iter) = fs::read_dir(root) else {
+        return out;
+    };
     for entry in iter.flatten() {
         let p = entry.path();
         if p.is_dir() {
@@ -100,7 +102,11 @@ fn run_one(opf_path: &Path) -> Outcome {
                 .collect();
             rule_ids.sort_unstable();
             rule_ids.dedup();
-            Outcome::Validated { errors, warnings, rule_ids }
+            Outcome::Validated {
+                errors,
+                warnings,
+                rule_ids,
+            }
         }
         Err(e) => Outcome::ParseFailure(format!("{e}")),
     }
@@ -133,7 +139,9 @@ fn epub_tests_corpus_baseline() {
 
     let mut rows: Vec<TestRow> = Vec::new();
     for test_dir in read_subdirs(&corpus_root) {
-        let Some(test_id) = test_dir.file_name().map(|s| s.to_string_lossy().into_owned())
+        let Some(test_id) = test_dir
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
         else {
             continue;
         };
@@ -147,7 +155,11 @@ fn epub_tests_corpus_baseline() {
         }
         let category = category_of(&test_id).to_string();
         let outcome = run_one(&opf_path);
-        rows.push(TestRow { test_id, category, outcome });
+        rows.push(TestRow {
+            test_id,
+            category,
+            outcome,
+        });
     }
 
     // Aggregate per category.
@@ -215,10 +227,16 @@ fn epub_tests_corpus_baseline() {
 
     // Text report.
     println!();
-    println!("=== kindling v{} against w3c/epub-tests corpus ===", env!("CARGO_PKG_VERSION"));
+    println!(
+        "=== kindling v{} against w3c/epub-tests corpus ===",
+        env!("CARGO_PKG_VERSION")
+    );
     println!("corpus: {}", corpus);
     println!("tests considered: {}", rows.len());
-    println!("Kindle-expected noise rules (filtered from 'beyond-noise' column): {:?}", KINDLE_NOISE_IDS);
+    println!(
+        "Kindle-expected noise rules (filtered from 'beyond-noise' column): {:?}",
+        KINDLE_NOISE_IDS
+    );
     println!();
 
     println!(
@@ -284,7 +302,11 @@ fn epub_tests_corpus_baseline() {
     println!("wrote {}", out_path.display());
 
     // Sanity assertion: we should have actually looked at something.
-    assert!(rows.len() > 100, "corpus walk produced only {} tests; is KINDLING_CORPUS_DIR pointing at a w3c/epub-tests checkout?", rows.len());
+    assert!(
+        rows.len() > 100,
+        "corpus walk produced only {} tests; is KINDLING_CORPUS_DIR pointing at a w3c/epub-tests checkout?",
+        rows.len()
+    );
 }
 
 fn build_json(
@@ -295,9 +317,15 @@ fn build_json(
 ) -> String {
     let mut s = String::new();
     s.push_str("{\n");
-    s.push_str(&format!("  \"kindling_version\": \"{}\",\n", env!("CARGO_PKG_VERSION")));
+    s.push_str(&format!(
+        "  \"kindling_version\": \"{}\",\n",
+        env!("CARGO_PKG_VERSION")
+    ));
     s.push_str(&format!("  \"corpus\": {},\n", json_str(corpus)));
-    s.push_str(&format!("  \"corpus_sha\": {},\n", json_str(EXPECTED_CORPUS_SHA)));
+    s.push_str(&format!(
+        "  \"corpus_sha\": {},\n",
+        json_str(EXPECTED_CORPUS_SHA)
+    ));
     s.push_str(&format!("  \"total_tests\": {},\n", rows.len()));
     s.push_str("  \"noise_ids\": [");
     for (i, id) in KINDLE_NOISE_IDS.iter().enumerate() {
@@ -351,9 +379,17 @@ fn build_json(
         }
         first = false;
         s.push_str("    {");
-        s.push_str(&format!("\"id\": {}, \"category\": {}, ", json_str(&r.test_id), json_str(&r.category)));
+        s.push_str(&format!(
+            "\"id\": {}, \"category\": {}, ",
+            json_str(&r.test_id),
+            json_str(&r.category)
+        ));
         match &r.outcome {
-            Outcome::Validated { errors, warnings, rule_ids } => {
+            Outcome::Validated {
+                errors,
+                warnings,
+                rule_ids,
+            } => {
                 s.push_str(&format!(
                     "\"parsed\": true, \"errors\": {}, \"warnings\": {}, \"rules\": [",
                     errors, warnings

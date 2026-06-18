@@ -222,11 +222,7 @@ fn is_leap(year: i32) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Emit R16.5 for every empty `<dc:*>` element inside `<metadata>`.
-fn check_empty_dc_elements(
-    content: &str,
-    file: &Option<PathBuf>,
-    report: &mut ValidationReport,
-) {
+fn check_empty_dc_elements(content: &str, file: &Option<PathBuf>, report: &mut ValidationReport) {
     let metadata = match extract_element_inner(content, "metadata") {
         Some(s) => s,
         None => return,
@@ -251,11 +247,7 @@ fn check_empty_dc_elements(
 // ---------------------------------------------------------------------------
 
 /// Emit R16.6 for empty `<meta>` or `<x-metadata>` children of `<metadata>`.
-fn check_empty_meta_children(
-    content: &str,
-    file: &Option<PathBuf>,
-    report: &mut ValidationReport,
-) {
+fn check_empty_meta_children(content: &str, file: &Option<PathBuf>, report: &mut ValidationReport) {
     let metadata = match extract_element_inner(content, "metadata") {
         Some(s) => s,
         None => return,
@@ -285,7 +277,12 @@ fn check_empty_meta_children(
 /// its value without needing child text: name/content, property, refines, etc.
 fn meta_has_payload_attributes(open_tag_body: &str) -> bool {
     let candidates = [
-        "name=", "content=", "property=", "refines=", "scheme=", "id=",
+        "name=",
+        "content=",
+        "property=",
+        "refines=",
+        "scheme=",
+        "id=",
     ];
     for cand in candidates {
         if open_tag_body.contains(cand) {
@@ -458,9 +455,7 @@ fn find_close_tag_pos(content: &str, tag: &str) -> Option<usize> {
         if name_end >= bytes.len() {
             return None;
         }
-        if bytes[name_start..name_end].eq_ignore_ascii_case(tag_bytes)
-            && bytes[name_end] == b'>'
-        {
+        if bytes[name_start..name_end].eq_ignore_ascii_case(tag_bytes) && bytes[name_end] == b'>' {
             return Some(abs);
         }
         cursor = abs + 1;
@@ -492,8 +487,7 @@ fn iter_child_elements(inner: &str) -> Vec<(String, String)> {
         let mut name_end = name_start;
         while name_end < bytes.len() {
             let ch = bytes[name_end];
-            if ch == b' ' || ch == b'\t' || ch == b'\n' || ch == b'\r' || ch == b'/' || ch == b'>'
-            {
+            if ch == b' ' || ch == b'\t' || ch == b'\n' || ch == b'\r' || ch == b'/' || ch == b'>' {
                 break;
             }
             name_end += 1;
@@ -548,8 +542,7 @@ fn iter_child_elements_with_tag_body(inner: &str) -> Vec<(String, String, String
         let mut name_end = name_start;
         while name_end < bytes.len() {
             let ch = bytes[name_end];
-            if ch == b' ' || ch == b'\t' || ch == b'\n' || ch == b'\r' || ch == b'/' || ch == b'>'
-            {
+            if ch == b' ' || ch == b'\t' || ch == b'\n' || ch == b'\r' || ch == b'/' || ch == b'>' {
                 break;
             }
             name_end += 1;
@@ -574,11 +567,7 @@ fn iter_child_elements_with_tag_body(inner: &str) -> Vec<(String, String, String
             None => break,
         };
         let text = &inner[body_start..body_end];
-        out.push((
-            name.to_string(),
-            text.to_string(),
-            trimmed_open.to_string(),
-        ));
+        out.push((name.to_string(), text.to_string(), trimmed_open.to_string()));
         cursor = body_end + close.len();
     }
     out
@@ -597,7 +586,11 @@ fn iter_elements_with_body(content: &str, tag: &str) -> Vec<(String, String)> {
         };
         let open_body_raw = &content[after..gt];
         let self_closing = open_body_raw.trim_end().ends_with('/');
-        let open_body = open_body_raw.trim().trim_end_matches('/').trim().to_string();
+        let open_body = open_body_raw
+            .trim()
+            .trim_end_matches('/')
+            .trim()
+            .to_string();
         if self_closing {
             out.push((open_body, String::new()));
             cursor = gt + 1;
@@ -792,7 +785,10 @@ mod tests {
         check_empty_dc_elements(opf, &None, &mut r);
         assert!(fired(&r, "R16.5"));
         assert_eq!(
-            r.findings.iter().filter(|f| f.rule_id == Some("R16.5")).count(),
+            r.findings
+                .iter()
+                .filter(|f| f.rule_id == Some("R16.5"))
+                .count(),
             1
         );
     }

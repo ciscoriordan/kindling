@@ -116,7 +116,9 @@ impl ExtractedEpub {
         }
         let path = self.root.join(href);
         let content = fs::read_to_string(&path).ok();
-        self.raw_cache.borrow_mut().insert(href.to_string(), content.clone());
+        self.raw_cache
+            .borrow_mut()
+            .insert(href.to_string(), content.clone());
         content
     }
 
@@ -138,9 +140,13 @@ impl ExtractedEpub {
     pub fn css(&self, href: &str) -> Option<Ref<'_, String>> {
         if !self.css_text_cache.borrow().contains_key(href) {
             let text = self.read(href)?;
-            self.css_text_cache.borrow_mut().insert(href.to_string(), text);
+            self.css_text_cache
+                .borrow_mut()
+                .insert(href.to_string(), text);
         }
-        Some(Ref::map(self.css_text_cache.borrow(), |m| m.get(href).unwrap()))
+        Some(Ref::map(self.css_text_cache.borrow(), |m| {
+            m.get(href).unwrap()
+        }))
     }
 
     /// Parsed CSS summary for `href`. Returns `None` only when the file cannot
@@ -153,7 +159,9 @@ impl ExtractedEpub {
             let text = {
                 if !self.css_text_cache.borrow().contains_key(href) {
                     let raw = self.read(href)?;
-                    self.css_text_cache.borrow_mut().insert(href.to_string(), raw);
+                    self.css_text_cache
+                        .borrow_mut()
+                        .insert(href.to_string(), raw);
                 }
                 let cache = self.css_text_cache.borrow();
                 cache.get(href).unwrap().clone()
@@ -305,9 +313,8 @@ fn belongs_to_namespace(before: &str) -> bool {
     if before.ends_with("@namespace") {
         return true;
     }
-    let after_ident = before.trim_end_matches(|c: char| {
-        c.is_ascii_alphanumeric() || c == '-' || c == '_'
-    });
+    let after_ident =
+        before.trim_end_matches(|c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_');
     if after_ident.len() == before.len() {
         return false;
     }
@@ -324,7 +331,9 @@ fn find_font_faces(text: &str) -> Vec<CssFontFace> {
     while let Some(idx) = lower[pos..].find("@font-face") {
         let abs = pos + idx;
         let after = abs + "@font-face".len();
-        let Some(open_rel) = text[after..].find('{') else { break };
+        let Some(open_rel) = text[after..].find('{') else {
+            break;
+        };
         let open = after + open_rel;
         let mut depth = 0i32;
         let mut close = None;
@@ -405,7 +414,9 @@ fn find_media_features(text: &str) -> Vec<(usize, String)> {
             }
         }
         let after = abs + "@media".len();
-        let Some(brace_rel) = text[after..].find('{') else { break };
+        let Some(brace_rel) = text[after..].find('{') else {
+            break;
+        };
         let prelude = &lower[after..after + brace_rel];
         let prelude_orig_start = after;
         for feat in UNSUPPORTED_MEDIA_FEATURES {
@@ -482,8 +493,8 @@ fn find_property_names(text: &str) -> HashSet<String> {
                 // of a longer token) or if the name starts with `--` (custom
                 // property).
                 let name = &lower[j..name_end];
-                let boundary_ok = j == 0
-                    || (!bytes[j - 1].is_ascii_alphanumeric() && bytes[j - 1] != b'_');
+                let boundary_ok =
+                    j == 0 || (!bytes[j - 1].is_ascii_alphanumeric() && bytes[j - 1] != b'_');
                 if boundary_ok && !name.starts_with("--") {
                     out.insert(name.to_string());
                 }

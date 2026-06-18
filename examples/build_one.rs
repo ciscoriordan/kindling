@@ -16,9 +16,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (temp_dir, opf_path) = kindling::epub::extract_epub(&input)?;
 
     kindling::mobi::build_mobi(
-        &opf_path,
-        &output,
-        false, // no_compress
+        &opf_path, &output, false, // no_compress
         false, // headwords_only
         None,  // srcs_data
         false, // include_cmet

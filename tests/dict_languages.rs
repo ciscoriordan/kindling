@@ -29,7 +29,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use kindling::ordt::{uses_generated_ordt, OrdtTables};
+use kindling::ordt::{OrdtTables, uses_generated_ordt};
 
 struct Lang {
     code: &'static str,
@@ -44,15 +44,60 @@ struct Lang {
 }
 
 const LANGS: &[Lang] = &[
-    Lang { code: "ja", indx_lang: 17, mobi_locale: 0x0011, ordt_type: 0 },
-    Lang { code: "zh", indx_lang: 4, mobi_locale: 0x0004, ordt_type: 0 },
-    Lang { code: "ko", indx_lang: 0x0412, mobi_locale: 0x0412, ordt_type: 0 },
-    Lang { code: "ar", indx_lang: 1, mobi_locale: 0x0001, ordt_type: 0 },
-    Lang { code: "en", indx_lang: 9, mobi_locale: 0x0009, ordt_type: 0 },
-    Lang { code: "el", indx_lang: 8, mobi_locale: 0x0008, ordt_type: 0 },
-    Lang { code: "fr", indx_lang: 12, mobi_locale: 0x040C, ordt_type: 0 },
-    Lang { code: "ru", indx_lang: 25, mobi_locale: 0x0019, ordt_type: 0 },
-    Lang { code: "tr", indx_lang: 31, mobi_locale: 0x001F, ordt_type: 0 },
+    Lang {
+        code: "ja",
+        indx_lang: 17,
+        mobi_locale: 0x0011,
+        ordt_type: 0,
+    },
+    Lang {
+        code: "zh",
+        indx_lang: 4,
+        mobi_locale: 0x0004,
+        ordt_type: 0,
+    },
+    Lang {
+        code: "ko",
+        indx_lang: 0x0412,
+        mobi_locale: 0x0412,
+        ordt_type: 0,
+    },
+    Lang {
+        code: "ar",
+        indx_lang: 1,
+        mobi_locale: 0x0001,
+        ordt_type: 0,
+    },
+    Lang {
+        code: "en",
+        indx_lang: 9,
+        mobi_locale: 0x0009,
+        ordt_type: 0,
+    },
+    Lang {
+        code: "el",
+        indx_lang: 8,
+        mobi_locale: 0x0008,
+        ordt_type: 0,
+    },
+    Lang {
+        code: "fr",
+        indx_lang: 12,
+        mobi_locale: 0x040C,
+        ordt_type: 0,
+    },
+    Lang {
+        code: "ru",
+        indx_lang: 25,
+        mobi_locale: 0x0019,
+        ordt_type: 0,
+    },
+    Lang {
+        code: "tr",
+        indx_lang: 31,
+        mobi_locale: 0x001F,
+        ordt_type: 0,
+    },
 ];
 
 fn lang_dir(code: &str) -> PathBuf {
@@ -91,7 +136,8 @@ fn build(code: &str, subdir: &str) -> ParsedMobi {
 }
 
 fn load(path: &Path) -> ParsedMobi {
-    parse_mobi_file(&fs::read(path).unwrap()).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
+    parse_mobi_file(&fs::read(path).unwrap())
+        .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
 }
 
 fn orth_primary(parsed: &ParsedMobi) -> (usize, &[u8]) {
@@ -104,13 +150,20 @@ fn orth_primary(parsed: &ParsedMobi) -> (usize, &[u8]) {
 /// index (`< oentries`, value is `ORDT2[idx]`) or a literal code point.
 fn decode_percharacter(label: &[u8], cps: &[u32], two_byte: bool) -> String {
     let units: Vec<u32> = if two_byte {
-        label.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]]) as u32).collect()
+        label
+            .chunks_exact(2)
+            .map(|c| u16::from_be_bytes([c[0], c[1]]) as u32)
+            .collect()
     } else {
         label.iter().map(|&b| b as u32).collect()
     };
     let mut s = String::new();
     for v in units {
-        let cp = if (v as usize) < cps.len() { cps[v as usize] } else { v };
+        let cp = if (v as usize) < cps.len() {
+            cps[v as usize]
+        } else {
+            v
+        };
         if let Some(c) = char::from_u32(cp) {
             s.push(c);
         }
@@ -119,7 +172,10 @@ fn decode_percharacter(label: &[u8], cps: &[u32], two_byte: bool) -> String {
 }
 
 fn decode_utf16(label: &[u8]) -> String {
-    let units: Vec<u16> = label.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+    let units: Vec<u16> = label
+        .chunks_exact(2)
+        .map(|c| u16::from_be_bytes([c[0], c[1]]))
+        .collect();
     String::from_utf16(&units).expect("UTF-16BE label")
 }
 
@@ -130,8 +186,16 @@ fn check_common(code: &str, c: &Lang, parsed: &ParsedMobi, idx: usize, primary: 
     assert_eq!(u32_be(primary, 28), 0xFDEA, "{code}: INDX encoding");
 
     let rec0 = parsed.palmdb.record(&parsed.raw, 0);
-    assert_eq!(u32_be(rec0, 92), c.mobi_locale, "{code}: MOBI locale (neutral LCID)");
-    assert_eq!(u32_be(rec0, 96), c.mobi_locale, "{code}: MOBI input language");
+    assert_eq!(
+        u32_be(rec0, 92),
+        c.mobi_locale,
+        "{code}: MOBI locale (neutral LCID)"
+    );
+    assert_eq!(
+        u32_be(rec0, 96),
+        c.mobi_locale,
+        "{code}: MOBI input language"
+    );
 
     let indx = parse_indx(parsed, idx).unwrap_or_else(|e| panic!("{code}: parse INDX: {e}"));
     // Every entry must point at a real article. The first headword used to
@@ -170,7 +234,10 @@ fn check_generated_ordt(code: &str, c: &Lang, parsed: &ParsedMobi, idx: usize, p
         .iter()
         .map(|h| decode_percharacter(&tables.encode_label(h), &ordt.codepoints, two_byte))
         .collect();
-    assert_eq!(decoded, want, "{code}: decoded headword set (fold-normalized)");
+    assert_eq!(
+        decoded, want,
+        "{code}: decoded headword set (fold-normalized)"
+    );
 
     // Byte parity with the committed kindlegen build: identical ORDT table
     // and identical headword-label set for the all-literal scripts; for
@@ -185,7 +252,10 @@ fn check_generated_ordt(code: &str, c: &Lang, parsed: &ParsedMobi, idx: usize, p
     );
     let rordt = parse_indx_ordt2(rprimary).unwrap();
     if code != "ja" {
-        assert_eq!(ordt.codepoints, rordt.codepoints, "{code}: ORDT2 table vs kindlegen");
+        assert_eq!(
+            ordt.codepoints, rordt.codepoints,
+            "{code}: ORDT2 table vs kindlegen"
+        );
         let mut kl: Vec<Vec<u8>> = indx.entries.iter().map(|e| e.label.clone()).collect();
         let rindx = parse_indx(&reference, ridx).unwrap();
         let mut rl: Vec<Vec<u8>> = rindx.entries.iter().map(|e| e.label.clone()).collect();
@@ -196,9 +266,16 @@ fn check_generated_ordt(code: &str, c: &Lang, parsed: &ParsedMobi, idx: usize, p
 
     // Entries are in non-decreasing collation order under the rebuilt table
     // (built above from the same headwords in document order).
-    let keys: Vec<Vec<u32>> = indx.entries.iter().map(|e| tables.sort_key(&e.label)).collect();
+    let keys: Vec<Vec<u32>> = indx
+        .entries
+        .iter()
+        .map(|e| tables.sort_key(&e.label))
+        .collect();
     for i in 1..keys.len() {
-        assert!(keys[i - 1] <= keys[i], "{code}: entries out of collation order at {i}");
+        assert!(
+            keys[i - 1] <= keys[i],
+            "{code}: entries out of collation order at {i}"
+        );
     }
 }
 
@@ -208,11 +285,18 @@ fn check_utf16(code: &str, _c: &Lang, parsed: &ParsedMobi, idx: usize, primary: 
     assert_eq!(u32_be(primary, 168), 7, "{code}: Greek blob oentries");
 
     let indx = parse_indx(parsed, idx).unwrap();
-    let decoded: BTreeSet<String> = indx.entries.iter().map(|e| decode_utf16(&e.label)).collect();
+    let decoded: BTreeSet<String> = indx
+        .entries
+        .iter()
+        .map(|e| decode_utf16(&e.label))
+        .collect();
     let want: BTreeSet<String> = headwords(code).into_iter().collect();
     assert_eq!(decoded, want, "{code}: decoded headword set");
     for pair in indx.entries.windows(2) {
-        assert!(pair[0].label <= pair[1].label, "{code}: labels out of UTF-16BE order");
+        assert!(
+            pair[0].label <= pair[1].label,
+            "{code}: labels out of UTF-16BE order"
+        );
     }
 }
 

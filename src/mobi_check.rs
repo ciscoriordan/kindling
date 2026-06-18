@@ -10,7 +10,6 @@
 /// This exists because v0.7.4 happily produced comic MOBIs with no EXTH 503
 /// and no author records, which the Kindle indexer silently refused to add
 /// to the library. There was no build-time signal that anything was wrong.
-
 use std::path::Path;
 
 /// Expectations the caller can pass in for cross-checking against the
@@ -161,7 +160,10 @@ fn parse_palmdb(data: &[u8], report: &mut CheckReport) -> Option<PalmDb> {
     }
     report.pass();
 
-    Some(PalmDb { offsets, num_records })
+    Some(PalmDb {
+        offsets,
+        num_records,
+    })
 }
 
 /// Represents a parsed MOBI section (KF7 or KF8).
@@ -310,7 +312,9 @@ fn parse_mobi_section(
 }
 
 fn find_exth_string<'a>(exth: &'a [(u32, Vec<u8>)], rtype: u32) -> Option<&'a [u8]> {
-    exth.iter().find(|(t, _)| *t == rtype).map(|(_, d)| d.as_slice())
+    exth.iter()
+        .find(|(t, _)| *t == rtype)
+        .map(|(_, d)| d.as_slice())
 }
 
 fn check_exth_metadata(
@@ -451,7 +455,8 @@ fn check_cover_image(
             if is_comic {
                 report.fail(
                     "comic MOBI has no first-image record pointer; the library \
-                     cannot find a cover and the book will not open".to_string(),
+                     cannot find a cover and the book will not open"
+                        .to_string(),
                 );
             }
             return;
@@ -472,7 +477,8 @@ fn check_cover_image(
         if exth201.is_none() {
             report.fail(
                 "comic MOBI is missing EXTH 201 (cover_offset); the Kindle \
-                 library thumbnail pipeline depends on this".to_string(),
+                 library thumbnail pipeline depends on this"
+                    .to_string(),
             );
         } else {
             report.pass();
@@ -487,7 +493,8 @@ fn check_cover_image(
         if exth202.is_none() {
             report.fail(
                 "comic MOBI is missing EXTH 202 (thumbnail_offset); the library \
-                 grid tile will fall back to the grey placeholder".to_string(),
+                 grid tile will fall back to the grey placeholder"
+                    .to_string(),
             );
         } else {
             report.pass();
@@ -498,7 +505,8 @@ fn check_cover_image(
                 report.fail(
                     "comic MOBI has EXTH 201 and EXTH 202 pointing at the same \
                      record; the thumbnail must live in its own downscaled \
-                     record or the Kindle library tile renders as placeholder".to_string(),
+                     record or the Kindle library tile renders as placeholder"
+                        .to_string(),
                 );
             } else {
                 report.pass();
@@ -553,7 +561,8 @@ fn check_cover_image(
         };
         // JPEG SOI: FF D8, PNG: 89 50 4E 47.
         let is_jpeg = rec.len() >= 2 && rec[0] == 0xFF && rec[1] == 0xD8;
-        let is_png = rec.len() >= 4 && rec[0] == 0x89 && rec[1] == 0x50 && rec[2] == 0x4E && rec[3] == 0x47;
+        let is_png =
+            rec.len() >= 4 && rec[0] == 0x89 && rec[1] == 0x50 && rec[2] == 0x4E && rec[3] == 0x47;
         if !is_jpeg && !is_png {
             report.fail(format!(
                 "EXTH {}: cover/thumb record {} is not a JPEG or PNG (first bytes {:02X?})",
@@ -830,7 +839,9 @@ fn check_structural_records(data: &[u8], palmdb: &PalmDb, report: &mut CheckRepo
     let mut saw_fdst = false;
 
     for i in 0..palmdb.num_records {
-        let Some(rec) = palmdb.record(data, i) else { continue };
+        let Some(rec) = palmdb.record(data, i) else {
+            continue;
+        };
         if rec.len() < 4 {
             continue;
         }
@@ -855,7 +866,10 @@ fn check_structural_records(data: &[u8], palmdb: &PalmDb, report: &mut CheckRepo
                     ));
                 }
                 let idxt_off = read_u32_be(rec, 20).unwrap_or(0) as usize;
-                if idxt_off != 0 && idxt_off + 4 <= rec.len() && &rec[idxt_off..idxt_off + 4] != b"IDXT" {
+                if idxt_off != 0
+                    && idxt_off + 4 <= rec.len()
+                    && &rec[idxt_off..idxt_off + 4] != b"IDXT"
+                {
                     report.warn(format!(
                         "INDX record {}: IDXT offset {} does not point at IDXT magic",
                         i, idxt_off
@@ -902,10 +916,7 @@ fn check_structural_records(data: &[u8], palmdb: &PalmDb, report: &mut CheckRepo
 
 /// Print a one-line summary of the report to stderr and return Ok if no P0
 /// errors were found, or an Err with a formatted message otherwise.
-pub fn report_result(
-    path: &Path,
-    report: &CheckReport,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub fn report_result(path: &Path, report: &CheckReport) -> Result<(), Box<dyn std::error::Error>> {
     if report.has_errors() {
         eprintln!("MOBI check FAILED ({}):", path.display());
         for err in &report.p0_errors {
@@ -941,7 +952,8 @@ mod tests {
 
     /// Minimal book OPF + HTML fixture on disk.
     fn make_book_fixture(dir: &std::path::Path) -> std::path::PathBuf {
-        let html = r#"<html><head><title>T</title></head><body><h1>Ch</h1><p>Hi.</p></body></html>"#;
+        let html =
+            r#"<html><head><title>T</title></head><body><h1>Ch</h1><p>Hi.</p></body></html>"#;
         std::fs::write(dir.join("content.html"), html).unwrap();
         let opf = r#"<?xml version="1.0" encoding="UTF-8"?>
 <package version="2.0" xmlns="http://www.idpf.org/2007/opf">
@@ -970,7 +982,8 @@ mod tests {
         let opf = make_book_fixture(&dir);
         let out = dir.join("out.mobi");
         crate::mobi::build_mobi(
-            &opf, &out, true, false, None, false, true, false, false, None, false, false, false, false,
+            &opf, &out, true, false, None, false, true, false, false, None, false, false, false,
+            false,
         )
         .expect("build should succeed");
 
@@ -1002,7 +1015,8 @@ mod tests {
         let opf = make_book_fixture(&dir);
         let out = dir.join("out.mobi");
         crate::mobi::build_mobi(
-            &opf, &out, true, false, None, false, true, false, false, None, false, false, false, false,
+            &opf, &out, true, false, None, false, true, false, false, None, false, false, false,
+            false,
         )
         .unwrap();
 
@@ -1038,10 +1052,7 @@ mod tests {
             "expected P0 failure for missing EXTH 100"
         );
         assert!(
-            report
-                .p0_errors
-                .iter()
-                .any(|e| e.contains("EXTH 100")),
+            report.p0_errors.iter().any(|e| e.contains("EXTH 100")),
             "error should mention EXTH 100, got {:?}",
             report.p0_errors
         );
@@ -1056,7 +1067,8 @@ mod tests {
         let opf = make_book_fixture(&dir);
         let out = dir.join("out.mobi");
         crate::mobi::build_mobi(
-            &opf, &out, true, false, None, false, true, false, false, None, false, false, false, false,
+            &opf, &out, true, false, None, false, true, false, false, None, false, false, false,
+            false,
         )
         .unwrap();
 

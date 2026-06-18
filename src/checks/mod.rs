@@ -5,22 +5,22 @@ use crate::validate::ValidationReport;
 
 pub mod content;
 pub mod cover;
+pub mod cross_refs;
+pub mod css_forbidden;
 pub mod dict;
 pub mod file_case;
+pub mod filenames;
+pub mod fixed_layout;
 pub mod helpers;
+pub mod image_integrity;
 pub mod images;
+pub mod manifest_spine;
+pub mod metadata;
 pub mod nav_links;
 pub mod navigation;
-pub mod parse_encoding;
-pub mod fixed_layout;
-pub mod manifest_spine;
 pub mod opf_grammar;
+pub mod parse_encoding;
 pub mod toc_extras;
-pub mod cross_refs;
-pub mod filenames;
-pub mod image_integrity;
-pub mod css_forbidden;
-pub mod metadata;
 
 /// A single-purpose validator module. Each impl owns one or more rule ids.
 pub trait Check: Sync {

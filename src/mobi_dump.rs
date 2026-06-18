@@ -11,7 +11,6 @@
 /// dumper needs a different output shape and we'd rather iterate on it
 /// without perturbing the readback checker. If the overlap becomes painful
 /// we can factor both onto a shared primitives module later.
-
 use std::fmt::Write as _;
 use std::io;
 use std::path::Path;
@@ -132,7 +131,10 @@ fn parse_palmdb(data: &[u8]) -> io::Result<PalmDb> {
     for i in 0..num_records {
         offsets.push(read_u32_be(data, 78 + i * 8).unwrap_or(0));
     }
-    Ok(PalmDb { offsets, num_records })
+    Ok(PalmDb {
+        offsets,
+        num_records,
+    })
 }
 
 fn dump_palmdb_header(out: &mut String, data: &[u8], palmdb: &PalmDb) {
@@ -340,7 +342,11 @@ fn dump_mobi_section(
     let _ = writeln!(out, "mobi.flis_count = {}", flis_count);
     let _ = writeln!(out, "mobi.srcs_index = {}", opt_record_idx(srcs_index));
     let _ = writeln!(out, "mobi.srcs_count = {}", srcs_count);
-    let _ = writeln!(out, "mobi.extra_record_flags = 0x{:08X}", extra_record_flags);
+    let _ = writeln!(
+        out,
+        "mobi.extra_record_flags = 0x{:08X}",
+        extra_record_flags
+    );
     let _ = writeln!(
         out,
         "mobi.primary_index_record = {}",
@@ -407,7 +413,12 @@ fn dump_mobi_section(
 /// `.value` line; numeric u32-valued records emit a `.value_u32` line; other
 /// records emit `.value_hex`.
 fn dump_exth_record(out: &mut String, rtype: u32, payload: &[u8]) {
-    let _ = writeln!(out, "exth[{}].name = {}", rtype, quote_str(exth_type_name(rtype)));
+    let _ = writeln!(
+        out,
+        "exth[{}].name = {}",
+        rtype,
+        quote_str(exth_type_name(rtype))
+    );
     let _ = writeln!(out, "exth[{}].value_len = {}", rtype, payload.len());
 
     if is_numeric_exth(rtype) && payload.len() == 4 {
@@ -728,24 +739,12 @@ fn dump_indx_record(
     let _ = writeln!(out, "{}.encoding = {}", label, encoding);
     let _ = writeln!(out, "{}.language = {}", label, language);
     let _ = writeln!(out, "{}.total_entry_count = {}", label, total_entry_count);
-    let _ = writeln!(
-        out,
-        "{}.ordt_offset_legacy = {}",
-        label, ordt_offset_legacy
-    );
+    let _ = writeln!(out, "{}.ordt_offset_legacy = {}", label, ordt_offset_legacy);
     let _ = writeln!(out, "{}.ligt_offset = {}", label, ligt_offset);
     let _ = writeln!(out, "{}.ligt_entries = {}", label, ligt_entries);
-    let _ = writeln!(
-        out,
-        "{}.cncx_records_count = {}",
-        label, cncx_records_count
-    );
+    let _ = writeln!(out, "{}.cncx_records_count = {}", label, cncx_records_count);
     let _ = writeln!(out, "{}.ordt_type = {}", label, ordt_type);
-    let _ = writeln!(
-        out,
-        "{}.ordt_entries_count = {}",
-        label, ordt_entries_count
-    );
+    let _ = writeln!(out, "{}.ordt_entries_count = {}", label, ordt_entries_count);
     let _ = writeln!(out, "{}.ordt1_offset = {}", label, ordt1_offset);
     let _ = writeln!(out, "{}.ordt2_offset = {}", label, ordt2_offset);
     let _ = writeln!(out, "{}.tagx_offset_field = {}", label, tagx_offset);
@@ -811,8 +810,10 @@ fn dump_indx_record(
             entry_offsets.push(off);
         }
         // Emit the IDXT offsets as a compact list for easy visual diffing.
-        let offsets_list: Vec<String> =
-            entry_offsets.iter().map(|o| format!("0x{:04X}", o)).collect();
+        let offsets_list: Vec<String> = entry_offsets
+            .iter()
+            .map(|o| format!("0x{:04X}", o))
+            .collect();
         let _ = writeln!(
             out,
             "{}.idxt_offsets = [{}]",
@@ -846,8 +847,7 @@ fn dump_indx_record(
             continue;
         }
         let entry = &rec[off..end];
-        let decoded =
-            decode_indx_entry(entry, gen_number, effective_ordt, effective_schema);
+        let decoded = decode_indx_entry(entry, gen_number, effective_ordt, effective_schema);
         let _ = writeln!(out, "{}.entries[{}] = {}", label, i, decoded);
     }
 }
@@ -1205,9 +1205,8 @@ pub fn dump_mobi(path: &Path) -> io::Result<String> {
     if let Some(kf7) = kf7.as_ref() {
         if let Some((_, payload)) = kf7.exth.iter().find(|(t, _)| *t == 121) {
             if payload.len() == 4 {
-                let boundary = u32::from_be_bytes([
-                    payload[0], payload[1], payload[2], payload[3],
-                ]) as usize;
+                let boundary =
+                    u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]) as usize;
                 if boundary < palmdb.num_records {
                     let _ = writeln!(&mut out, "kf8.boundary_record = {}", boundary);
                     if let Some(kf8_rec0) = palmdb.record(&data, boundary) {

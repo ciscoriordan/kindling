@@ -39,8 +39,8 @@ use std::fmt;
 use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 
-use zip::write::SimpleFileOptions;
 use zip::CompressionMethod;
+use zip::write::SimpleFileOptions;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -165,10 +165,9 @@ impl Fix {
                 "rewrote body-id link {} to {} in {}",
                 original_href, new_href, file
             ),
-            Fix::AddedLanguageTag { file, lang, source } => format!(
-                "added dc:language={} ({}) to {}",
-                lang, source, file
-            ),
+            Fix::AddedLanguageTag { file, lang, source } => {
+                format!("added dc:language={} ({}) to {}", lang, source, file)
+            }
             Fix::RemovedStrayImg { file, count } => format!(
                 "removed {} stray img tag{} in {}",
                 count,
@@ -246,10 +245,7 @@ impl fmt::Display for RepairError {
             RepairError::Io(e) => write!(f, "I/O error: {}", e),
             RepairError::ZipRead(e) => write!(f, "ZIP read error: {}", e),
             RepairError::ZipWrite(e) => write!(f, "ZIP write error: {}", e),
-            RepairError::DrmEncrypted => write!(
-                f,
-                "EPUB is DRM-encrypted; refusing to repair"
-            ),
+            RepairError::DrmEncrypted => write!(f, "EPUB is DRM-encrypted; refusing to repair"),
             RepairError::NotAnEpub => write!(f, "input is not a valid EPUB archive"),
             RepairError::MalformedOpf(m) => write!(f, "malformed OPF: {}", m),
         }
@@ -303,8 +299,7 @@ fn repair_epub_inner(
     // on subsequent runs.
     let archive_bytes = std::fs::read(input)?;
     let reader = Cursor::new(&archive_bytes);
-    let mut archive =
-        zip::ZipArchive::new(reader).map_err(|_| RepairError::NotAnEpub)?;
+    let mut archive = zip::ZipArchive::new(reader).map_err(|_| RepairError::NotAnEpub)?;
 
     // Refuse DRM-encrypted files. Presence of META-INF/encryption.xml or
     // META-INF/rights.xml is the universal marker (Adobe ADEPT, B&N Social
@@ -333,9 +328,7 @@ fn repair_epub_inner(
     let mut order: Vec<String> = Vec::new();
 
     for i in 0..archive.len() {
-        let mut entry = archive
-            .by_index(i)
-            .map_err(RepairError::ZipRead)?;
+        let mut entry = archive.by_index(i).map_err(RepairError::ZipRead)?;
         let name = entry.name().to_string();
         if entry.is_dir() {
             continue;
@@ -354,9 +347,7 @@ fn repair_epub_inner(
             // We already consumed the reader above on failure. Re-open by
             // index to read fresh bytes.
             drop(entry);
-            let mut entry = archive
-                .by_index(i)
-                .map_err(RepairError::ZipRead)?;
+            let mut entry = archive.by_index(i).map_err(RepairError::ZipRead)?;
             entry.read_to_end(&mut buf)?;
             binary_files.insert(name, buf);
         } else {
@@ -375,9 +366,7 @@ fn repair_epub_inner(
     let container_xml = text_files
         .get(&container_key)
         .cloned()
-        .ok_or_else(|| {
-            RepairError::MalformedOpf("container.xml not readable as text".into())
-        })?;
+        .ok_or_else(|| RepairError::MalformedOpf("container.xml not readable as text".into()))?;
     let opf_path = parse_container_rootfile(&container_xml)
         .ok_or_else(|| RepairError::MalformedOpf("no rootfile in container.xml".into()))?;
 
@@ -432,10 +421,7 @@ fn repair_epub_inner(
         // Write mimetype first if present. The text-file classifier picks
         // up `mimetype` only if it has a recognised extension, which it
         // does not, so it lives in `binary_files`.
-        let mimetype_key = order
-            .iter()
-            .find(|n| n.as_str() == "mimetype")
-            .cloned();
+        let mimetype_key = order.iter().find(|n| n.as_str() == "mimetype").cloned();
         if let Some(ref k) = mimetype_key {
             let bytes = binary_files
                 .get(k)
@@ -483,8 +469,8 @@ fn repair_epub_inner(
 /// Matches the reference set: html, xhtml, htm, xml, svg, css, opf, ncx.
 fn is_text_file(name: &str) -> bool {
     match extension(name).as_deref() {
-        Some("html") | Some("xhtml") | Some("htm") | Some("xml") | Some("svg")
-        | Some("css") | Some("opf") | Some("ncx") => true,
+        Some("html") | Some("xhtml") | Some("htm") | Some("xml") | Some("svg") | Some("css")
+        | Some("opf") | Some("ncx") => true,
         _ => false,
     }
 }
@@ -685,15 +671,13 @@ fn extract_attr(tag: &str, attr: &str) -> Option<String> {
 /// warning, never to block the repair.
 const ALLOWED_LANGUAGES: &[&str] = &[
     // ISO 639-1
-    "af", "gsw", "ar", "eu", "nb", "br", "ca", "zh", "kw", "co", "da", "nl", "stq",
-    "en", "fi", "fr", "fy", "gl", "de", "gu", "hi", "is", "ga", "it", "ja", "lb",
-    "mr", "ml", "gv", "frr", "nn", "pl", "pt", "oc", "rm", "sco", "gd", "es", "sv",
-    "ta", "cy",
-    // ISO 639-2
-    "afr", "ara", "eus", "baq", "nob", "bre", "cat", "zho", "chi", "cor", "cos",
-    "dan", "nld", "dut", "eng", "fin", "fra", "fre", "fry", "glg", "deu", "ger",
-    "guj", "hin", "isl", "ice", "gle", "ita", "jpn", "ltz", "mar", "mal", "glv",
-    "nor", "nno", "por", "oci", "roh", "gla", "spa", "swe", "tam", "cym", "wel",
+    "af", "gsw", "ar", "eu", "nb", "br", "ca", "zh", "kw", "co", "da", "nl", "stq", "en", "fi",
+    "fr", "fy", "gl", "de", "gu", "hi", "is", "ga", "it", "ja", "lb", "mr", "ml", "gv", "frr",
+    "nn", "pl", "pt", "oc", "rm", "sco", "gd", "es", "sv", "ta", "cy", // ISO 639-2
+    "afr", "ara", "eus", "baq", "nob", "bre", "cat", "zho", "chi", "cor", "cos", "dan", "nld",
+    "dut", "eng", "fin", "fra", "fre", "fry", "glg", "deu", "ger", "guj", "hin", "isl", "ice",
+    "gle", "ita", "jpn", "ltz", "mar", "mal", "glv", "nor", "nno", "por", "oci", "roh", "gla",
+    "spa", "swe", "tam", "cym", "wel",
 ];
 
 /// Ensure the OPF has a `<dc:language>`. If missing, inject one with `en`
@@ -795,10 +779,7 @@ fn fix_stray_img(text_files: &mut BTreeMap<String, String>, fixes: &mut Vec<Fix>
         let (new_content, count) = strip_stray_img(&content);
         if count > 0 {
             text_files.insert(name.clone(), new_content);
-            fixes.push(Fix::RemovedStrayImg {
-                file: name,
-                count,
-            });
+            fixes.push(Fix::RemovedStrayImg { file: name, count });
         }
     }
 }
@@ -825,13 +806,7 @@ fn strip_stray_img(html: &str) -> (String, usize) {
         // match `<imgsomething`.
         let after = tag_start + "<img".len();
         let ch = bytes.get(after).copied().unwrap_or(b' ');
-        if !(ch == b' '
-            || ch == b'\t'
-            || ch == b'\n'
-            || ch == b'\r'
-            || ch == b'>'
-            || ch == b'/')
-        {
+        if !(ch == b' ' || ch == b'\t' || ch == b'\n' || ch == b'\r' || ch == b'>' || ch == b'/') {
             out.push_str(&html[i..after]);
             i = after;
             continue;
@@ -1054,11 +1029,7 @@ mod tests {
 
     fn write_tmp(name: &str, bytes: &[u8]) -> PathBuf {
         let mut p = std::env::temp_dir();
-        p.push(format!(
-            "kindling_repair_{}_{}",
-            std::process::id(),
-            name
-        ));
+        p.push(format!("kindling_repair_{}_{}", std::process::id(), name));
         std::fs::write(&p, bytes).unwrap();
         p
     }
@@ -1075,7 +1046,9 @@ mod tests {
     fn list_entries(path: &Path) -> Vec<String> {
         let bytes = std::fs::read(path).unwrap();
         let mut a = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
-        (0..a.len()).map(|i| a.by_index(i).unwrap().name().to_string()).collect()
+        (0..a.len())
+            .map(|i| a.by_index(i).unwrap().name().to_string())
+            .collect()
     }
 
     // ------------------- Fix 1: AddedXmlDeclaration ------------------------
@@ -1094,11 +1067,7 @@ mod tests {
         let output = write_tmp("enc_pos_out.epub", b"");
         let report = repair_epub(&input, &output).unwrap();
 
-        assert_eq!(
-            report.fixes_applied.len(),
-            1,
-            "expected exactly one fix"
-        );
+        assert_eq!(report.fixes_applied.len(), 1, "expected exactly one fix");
         assert!(matches!(
             &report.fixes_applied[0],
             Fix::AddedXmlDeclaration { file } if file == "OEBPS/ch1.xhtml"
@@ -1146,10 +1115,12 @@ mod tests {
         let input = write_tmp("enc_upper_in.epub", &epub);
         let output = write_tmp("enc_upper_out.epub", b"");
         let report = repair_epub(&input, &output).unwrap();
-        assert!(!report.fixes_applied.iter().any(|f| matches!(
-            f,
-            Fix::AddedXmlDeclaration { .. }
-        )));
+        assert!(
+            !report
+                .fixes_applied
+                .iter()
+                .any(|f| matches!(f, Fix::AddedXmlDeclaration { .. }))
+        );
     }
 
     // ------------------- Fix 2: FixedBodyIdLink ----------------------------
@@ -1176,7 +1147,11 @@ mod tests {
             .iter()
             .filter(|f| matches!(f, Fix::FixedBodyIdLink { .. }))
             .count();
-        assert_eq!(count, 1, "expected one body-id link rewrite: {:?}", report.fixes_applied);
+        assert_eq!(
+            count, 1,
+            "expected one body-id link rewrite: {:?}",
+            report.fixes_applied
+        );
 
         let out_toc = read_epub_entry(&output, "OEBPS/toc.xhtml").unwrap();
         assert!(out_toc.contains("href=\"ch1.xhtml\""));
@@ -1199,7 +1174,12 @@ mod tests {
         let input = write_tmp("bodyid_neg_in.epub", &epub);
         let output = write_tmp("bodyid_neg_out.epub", b"");
         let report = repair_epub(&input, &output).unwrap();
-        assert!(!report.fixes_applied.iter().any(|f| matches!(f, Fix::FixedBodyIdLink { .. })));
+        assert!(
+            !report
+                .fixes_applied
+                .iter()
+                .any(|f| matches!(f, Fix::FixedBodyIdLink { .. }))
+        );
     }
 
     #[test]
@@ -1225,7 +1205,12 @@ mod tests {
         let input = write_tmp("bodyid_ncx_in.epub", &epub);
         let output = write_tmp("bodyid_ncx_out.epub", b"");
         let report = repair_epub(&input, &output).unwrap();
-        assert!(report.fixes_applied.iter().any(|f| matches!(f, Fix::FixedBodyIdLink { .. })));
+        assert!(
+            report
+                .fixes_applied
+                .iter()
+                .any(|f| matches!(f, Fix::FixedBodyIdLink { .. }))
+        );
         let out_ncx = read_epub_entry(&output, "OEBPS/toc.ncx").unwrap();
         assert!(out_ncx.contains("src=\"ch1.xhtml\""));
         assert!(!out_ncx.contains("ch1.xhtml#top"));
@@ -1263,10 +1248,12 @@ mod tests {
         let input = write_tmp("lang_neg_in.epub", &epub);
         let output = write_tmp("lang_neg_out.epub", b"");
         let report = repair_epub(&input, &output).unwrap();
-        assert!(!report
-            .fixes_applied
-            .iter()
-            .any(|f| matches!(f, Fix::AddedLanguageTag { .. })));
+        assert!(
+            !report
+                .fixes_applied
+                .iter()
+                .any(|f| matches!(f, Fix::AddedLanguageTag { .. }))
+        );
     }
 
     #[test]
@@ -1289,10 +1276,12 @@ mod tests {
         let input = write_tmp("lang_warn_in.epub", &epub);
         let output = write_tmp("lang_warn_out.epub", b"");
         let report = repair_epub(&input, &output).unwrap();
-        assert!(!report
-            .fixes_applied
-            .iter()
-            .any(|f| matches!(f, Fix::AddedLanguageTag { .. })));
+        assert!(
+            !report
+                .fixes_applied
+                .iter()
+                .any(|f| matches!(f, Fix::AddedLanguageTag { .. }))
+        );
         assert_eq!(report.warnings.len(), 1);
         assert!(report.warnings[0].message.contains("xx"));
     }
@@ -1336,10 +1325,12 @@ mod tests {
         let input = write_tmp("img_neg_in.epub", &epub);
         let output = write_tmp("img_neg_out.epub", b"");
         let report = repair_epub(&input, &output).unwrap();
-        assert!(!report
-            .fixes_applied
-            .iter()
-            .any(|f| matches!(f, Fix::RemovedStrayImg { .. })));
+        assert!(
+            !report
+                .fixes_applied
+                .iter()
+                .any(|f| matches!(f, Fix::RemovedStrayImg { .. }))
+        );
     }
 
     #[test]
@@ -1377,10 +1368,12 @@ mod tests {
         let input = write_tmp("img_empty_in.epub", &epub);
         let output = write_tmp("img_empty_out.epub", b"");
         let report = repair_epub(&input, &output).unwrap();
-        assert!(report
-            .fixes_applied
-            .iter()
-            .any(|f| matches!(f, Fix::RemovedStrayImg { .. })));
+        assert!(
+            report
+                .fixes_applied
+                .iter()
+                .any(|f| matches!(f, Fix::RemovedStrayImg { .. }))
+        );
     }
 
     // ------------------- Idempotence ---------------------------------------
@@ -1432,7 +1425,11 @@ mod tests {
         let input = write_tmp("clean_in.epub", &epub);
         let output = write_tmp("clean_out.epub", b"");
         let report = repair_epub(&input, &output).unwrap();
-        assert!(!report.any_fixes(), "clean epub should need no fixes: {:?}", report.fixes_applied);
+        assert!(
+            !report.any_fixes(),
+            "clean epub should need no fixes: {:?}",
+            report.fixes_applied
+        );
         let in_bytes = std::fs::read(&input).unwrap();
         let out_bytes = std::fs::read(&output).unwrap();
         assert_eq!(
@@ -1495,8 +1492,8 @@ mod tests {
         {
             let cursor = Cursor::new(&mut buf);
             let mut w = zip::ZipWriter::new(cursor);
-            let deflate = SimpleFileOptions::default()
-                .compression_method(CompressionMethod::Deflated);
+            let deflate =
+                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
             w.start_file("hello.txt", deflate).unwrap();
             w.write_all(b"hello").unwrap();
             w.finish().unwrap();
@@ -1647,7 +1644,8 @@ mod tests {
 
     #[test]
     fn find_body_id_ignores_other_tags() {
-        let html = r#"<html><head><title id="x">T</title></head><body id="body1"><p>x</p></body></html>"#;
+        let html =
+            r#"<html><head><title id="x">T</title></head><body id="body1"><p>x</p></body></html>"#;
         assert_eq!(find_body_id(html), Some("body1".to_string()));
     }
 

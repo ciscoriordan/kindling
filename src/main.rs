@@ -7,7 +7,6 @@
 /// Kindlegen-compatible usage:
 ///     kindling input.epub
 ///     kindling input.opf -o output.mobi -dont_append_source -verbose
-
 use kindling::{
     comic, epub, extracted::ExtractedEpub, kdp_rules, mobi, mobi_check, mobi_dump, mobi_rewrite,
     opf, repair, stardict, validate,
@@ -19,7 +18,11 @@ use std::process;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "kindling", about = "Kindle MOBI builder for dictionaries and books", version)]
+#[command(
+    name = "kindling",
+    about = "Kindle MOBI builder for dictionaries and books",
+    version
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -658,19 +661,43 @@ fn do_build(
             e.opf.is_dictionary(),
         ));
     } else if let Ok(parsed) = opf::OPFData::parse(&opf_path) {
-        opf_snapshot = Some((parsed.title.clone(), parsed.author.clone(), parsed.is_dictionary()));
+        opf_snapshot = Some((
+            parsed.title.clone(),
+            parsed.author.clone(),
+            parsed.is_dictionary(),
+        ));
     }
 
     let result = match extracted.as_ref() {
         Some(e) => mobi::build_mobi_from_extracted(
-            e, output_path, no_compress, headwords_only,
-            srcs_data.as_deref(), include_cmet, no_hd_images, creator_tag, kf8_only, None, kindle_limits, self_check,
+            e,
+            output_path,
+            no_compress,
+            headwords_only,
+            srcs_data.as_deref(),
+            include_cmet,
+            no_hd_images,
+            creator_tag,
+            kf8_only,
+            None,
+            kindle_limits,
+            self_check,
             false, // kindlegen_parity: only meaningful for the comic path
             strict_accents,
         ),
         None => mobi::build_mobi(
-            &opf_path, output_path, no_compress, headwords_only,
-            srcs_data.as_deref(), include_cmet, no_hd_images, creator_tag, kf8_only, None, kindle_limits, self_check,
+            &opf_path,
+            output_path,
+            no_compress,
+            headwords_only,
+            srcs_data.as_deref(),
+            include_cmet,
+            no_hd_images,
+            creator_tag,
+            kf8_only,
+            None,
+            kindle_limits,
+            self_check,
             false, // kindlegen_parity: only meaningful for the comic path
             strict_accents,
         ),
@@ -691,7 +718,11 @@ fn do_build(
                 .unwrap_or(("", "", false));
             let expected = mobi_check::ExpectedMetadata {
                 title: if title.is_empty() { None } else { Some(title) },
-                author: if author.is_empty() { None } else { Some(author) },
+                author: if author.is_empty() {
+                    None
+                } else {
+                    Some(author)
+                },
                 is_comic: false,
                 is_dictionary,
             };
@@ -736,7 +767,21 @@ fn main() {
             input.with_extension("mobi")
         };
 
-        do_build(&input, &output_path, false, false, true, false, false, false, false, true, no_validate, !no_self_check, false);
+        do_build(
+            &input,
+            &output_path,
+            false,
+            false,
+            true,
+            false,
+            false,
+            false,
+            false,
+            true,
+            no_validate,
+            !no_self_check,
+            false,
+        );
     } else {
         let cli = Cli::parse();
 
@@ -815,7 +860,21 @@ fn main() {
                 };
 
                 let output_path = resolve_output_path(&input, output, effective_kf8_only);
-                do_build(&input, &output_path, no_compress, headwords_only, !no_embed_source, include_cmet, no_hd_images, creator_tag, effective_kf8_only, effective_kindle_limits, no_validate, !no_self_check, strict_accents);
+                do_build(
+                    &input,
+                    &output_path,
+                    no_compress,
+                    headwords_only,
+                    !no_embed_source,
+                    include_cmet,
+                    no_hd_images,
+                    creator_tag,
+                    effective_kf8_only,
+                    effective_kindle_limits,
+                    no_validate,
+                    !no_self_check,
+                    strict_accents,
+                );
             }
             Commands::Comic {
                 input,
@@ -850,7 +909,11 @@ fn main() {
                 let profile = match comic::get_profile(&device) {
                     Some(p) => p,
                     None => {
-                        eprintln!("Error: unknown device '{}'. Valid devices: {}", device, comic::valid_device_names());
+                        eprintln!(
+                            "Error: unknown device '{}'. Valid devices: {}",
+                            device,
+                            comic::valid_device_names()
+                        );
                         process::exit(1);
                     }
                 };
@@ -892,7 +955,10 @@ fn main() {
                     "ebok" => Some("EBOK".to_string()),
                     "pdoc" => None, // None means default PDOC
                     other => {
-                        eprintln!("Warning: unknown --doc-type '{}', using default 'pdoc'", other);
+                        eprintln!(
+                            "Warning: unknown --doc-type '{}', using default 'pdoc'",
+                            other
+                        );
                         None
                     }
                 };
@@ -903,7 +969,9 @@ fn main() {
                         if page_num >= 1 {
                             comic::CoverSource::PageNumber(page_num)
                         } else {
-                            eprintln!("Warning: cover page number must be >= 1, treating as file path");
+                            eprintln!(
+                                "Warning: cover page number must be >= 1, treating as file path"
+                            );
                             comic::CoverSource::FilePath(PathBuf::from(c))
                         }
                     } else {
@@ -918,7 +986,9 @@ fn main() {
                 // but has been a no-op since comics stopped defaulting to
                 // embed-source in v0.7.7. Only `--embed-source` turns it on.
                 if no_embed_source {
-                    eprintln!("Note: --no-embed-source is now the default for comics and has no effect");
+                    eprintln!(
+                        "Note: --no-embed-source is now the default for comics and has no effect"
+                    );
                 }
                 let effective_embed_source = embed_source;
 
@@ -952,7 +1022,11 @@ fn main() {
                 match comic::build_comic_with_options(&input, &output_path, &profile, &options) {
                     Ok(()) => {
                         let format_name = if effective_kf8_only { "AZW3" } else { "MOBI" };
-                        eprintln!("Comic {} built successfully: {}", format_name, output_path.display());
+                        eprintln!(
+                            "Comic {} built successfully: {}",
+                            format_name,
+                            output_path.display()
+                        );
                     }
                     Err(e) => {
                         eprintln!("Error: {}", e);
@@ -1313,7 +1387,11 @@ fn do_rewrite_metadata(
 
     let updates = mobi_rewrite::MetadataUpdates {
         title,
-        authors: if authors.is_empty() { None } else { Some(authors) },
+        authors: if authors.is_empty() {
+            None
+        } else {
+            Some(authors)
+        },
         publisher,
         description,
         language,
@@ -1359,7 +1437,11 @@ fn do_rewrite_metadata(
     } else {
         let prefix = if dry_run { "(dry-run) " } else { "" };
         if report.no_op {
-            eprintln!("{}No metadata changes needed for {}", prefix, input.display());
+            eprintln!(
+                "{}No metadata changes needed for {}",
+                prefix,
+                input.display()
+            );
         } else {
             for change in &report.changes {
                 eprintln!("{}{}", prefix, describe_exth_change(change));
@@ -1397,7 +1479,10 @@ fn describe_exth_change(change: &mobi_rewrite::ExthChange) -> String {
             preview_bytes(old_value),
             preview_bytes(new_value)
         ),
-        mobi_rewrite::ExthChange::Removed { exth_type, old_value } => {
+        mobi_rewrite::ExthChange::Removed {
+            exth_type,
+            old_value,
+        } => {
             format!("removed EXTH {} ({})", exth_type, preview_bytes(old_value))
         }
     }

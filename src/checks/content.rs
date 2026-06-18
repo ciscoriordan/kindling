@@ -3,39 +3,27 @@
 use std::fs;
 use std::path::PathBuf;
 
+use super::Check;
 use super::helpers::{
     contains_tag, count_table_rows, find_nested_p, has_negative_css, heading_with_text_align,
     try_parse_xml,
 };
-use super::Check;
 use crate::extracted::ExtractedEpub;
 use crate::validate::ValidationReport;
 
 /// Tags explicitly called out as unsupported in KPG 6.1 / 18.1.
 const UNSUPPORTED_TAGS: &[&str] = &[
-    "script",
-    "form",
-    "input",
-    "button",
-    "select",
-    "textarea",
-    "fieldset",
-    "legend",
-    "frame",
-    "frameset",
-    "iframe",
-    "noframes",
-    "applet",
-    "embed",
-    "object",
-    "canvas",
+    "script", "form", "input", "button", "select", "textarea", "fieldset", "legend", "frame",
+    "frameset", "iframe", "noframes", "applet", "embed", "object", "canvas",
 ];
 
 pub struct ContentChecks;
 
 impl Check for ContentChecks {
     fn ids(&self) -> &'static [&'static str] {
-        &["R6.1", "R6.2", "R6.3", "R6.4", "R10.3.1", "R10.5.1", "R17.1"]
+        &[
+            "R6.1", "R6.2", "R6.3", "R6.4", "R10.3.1", "R10.5.1", "R17.1",
+        ]
     }
 
     fn run(&self, epub: &ExtractedEpub, report: &mut ValidationReport) {

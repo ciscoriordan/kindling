@@ -107,8 +107,11 @@ pub fn build_stardict(
     // Sort by g_ascii_strcasecmp; ties keep original spine order (stable).
     let mut order: Vec<usize> = (0..cleaned.len()).collect();
     order.sort_by(|&a, &b| {
-        ascii_case_cmp(cleaned[a].headword.as_bytes(), cleaned[b].headword.as_bytes())
-            .then(a.cmp(&b))
+        ascii_case_cmp(
+            cleaned[a].headword.as_bytes(),
+            cleaned[b].headword.as_bytes(),
+        )
+        .then(a.cmp(&b))
     });
 
     // Write .dict + .idx
@@ -168,9 +171,7 @@ pub fn build_stardict(
         }
     }
     // Sort by form (g_ascii_strcasecmp), then by index for determinism.
-    syn_pairs.sort_by(|a, b| {
-        ascii_case_cmp(a.0.as_bytes(), b.0.as_bytes()).then(a.1.cmp(&b.1))
-    });
+    syn_pairs.sort_by(|a, b| ascii_case_cmp(a.0.as_bytes(), b.0.as_bytes()).then(a.1.cmp(&b.1)));
     // Deduplicate exact (form, index) pairs that may arise when an
     // inflection is filed under multiple lemmas with the same casing.
     syn_pairs.dedup();
@@ -307,26 +308,25 @@ fn clean_entry_html(html: &str, headword: &str) -> String {
 
     let entry_open = ENTRY_OPEN.get_or_init(|| Regex::new(r"<idx:entry\b[^>]*>\s*").unwrap());
     let entry_close = ENTRY_CLOSE.get_or_init(|| Regex::new(r"\s*</idx:entry>").unwrap());
-    let orth_self = ORTH_SELF.get_or_init(|| {
-        Regex::new(r#"<idx:orth\b[^>]*\svalue="([^"]*)"[^>]*/>"#).unwrap()
-    });
+    let orth_self = ORTH_SELF
+        .get_or_init(|| Regex::new(r#"<idx:orth\b[^>]*\svalue="([^"]*)"[^>]*/>"#).unwrap());
     let orth_open = ORTH_OPEN.get_or_init(|| Regex::new(r"<idx:orth\b[^>]*>").unwrap());
     let orth_close = ORTH_CLOSE.get_or_init(|| Regex::new(r"</idx:orth>").unwrap());
     let iform = IFORM.get_or_init(|| Regex::new(r"<idx:iform\b[^/]*/>\s*").unwrap());
-    let infl_block = INFL_BLOCK
-        .get_or_init(|| Regex::new(r"(?s)<idx:infl\b[^>]*>.*?</idx:infl>\s*").unwrap());
+    let infl_block =
+        INFL_BLOCK.get_or_init(|| Regex::new(r"(?s)<idx:infl\b[^>]*>.*?</idx:infl>\s*").unwrap());
     let short_open = SHORT_OPEN.get_or_init(|| Regex::new(r"<idx:short\b[^>]*>").unwrap());
     let short_close = SHORT_CLOSE.get_or_init(|| Regex::new(r"</idx:short>").unwrap());
-    let mbp_pagebreak = MBP_PAGEBREAK.get_or_init(|| Regex::new(r"<mbp:pagebreak\b[^>]*/?>").unwrap());
+    let mbp_pagebreak =
+        MBP_PAGEBREAK.get_or_init(|| Regex::new(r"<mbp:pagebreak\b[^>]*/?>").unwrap());
     let mbp_frameset = MBP_FRAMESET.get_or_init(|| Regex::new(r"</?mbp:frameset\b[^>]*>").unwrap());
     // Match either `href="content_NN.html#hw_X"` or `href="#hw_X"` and
     // capture the X. The `(?:content_\d+\.html)?` group makes the per-letter
     // file optional so same-file links rewrite too. Headwords in lemma's
     // output are raw UTF-8, so `[^"]+` is sufficient — no percent-decoding
     // is needed.
-    let crossref = CROSSREF.get_or_init(|| {
-        Regex::new(r#"href\s*=\s*"(?:content_\d+\.html)?#hw_([^"]+)""#).unwrap()
-    });
+    let crossref = CROSSREF
+        .get_or_init(|| Regex::new(r#"href\s*=\s*"(?:content_\d+\.html)?#hw_([^"]+)""#).unwrap());
     let blank_lines = BLANK_LINES.get_or_init(|| Regex::new(r"\n\s*\n").unwrap());
 
     let mut s = html.to_string();
@@ -354,7 +354,9 @@ fn clean_entry_html(html: &str, headword: &str) -> String {
     //    Both inter-letter (`content_19.html#hw_τη`) and same-page (`#hw_τη`)
     //    links collapse to the same StarDict-native form, since StarDict
     //    has no concept of per-letter files.
-    s = crossref.replace_all(&s, r#"href="bword://$1""#).into_owned();
+    s = crossref
+        .replace_all(&s, r#"href="bword://$1""#)
+        .into_owned();
 
     // Collapse the blank lines left behind by the above stripping so the
     // .dict body is compact. We deliberately do not re-flow whitespace
@@ -462,14 +464,23 @@ mod tests {
     #[test]
     fn ascii_case_cmp_orders_case_insensitively() {
         assert_eq!(ascii_case_cmp(b"alpha", b"BETA"), std::cmp::Ordering::Less);
-        assert_eq!(ascii_case_cmp(b"Bravo", b"bravo"), std::cmp::Ordering::Equal);
-        assert_eq!(ascii_case_cmp(b"charlie", b"Bravo"), std::cmp::Ordering::Greater);
+        assert_eq!(
+            ascii_case_cmp(b"Bravo", b"bravo"),
+            std::cmp::Ordering::Equal
+        );
+        assert_eq!(
+            ascii_case_cmp(b"charlie", b"Bravo"),
+            std::cmp::Ordering::Greater
+        );
     }
 
     #[test]
     fn ascii_case_cmp_is_bytewise_for_non_ascii() {
         // Greek alpha (CE B1) sorts before Greek beta (CE B2) by raw bytes.
-        assert_eq!(ascii_case_cmp("α".as_bytes(), "β".as_bytes()), std::cmp::Ordering::Less);
+        assert_eq!(
+            ascii_case_cmp("α".as_bytes(), "β".as_bytes()),
+            std::cmp::Ordering::Less
+        );
     }
 
     #[test]
@@ -480,8 +491,16 @@ mod tests {
 </idx:entry>"#;
         let cleaned = clean_entry_html(raw, "alpha");
         assert!(!cleaned.contains("idx:"), "idx markup leaked: {}", cleaned);
-        assert!(cleaned.contains("<b>alpha</b>"), "headword missing: {}", cleaned);
-        assert!(cleaned.contains("<p>Definition.</p>"), "definition missing: {}", cleaned);
+        assert!(
+            cleaned.contains("<b>alpha</b>"),
+            "headword missing: {}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("<p>Definition.</p>"),
+            "definition missing: {}",
+            cleaned
+        );
     }
 
     #[test]
@@ -508,7 +527,11 @@ mod tests {
             "expected bword rewrite, got: {}",
             cleaned
         );
-        assert!(!cleaned.contains("content_19.html"), "stale per-letter href: {}", cleaned);
+        assert!(
+            !cleaned.contains("content_19.html"),
+            "stale per-letter href: {}",
+            cleaned
+        );
     }
 
     #[test]
@@ -532,7 +555,11 @@ mod tests {
             "external href should be untouched, got: {}",
             cleaned
         );
-        assert!(!cleaned.contains("bword://"), "non-internal link should not be rewritten: {}", cleaned);
+        assert!(
+            !cleaned.contains("bword://"),
+            "non-internal link should not be rewritten: {}",
+            cleaned
+        );
     }
 
     #[test]
@@ -541,7 +568,11 @@ mod tests {
         // should be left alone since it is not a headword reference.
         let raw = r##"<idx:entry><idx:orth value="x"/><p><a href="content_05.html#note1">note</a></p></idx:entry>"##;
         let cleaned = clean_entry_html(raw, "x");
-        assert!(cleaned.contains(r##"href="content_05.html#note1""##), "got: {}", cleaned);
+        assert!(
+            cleaned.contains(r##"href="content_05.html#note1""##),
+            "got: {}",
+            cleaned
+        );
         assert!(!cleaned.contains("bword://"), "got: {}", cleaned);
     }
 
@@ -600,7 +631,10 @@ mod tests {
             augment_bookname_with_lang_pair("My Dict", "el", ""),
             "My Dict"
         );
-        assert_eq!(augment_bookname_with_lang_pair("My Dict", "", ""), "My Dict");
+        assert_eq!(
+            augment_bookname_with_lang_pair("My Dict", "", ""),
+            "My Dict"
+        );
     }
 
     #[test]
@@ -642,7 +676,9 @@ mod tests {
         assert!(bookname_has_detectable_lang_pair("EN-FR"));
         assert!(bookname_has_detectable_lang_pair("Lemma Dict grc-eng v2"));
         // Long words are not codes.
-        assert!(!bookname_has_detectable_lang_pair("Greek-English Dictionary"));
+        assert!(!bookname_has_detectable_lang_pair(
+            "Greek-English Dictionary"
+        ));
         assert!(!bookname_has_detectable_lang_pair("Lemma Greek Dictionary"));
         // Single-letter words don't qualify.
         assert!(!bookname_has_detectable_lang_pair("a-b dict"));

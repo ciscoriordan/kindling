@@ -4,7 +4,6 @@
 ///   Sub-index 1: Headword entries (TAGX tags 1, 2) with ORDT/SPL sort tables
 ///   Sub-index 2: Character mapping (TAGX tag 37)
 ///   Sub-index 3: "default" index name (TAGX tag 1)
-
 use std::collections::HashSet;
 
 use rayon::prelude::*;
@@ -285,7 +284,11 @@ pub fn build_orth_indx(
         total_sub1,
         lookup_terms.len()
     );
-    eprintln!("  Sub-index 2: {} records ({} chars)", sub2.len(), chars.len());
+    eprintln!(
+        "  Sub-index 2: {} records ({} chars)",
+        sub2.len(),
+        chars.len()
+    );
     eprintln!("  Sub-index 3: {} records (default)", sub3.len());
 
     let mut all = sub1;
@@ -639,11 +642,16 @@ mod tests {
         // because the primary INDX header declares encoding 0xFDEA. Raw
         // 1-byte-per-char ASCII crashed iscc/mobi whenever a label had an
         // odd byte count (e.g. "charlie" = 7 bytes).
-        assert_eq!(encode_indx_label("djed"),
-                   vec![0x00, b'd', 0x00, b'j', 0x00, b'e', 0x00, b'd']);
-        assert_eq!(encode_indx_label("charlie"),
-                   vec![0x00, b'c', 0x00, b'h', 0x00, b'a', 0x00, b'r',
-                        0x00, b'l', 0x00, b'i', 0x00, b'e']);
+        assert_eq!(
+            encode_indx_label("djed"),
+            vec![0x00, b'd', 0x00, b'j', 0x00, b'e', 0x00, b'd']
+        );
+        assert_eq!(
+            encode_indx_label("charlie"),
+            vec![
+                0x00, b'c', 0x00, b'h', 0x00, b'a', 0x00, b'r', 0x00, b'l', 0x00, b'i', 0x00, b'e'
+            ]
+        );
     }
 
     #[test]
@@ -651,8 +659,12 @@ mod tests {
         // The UTF-16BE invariant guarantees even-byte labels, which downstream
         // 2-byte-per-char parsers (iscc/mobi, KindleUnpack) require.
         for s in ["a", "ab", "abc", "abcdefg", "θάλασσα", "café", "日本語"] {
-            assert_eq!(encode_indx_label(s).len() % 2, 0,
-                "label {:?} must produce even byte count", s);
+            assert_eq!(
+                encode_indx_label(s).len() % 2,
+                0,
+                "label {:?} must produce even byte count",
+                s
+            );
         }
     }
 
@@ -675,7 +687,9 @@ mod tests {
         assert_eq!(&rec[idxt_off..idxt_off + 4], b"IDXT", "IDXT magic");
         let n = rd32(rec, 24) as usize;
         let offsets: Vec<usize> = (0..n)
-            .map(|i| u16::from_be_bytes([rec[idxt_off + 4 + 2 * i], rec[idxt_off + 5 + 2 * i]]) as usize)
+            .map(|i| {
+                u16::from_be_bytes([rec[idxt_off + 4 + 2 * i], rec[idxt_off + 5 + 2 * i]]) as usize
+            })
             .collect();
         offsets
             .iter()
@@ -693,7 +707,11 @@ mod tests {
         // Issue #12: a primary routing entry is [u8 label_len][label]
         // [u16 BE leaf entry count]. The label length is a full byte (not
         // 5-bit masked) and the count is the leaf's entry count (not 0).
-        let tagx = build_tagx(&[TagDef { tag_id: 1, num_values: 1, mask: 0x01 }]);
+        let tagx = build_tagx(&[TagDef {
+            tag_id: 1,
+            num_values: 1,
+            mask: 0x01,
+        }]);
         // 20 ASCII chars -> 40 UTF-16BE bytes, past the old 31-byte (5-bit)
         // cap, to prove routing labels are no longer truncated.
         let long = encode_indx_label("abcdefghijklmnopqrst");
@@ -702,7 +720,14 @@ mod tests {
         let last_labels = vec![long.clone(), short.clone()];
         let data_counts = vec![4970u32, 1041u32];
         let rec = build_indx_primary(
-            &tagx, 2, 6011, &last_labels, &data_counts, 199, 9, OrdtMode::None,
+            &tagx,
+            2,
+            6011,
+            &last_labels,
+            &data_counts,
+            199,
+            9,
+            OrdtMode::None,
         );
 
         let routing = parse_routing(&rec);
@@ -742,7 +767,10 @@ mod tests {
         let routing = parse_routing(primary1);
         assert_eq!(routing.len(), n, "one routing entry per leaf");
         let routing_counts: Vec<u32> = routing.iter().map(|(_, c)| *c).collect();
-        assert_eq!(routing_counts, data_counts, "routing counts match leaf entry counts");
+        assert_eq!(
+            routing_counts, data_counts,
+            "routing counts match leaf entry counts"
+        );
         assert_eq!(
             routing_counts.iter().sum::<u32>(),
             terms.len() as u32,
@@ -750,6 +778,9 @@ mod tests {
         );
         // The last routing label of each leaf must be the last term in that
         // leaf (non-empty), so navigation has a real signpost.
-        assert!(routing.iter().all(|(l, _)| !l.is_empty()), "routing labels present");
+        assert!(
+            routing.iter().all(|(l, _)| !l.is_empty()),
+            "routing labels present"
+        );
     }
 }

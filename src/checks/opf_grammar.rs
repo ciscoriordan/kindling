@@ -56,7 +56,15 @@ impl Check for OpfGrammarChecks {
 
 /// Reserved prefixes that must not be rebound to a non-standard URI.
 const RESERVED_PREFIXES: &[&str] = &[
-    "dcterms", "epub", "marc", "media", "onix", "opf", "rendition", "schema", "xsd",
+    "dcterms",
+    "epub",
+    "marc",
+    "media",
+    "onix",
+    "opf",
+    "rendition",
+    "schema",
+    "xsd",
 ];
 
 /// Known EPUB property names (from default vocabulary) that need no prefix.
@@ -75,7 +83,15 @@ const KNOWN_UNPREFIXED_PROPERTIES: &[&str] = &[
 
 /// Prefixes that ship in the default EPUB 3 package vocabulary.
 const DEFAULT_PREFIXES: &[&str] = &[
-    "dcterms", "marc", "media", "onix", "rendition", "schema", "xsd", "opf", "epub",
+    "dcterms",
+    "marc",
+    "media",
+    "onix",
+    "rendition",
+    "schema",
+    "xsd",
+    "opf",
+    "epub",
 ];
 
 /// Reserved-prefix canonical URIs for the OPF_006 check.
@@ -134,7 +150,10 @@ fn scan_package_prefix_attr(
         if !name_tok.ends_with(':') || name_tok.len() < 2 {
             report.emit(
                 "R8.1",
-                format!("'{}' is not a valid prefix name (expected 'name:').", name_tok),
+                format!(
+                    "'{}' is not a valid prefix name (expected 'name:').",
+                    name_tok
+                ),
             );
             continue;
         }
@@ -212,7 +231,9 @@ fn extract_attr_value(tag_body: &str, attr: &str) -> Option<String> {
 /// underscore/dash/period).
 fn is_valid_ncname(s: &str) -> bool {
     let mut chars = s.chars();
-    let Some(first) = chars.next() else { return false };
+    let Some(first) = chars.next() else {
+        return false;
+    };
     if !first.is_ascii_alphabetic() && first != '_' {
         return false;
     }
@@ -227,13 +248,17 @@ fn is_valid_ncname(s: &str) -> bool {
 /// Best-effort URI validity check: require `scheme:` with a plausible scheme
 /// and a non-empty body.
 fn is_valid_uri(s: &str) -> bool {
-    let Some(colon) = s.find(':') else { return false };
+    let Some(colon) = s.find(':') else {
+        return false;
+    };
     if colon == 0 || colon + 1 >= s.len() {
         return false;
     }
     let scheme = &s[..colon];
     let mut scheme_chars = scheme.chars();
-    let Some(first) = scheme_chars.next() else { return false };
+    let Some(first) = scheme_chars.next() else {
+        return false;
+    };
     if !first.is_ascii_alphabetic() {
         return false;
     }
@@ -293,7 +318,12 @@ fn parse_manifest_items(opf_text: &str) -> Vec<ManifestItem> {
             .map(|s| s.to_string())
             .collect();
         if !id.is_empty() || !href.is_empty() {
-            out.push(ManifestItem { id, href, media_type, properties });
+            out.push(ManifestItem {
+                id,
+                href,
+                media_type,
+                properties,
+            });
         }
         rest = &rest[end..];
     }
@@ -351,9 +381,7 @@ fn run_property_grammar_rules(
 
             if let Some((prefix, local)) = split_prefixed_property(prop) {
                 // Prefixed property: default or declared prefix must know it.
-                if !DEFAULT_PREFIXES.contains(&prefix)
-                    && !declared_prefixes.contains_key(prefix)
-                {
+                if !DEFAULT_PREFIXES.contains(&prefix) && !declared_prefixes.contains_key(prefix) {
                     report.emit_at(
                         "R8.10",
                         format!(
@@ -445,8 +473,7 @@ fn run_content_vs_property_rules(
     report: &mut ValidationReport,
 ) {
     // Index manifest items by id for spine lookups.
-    let by_id: HashMap<String, &ManifestItem> =
-        items.iter().map(|i| (i.id.clone(), i)).collect();
+    let by_id: HashMap<String, &ManifestItem> = items.iter().map(|i| (i.id.clone(), i)).collect();
 
     for (id, _href) in &epub.opf.spine_items {
         let Some(item) = by_id.get(id) else { continue };
@@ -464,7 +491,10 @@ fn run_content_vs_property_rules(
         if features.has_mathml && !declared.contains("mathml") {
             report.emit_at(
                 "R8.6",
-                format!("Item '{}' uses MathML but does not declare properties=\"mathml\".", id),
+                format!(
+                    "Item '{}' uses MathML but does not declare properties=\"mathml\".",
+                    id
+                ),
                 file.clone(),
                 None,
             );
@@ -472,7 +502,10 @@ fn run_content_vs_property_rules(
         if features.has_svg && !declared.contains("svg") {
             report.emit_at(
                 "R8.6",
-                format!("Item '{}' uses SVG but does not declare properties=\"svg\".", id),
+                format!(
+                    "Item '{}' uses SVG but does not declare properties=\"svg\".",
+                    id
+                ),
                 file.clone(),
                 None,
             );
@@ -480,7 +513,10 @@ fn run_content_vs_property_rules(
         if features.has_scripted && !declared.contains("scripted") {
             report.emit_at(
                 "R8.6",
-                format!("Item '{}' contains scripts but does not declare properties=\"scripted\".", id),
+                format!(
+                    "Item '{}' contains scripts but does not declare properties=\"scripted\".",
+                    id
+                ),
                 file.clone(),
                 None,
             );
@@ -502,7 +538,10 @@ fn run_content_vs_property_rules(
         if declared.contains("mathml") && !features.has_mathml {
             report.emit_at(
                 "R8.7",
-                format!("Item '{}' declares properties=\"mathml\" but no <math> is present.", id),
+                format!(
+                    "Item '{}' declares properties=\"mathml\" but no <math> is present.",
+                    id
+                ),
                 file.clone(),
                 None,
             );
@@ -510,7 +549,10 @@ fn run_content_vs_property_rules(
         if declared.contains("svg") && !features.has_svg {
             report.emit_at(
                 "R8.7",
-                format!("Item '{}' declares properties=\"svg\" but no <svg> is present.", id),
+                format!(
+                    "Item '{}' declares properties=\"svg\" but no <svg> is present.",
+                    id
+                ),
                 file.clone(),
                 None,
             );
@@ -518,7 +560,10 @@ fn run_content_vs_property_rules(
         if declared.contains("scripted") && !features.has_scripted {
             report.emit_at(
                 "R8.7",
-                format!("Item '{}' declares properties=\"scripted\" but no <script> is present.", id),
+                format!(
+                    "Item '{}' declares properties=\"scripted\" but no <script> is present.",
+                    id
+                ),
                 file.clone(),
                 None,
             );
@@ -581,9 +626,16 @@ fn has_element_start(content: &str, name: &str) -> bool {
 
 /// True if any `src=` or `href=` attribute value begins with http:// or https://.
 fn has_remote_attr(content: &str) -> bool {
-    for needle in &["src=\"http://", "src='http://", "href=\"http://", "href='http://",
-                    "src=\"https://", "src='https://", "href=\"https://", "href='https://"]
-    {
+    for needle in &[
+        "src=\"http://",
+        "src='http://",
+        "href=\"http://",
+        "href='http://",
+        "src=\"https://",
+        "src='https://",
+        "href=\"https://",
+        "href='https://",
+    ] {
         if content.contains(needle) {
             return true;
         }
@@ -633,7 +685,10 @@ mod tests {
         let mut report = fresh_report();
         let map = scan_package_prefix_attr(opf, &mut report);
         assert!(rule_ids(&report).is_empty());
-        assert_eq!(map.get("foo").map(String::as_str), Some("http://example.com/foo"));
+        assert_eq!(
+            map.get("foo").map(String::as_str),
+            Some("http://example.com/foo")
+        );
     }
 
     // ---- R8.2 Duplicate prefix ----
@@ -850,7 +905,10 @@ mod tests {
 
     #[test]
     fn split_prefixed_property_works() {
-        assert_eq!(split_prefixed_property("rendition:layout"), Some(("rendition", "layout")));
+        assert_eq!(
+            split_prefixed_property("rendition:layout"),
+            Some(("rendition", "layout"))
+        );
         assert_eq!(split_prefixed_property("cover-image"), None);
     }
 
@@ -865,7 +923,8 @@ mod tests {
 
     #[test]
     fn detect_mathml_ignored_when_only_xmlns() {
-        let html = br#"<html xmlns:math="http://exslt.org/math"><body><p>no math here</p></body></html>"#;
+        let html =
+            br#"<html xmlns:math="http://exslt.org/math"><body><p>no math here</p></body></html>"#;
         let f = detect_content_features(html);
         assert!(!f.has_mathml);
     }
@@ -905,10 +964,8 @@ mod tests {
         use std::collections::HashMap;
         use std::path::PathBuf;
 
-        let tmp = std::env::temp_dir().join(format!(
-            "kindling_opf_grammar_test_{}",
-            std::process::id()
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("kindling_opf_grammar_test_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&tmp);
         let opf_path = tmp.join("x.opf");
         let _ = std::fs::write(&opf_path, b"<package version=\"3.0\"></package>");
@@ -940,8 +997,7 @@ mod tests {
         // use this helper are still fine because we only dereference it.
         let _ = opf;
         let _ = PathBuf::new();
-        ExtractedEpub::from_opf_path(&opf_path)
-            .expect("test OPFData should parse")
+        ExtractedEpub::from_opf_path(&opf_path).expect("test OPFData should parse")
     }
 
     // ---- Manifest parser smoke test ----
