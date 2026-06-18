@@ -429,14 +429,32 @@ impl OrdtTables {
         key
     }
 
-    /// Serialize the tables as the two `"ORDT" + u16 BE entries` blocks
-    /// (ORDT1 weights, ORDT2 values) referenced from the primary INDX
-    /// header at offsets 172 and 176.
+    /// Serialize the tables as the two `"ORDT" + entries` blocks (ORDT1
+    /// weights, ORDT2 values) referenced from the primary INDX header at
+    /// offsets 172 and 176.
+    ///
+    /// ORDT1 element width tracks `ordt_type`: 1 byte/symbol for
+    /// `ordt_type = 1` (one-byte labels), 2 bytes/symbol for `ordt_type = 0`.
+    /// This matches what the firmware, KindleUnpack, and kindlegen read back:
+    /// KindleUnpack uses `'B'` for ORDT1, and a kindlegen `ordt_type = 0`
+    /// build (the committed `ja-kindlegen.mobi`) lays ORDT1 out at 2
+    /// bytes/symbol (`ordt2_off - ordt1_off == 4 + oentries * 2`). Writing
+    /// ORDT1 at a fixed 2 bytes regardless of type scrambled collation on the
+    /// `ordt_type = 1` path, because each weight's zero high byte was read as
+    /// a separate symbol's weight (issue #13). ORDT2 holds code points and is
+    /// always 2 bytes/symbol. Weights are small (0-255), so the one-byte cast
+    /// never truncates.
     pub fn serialize(&self) -> (Vec<u8>, Vec<u8>) {
         let mut t1 = Vec::with_capacity(4 + self.ordt1.len() * 2);
         t1.extend_from_slice(b"ORDT");
-        for &w in &self.ordt1 {
-            t1.extend_from_slice(&w.to_be_bytes());
+        if self.two_byte {
+            for &w in &self.ordt1 {
+                t1.extend_from_slice(&w.to_be_bytes());
+            }
+        } else {
+            for &w in &self.ordt1 {
+                t1.push(w as u8);
+            }
         }
         let mut t2 = Vec::with_capacity(4 + self.ordt2.len() * 2);
         t2.extend_from_slice(b"ORDT");
@@ -645,13 +663,43 @@ mod tests {
 
     #[test]
     fn serialize_layout() {
-        let o = OrdtTables::new(&["あ"]);
+        // Two-byte table (a literal forces ordt_type=0): ORDT1 and ORDT2 are
+        // both 2 bytes/symbol.
+        let o = OrdtTables::new(&["山"]);
+        assert_eq!(o.ordt_type(), 0);
         let (t1, t2) = o.serialize();
         assert_eq!(&t1[..4], b"ORDT");
         assert_eq!(&t2[..4], b"ORDT");
         assert_eq!(t1.len(), 4 + o.count() as usize * 2);
         assert_eq!(t2.len(), 4 + o.count() as usize * 2);
         assert_eq!(&t2[4..6], &[0, 0]); // symbol 0 is NUL
+    }
+
+    #[test]
+    fn serialize_ordt1_width_tracks_ordt_type() {
+        // Issue #13: ORDT1 must be 1 byte/symbol for ordt_type=1 and 2
+        // bytes/symbol for ordt_type=0, matching what the firmware and
+        // KindleUnpack read back. Writing a fixed 2 bytes for the one-byte
+        // path scrambled collation (zero high bytes were read as weights).
+
+        // Pure-kana, small table -> ordt_type=1 -> ORDT1 is 1 byte/symbol.
+        let one = OrdtTables::new(&["あい", "かき"]);
+        assert_eq!(one.ordt_type(), 1);
+        let (t1, t2) = one.serialize();
+        assert_eq!(&t1[..4], b"ORDT");
+        assert_eq!(t1.len(), 4 + one.count() as usize, "ORDT1 is 1 byte/symbol");
+        assert_eq!(t2.len(), 4 + one.count() as usize * 2, "ORDT2 stays 2 bytes");
+        // Each weight survives the one-byte cast and lands at byte N.
+        for (i, &w) in one.ordt1.iter().enumerate() {
+            assert!(w <= 0xFF, "weights fit in a byte");
+            assert_eq!(t1[4 + i], w as u8);
+        }
+
+        // A literal forces ordt_type=0 -> ORDT1 is 2 bytes/symbol.
+        let two = OrdtTables::new(&["山", "あ"]);
+        assert_eq!(two.ordt_type(), 0);
+        let (t1, _) = two.serialize();
+        assert_eq!(t1.len(), 4 + two.count() as usize * 2, "ORDT1 is 2 bytes/symbol");
     }
 
     #[test]
