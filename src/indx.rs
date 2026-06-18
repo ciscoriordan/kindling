@@ -136,6 +136,10 @@ pub fn build_orth_indx(
     let mut current_entries: Vec<Vec<u8>> = Vec::new();
     let mut current_data_size: usize = 0;
     let mut last_labels: Vec<Vec<u8>> = Vec::new();
+    // Per-leaf entry count, written into the matching primary routing entry
+    // (see `build_indx_primary`). The firmware numbers entries across leaves
+    // from these counts; zeroing them breaks cross-leaf lookup (issue #12).
+    let mut data_counts: Vec<u32> = Vec::new();
     let mut prev_label_bytes: Vec<u8> = Vec::new();
 
     let total_terms = lookup_terms.len();
@@ -159,6 +163,7 @@ pub fn build_orth_indx(
             let rec = build_indx_data_record(&current_entries);
             data_records.push(rec);
             last_labels.push(prev_label_bytes.clone());
+            data_counts.push(current_entries.len() as u32);
 
             current_entries.clear();
             current_data_size = 0;
@@ -180,6 +185,7 @@ pub fn build_orth_indx(
         let rec = build_indx_data_record(&current_entries);
         data_records.push(rec);
         last_labels.push(prev_label_bytes);
+        data_counts.push(current_entries.len() as u32);
     }
 
     let ordt_mode1 = match gen_ordt {
@@ -192,6 +198,7 @@ pub fn build_orth_indx(
         data_records.len(),
         lookup_terms.len(),
         &last_labels,
+        &data_counts,
         199,
         index_language,
         ordt_mode1,
@@ -241,6 +248,7 @@ pub fn build_orth_indx(
         1,
         chars.len(),
         &[last_char_label],
+        &[chars.len() as u32],
         192,
         index_language,
         OrdtMode::None,
@@ -264,6 +272,7 @@ pub fn build_orth_indx(
         1,
         1,
         &[default_label],
+        &[1],
         192,
         index_language,
         OrdtMode::None,
@@ -426,6 +435,7 @@ fn build_indx_primary(
     num_data_records: usize,
     total_entries: usize,
     last_labels: &[Vec<u8>],
+    data_counts: &[u32],
     header_length: usize,
     index_language: u32,
     ordt_mode: OrdtMode<'_>,
@@ -456,19 +466,26 @@ fn build_indx_primary(
     let mut routing_entries = Vec::new();
     let mut routing_offsets: Vec<u16> = Vec::new();
 
-    for label_bytes in last_labels {
+    for (i, label_bytes) in last_labels.iter().enumerate() {
         let offset = entries_start + routing_entries.len();
         routing_offsets.push(offset as u16);
 
-        let mut label_len = label_bytes.len().min(31);
+        // Routing-entry label length is a full byte (no prefix-compression
+        // bits, unlike data entries), so cap at 255 instead of the 5-bit 31.
+        // Masking to 5 bits truncated any routing label >= 16 UTF-16 chars
+        // and corrupted multi-leaf navigation (issue #12).
+        let mut label_len = label_bytes.len().min(255);
         if label_bytes.len() % 2 == 0 && label_len % 2 != 0 {
             label_len -= 1;
         }
         let truncated = &label_bytes[..label_len];
-        let byte0 = (label_len as u8) & 0x1F;
-        routing_entries.push(byte0);
+        routing_entries.push(label_len as u8);
         routing_entries.extend_from_slice(truncated);
-        routing_entries.push(0); // control byte = 0 (no tags)
+        // Per-leaf entry count as big-endian u16 (was a single 0 byte). The
+        // firmware uses these to number entries across leaves; see issue #12.
+        let count = data_counts.get(i).copied().unwrap_or(0);
+        routing_entries.push((count >> 8) as u8);
+        routing_entries.push((count & 0xFF) as u8);
     }
 
     // Build IDXT for routing entries
@@ -644,5 +661,95 @@ mod tests {
         // U+1F600 (GRINNING FACE) → surrogate pair D83D DE00 in UTF-16BE.
         let bytes = encode_indx_label("\u{1F600}");
         assert_eq!(bytes, vec![0xD8, 0x3D, 0xDE, 0x00]);
+    }
+
+    fn rd32(buf: &[u8], o: usize) -> u32 {
+        u32::from_be_bytes([buf[o], buf[o + 1], buf[o + 2], buf[o + 3]])
+    }
+
+    /// Parse a primary INDX record's routing entries as
+    /// `[u8 label_len][label][u16 BE count]`, returning (label_bytes, count)
+    /// per entry in IDXT order.
+    fn parse_routing(rec: &[u8]) -> Vec<(Vec<u8>, u32)> {
+        let idxt_off = rd32(rec, 20) as usize;
+        assert_eq!(&rec[idxt_off..idxt_off + 4], b"IDXT", "IDXT magic");
+        let n = rd32(rec, 24) as usize;
+        let offsets: Vec<usize> = (0..n)
+            .map(|i| u16::from_be_bytes([rec[idxt_off + 4 + 2 * i], rec[idxt_off + 5 + 2 * i]]) as usize)
+            .collect();
+        offsets
+            .iter()
+            .map(|&start| {
+                let len = rec[start] as usize;
+                let label = rec[start + 1..start + 1 + len].to_vec();
+                let count = u16::from_be_bytes([rec[start + 1 + len], rec[start + 2 + len]]) as u32;
+                (label, count)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn routing_entries_carry_full_label_and_u16_count() {
+        // Issue #12: a primary routing entry is [u8 label_len][label]
+        // [u16 BE leaf entry count]. The label length is a full byte (not
+        // 5-bit masked) and the count is the leaf's entry count (not 0).
+        let tagx = build_tagx(&[TagDef { tag_id: 1, num_values: 1, mask: 0x01 }]);
+        // 20 ASCII chars -> 40 UTF-16BE bytes, past the old 31-byte (5-bit)
+        // cap, to prove routing labels are no longer truncated.
+        let long = encode_indx_label("abcdefghijklmnopqrst");
+        assert_eq!(long.len(), 40);
+        let short = encode_indx_label("zz");
+        let last_labels = vec![long.clone(), short.clone()];
+        let data_counts = vec![4970u32, 1041u32];
+        let rec = build_indx_primary(
+            &tagx, 2, 6011, &last_labels, &data_counts, 199, 9, OrdtMode::None,
+        );
+
+        let routing = parse_routing(&rec);
+        assert_eq!(routing.len(), 2);
+        assert_eq!(routing[0].0, long, "full 40-byte routing label preserved");
+        assert_eq!(routing[0].1, 4970, "leaf 0 count as u16");
+        assert_eq!(routing[1].0, short);
+        assert_eq!(routing[1].1, 1041, "leaf 1 count as u16");
+    }
+
+    #[test]
+    fn multi_leaf_routing_counts_match_data_records() {
+        // Issue #12: drive the real chunker past MAX_INDX_DATA_SIZE so the
+        // orth index spans multiple leaves, then check every routing entry's
+        // count equals its data record's entry count and they sum to the
+        // total term count.
+        let mut terms: Vec<LookupTerm> = Vec::new();
+        for i in 0..6000usize {
+            let label = format!("term{:08}", i); // 12 chars -> 24 UTF-16BE bytes
+            terms.push(LookupTerm {
+                label_bytes: encode_indx_label(&label),
+                label,
+                start_pos: i * 4,
+                text_len: 3,
+                headword_display_len: 3,
+                source_ordinal: i,
+            });
+        }
+        let chars: HashSet<char> = "abcdefghijklmnopqrstuvwxyz0123456789".chars().collect();
+        let recs = build_orth_indx(&terms, &chars, false, 9, None);
+
+        let primary1 = &recs[0];
+        let n = rd32(primary1, 24) as usize;
+        assert!(n >= 2, "expected a multi-leaf build, got {n} leaves");
+        let data_counts: Vec<u32> = (0..n).map(|i| rd32(&recs[1 + i], 24)).collect();
+
+        let routing = parse_routing(primary1);
+        assert_eq!(routing.len(), n, "one routing entry per leaf");
+        let routing_counts: Vec<u32> = routing.iter().map(|(_, c)| *c).collect();
+        assert_eq!(routing_counts, data_counts, "routing counts match leaf entry counts");
+        assert_eq!(
+            routing_counts.iter().sum::<u32>(),
+            terms.len() as u32,
+            "leaf counts sum to total terms"
+        );
+        // The last routing label of each leaf must be the last term in that
+        // leaf (non-empty), so navigation has a real signpost.
+        assert!(routing.iter().all(|(l, _)| !l.is_empty()), "routing labels present");
     }
 }
