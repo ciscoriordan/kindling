@@ -606,7 +606,7 @@ AI-assisted contributions are welcome: issues, investigations, and pull requests
 
 ## Stargazers over time
 
-[![Stargazers over time](https://starchart.cc/ciscoriordan/kindling.svg?variant=adaptive)](https://starchart.cc/ciscoriordan/kindling)
+[![Star History Chart](https://api.star-history.com/svg?repos=ciscoriordan/kindling&type=Date)](https://www.star-history.com/#ciscoriordan/kindling&Date)
 
 ## License
 
