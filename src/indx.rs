@@ -323,6 +323,13 @@ fn build_tagx(tag_defs: &[TagDef]) -> Vec<u8> {
 /// Encode a single INDX entry.
 ///
 /// No prefix compression (kindlegen doesn't use it for dictionary entries).
+/// The first byte is the full label byte-length (0-255), not a 3-bit-prefix +
+/// 5-bit-length split: kindlegen's orth/infl data entries store the full
+/// length there (verified against kindlegen output, e.g. a 21-char Cyrillic
+/// headword is an 84-byte label with `byte0 == 84`), and the libmobi-derived
+/// reader (`tests/common/mod.rs`) reads `entry[0]` as a full byte. The old
+/// 5-bit mask truncated every label >= 16 UTF-16 chars (>31 bytes) to 15,
+/// which dropped/collided long Cyrillic headwords (issue: 16-char cliff).
 /// Tag values are encoded using inverted VWI.
 fn encode_indx_entry(
     label_bytes: &[u8],
@@ -330,23 +337,22 @@ fn encode_indx_entry(
     tag_values: &[(u8, u32)],
     tag_defs: &[TagDef],
 ) -> Vec<u8> {
-    // No prefix compression
-    let prefix_len: u8 = 0;
-
     let new_len;
     let new_bytes: Vec<u8>;
-    if label_bytes.len() > 31 {
-        // Label too long for 5-bit field - truncate
-        let max_len = if label_bytes.len() % 2 == 0 { 30 } else { 31 };
-        new_bytes = label_bytes[..max_len].to_vec();
-        new_len = max_len;
+    if label_bytes.len() > 254 {
+        // Full-byte length field caps at 255; keep it even so a UTF-16BE
+        // label is never split mid-code-unit. 254 bytes is 127 BMP chars,
+        // well beyond any real headword.
+        new_bytes = label_bytes[..254].to_vec();
+        new_len = 254;
     } else {
         new_bytes = label_bytes.to_vec();
         new_len = label_bytes.len();
     }
 
-    // First byte: prefix_len (3 bits) | new_label_len (5 bits)
-    let byte0 = ((prefix_len & 0x07) << 5) | (new_len as u8 & 0x1F);
+    // First byte: full label length (prefix compression is unused, so there
+    // is no prefix-length field to pack in the high bits).
+    let byte0 = new_len as u8;
 
     // Control byte: which tags are present
     let mut control: u8 = 0;
@@ -473,10 +479,10 @@ fn build_indx_primary(
         let offset = entries_start + routing_entries.len();
         routing_offsets.push(offset as u16);
 
-        // Routing-entry label length is a full byte (no prefix-compression
-        // bits, unlike data entries), so cap at 255 instead of the 5-bit 31.
-        // Masking to 5 bits truncated any routing label >= 16 UTF-16 chars
-        // and corrupted multi-leaf navigation (issue #12).
+        // Routing-entry label length is a full byte, so cap at 255. (Data
+        // entries use a full byte too; see encode_indx_entry.) Masking to
+        // 5 bits truncated any routing label >= 16 UTF-16 chars and corrupted
+        // multi-leaf navigation (issue #12).
         let mut label_len = label_bytes.len().min(255);
         if label_bytes.len() % 2 == 0 && label_len % 2 != 0 {
             label_len -= 1;
@@ -673,6 +679,47 @@ mod tests {
         // U+1F600 (GRINNING FACE) → surrogate pair D83D DE00 in UTF-16BE.
         let bytes = encode_indx_label("\u{1F600}");
         assert_eq!(bytes, vec![0xD8, 0x3D, 0xDE, 0x00]);
+    }
+
+    #[test]
+    fn data_entry_label_length_is_a_full_byte_no_truncation() {
+        // 16-char cliff regression. A data entry's first byte is the full
+        // label byte-length (matching kindlegen, kf8.rs, and the libmobi
+        // reader), not a 5-bit field. Labels >= 16 UTF-16 chars (>31 bytes)
+        // used to be truncated to 15 chars, corrupting long Cyrillic keys.
+        let tag_defs = [
+            TagDef {
+                tag_id: 1,
+                num_values: 1,
+                mask: 0x01,
+            },
+            TagDef {
+                tag_id: 2,
+                num_values: 1,
+                mask: 0x02,
+            },
+        ];
+        let tag_values = [(1u8, 7u32), (2u8, 3u32)];
+
+        for word in [
+            "государственного",       // 16 chars -> 32 bytes (old cliff)
+            "несовершеннолетних",      // 18 chars -> 36 bytes
+            "достопримечательность",   // 21 chars -> 42 bytes
+        ] {
+            let label = encode_indx_label(word);
+            assert!(label.len() > 31, "{word:?} should exceed the old 5-bit cap");
+            let entry = encode_indx_entry(&label, &[], &tag_values, &tag_defs);
+            assert_eq!(
+                entry[0] as usize,
+                label.len(),
+                "{word:?}: byte0 must be the full label length, not masked"
+            );
+            assert_eq!(
+                &entry[1..1 + label.len()],
+                label.as_slice(),
+                "{word:?}: full label must be stored without truncation"
+            );
+        }
     }
 
     fn rd32(buf: &[u8], o: usize) -> u32 {

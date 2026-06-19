@@ -854,8 +854,9 @@ fn dump_indx_record(
 
 /// Decode a single INDX entry. For routing records (generation=0) the
 /// layout is [u8 label_len][label_bytes][u16 BE count]. For data records
-/// (generation=1) the layout is [u8 byte0 = prefix_len<<5 | new_len]
-/// [label_bytes][u8 control_byte(s)][VWI-encoded tag values...].
+/// (generation=1) the layout is [u8 label_len][label_bytes]
+/// [u8 control_byte(s)][VWI-encoded tag values...]. Both lengths are full
+/// bytes; prefix compression is not used by the orth/infl indexes.
 ///
 /// When `ordt` is Some, label bytes are ORDT symbol sequences and are
 /// decoded through the value table (see `decode_label`). Otherwise we
@@ -895,11 +896,13 @@ fn decode_indx_entry(
             count
         )
     } else {
-        // Data entry: prefix_len (3 bits) | new_len (5 bits), label,
-        // control_byte_count bytes of control, VWI-encoded tag values.
-        let byte0 = entry[0];
-        let prefix_len = (byte0 >> 5) & 0x07;
-        let new_len = (byte0 & 0x1F) as usize;
+        // Data entry: [u8 full label length][label][control_byte_count bytes
+        // of control][VWI-encoded tag values]. The length is a full byte
+        // (0-255), not a 3-bit-prefix + 5-bit-length split; prefix compression
+        // is unused, matching kindlegen and the libmobi-derived reader in
+        // tests/common/mod.rs. Reading it as 5 bits truncated kindlegen's long
+        // labels to garbage.
+        let new_len = entry[0] as usize;
         if 1 + new_len + 1 > entry.len() {
             return format!("(truncated data, raw={})", to_hex(entry));
         }
@@ -911,10 +914,9 @@ fn decode_indx_entry(
         let control_end = control_start + control_byte_count;
         if control_end > entry.len() {
             return format!(
-                "{{ label = {}, label_bytes = {}, prefix_len = {}, new_len = {}, tag_bytes = {} }} # decode_failed:truncated_control",
+                "{{ label = {}, label_bytes = {}, new_len = {}, tag_bytes = {} }} # decode_failed:truncated_control",
                 quote_str(&label),
                 to_hex(label_bytes),
-                prefix_len,
                 new_len,
                 to_hex(&entry[control_start..])
             );
@@ -949,10 +951,9 @@ fn decode_indx_entry(
         }
 
         format!(
-            "{{ label = {}, label_bytes = {}, prefix_len = {}, new_len = {}, control = {}, tag_bytes = {} }}{}",
+            "{{ label = {}, label_bytes = {}, new_len = {}, control = {}, tag_bytes = {} }}{}",
             quote_str(&label),
             to_hex(label_bytes),
-            prefix_len,
             new_len,
             control_repr,
             to_hex(tail),
