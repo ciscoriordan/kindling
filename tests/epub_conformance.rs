@@ -149,7 +149,10 @@ fn mimetype_is_first_and_stored() {
     let e = build_to("ocf", |p| {
         build_epub3(&dict_opf(), p, &EpubMeta::default()).unwrap();
     });
-    assert_eq!(e.first_name, "mimetype", "mimetype must be the first zip entry");
+    assert_eq!(
+        e.first_name, "mimetype",
+        "mimetype must be the first zip entry"
+    );
     assert!(e.first_stored, "mimetype must be STORED (uncompressed)");
     assert_eq!(
         e.files.get("mimetype").map(String::as_str),
@@ -193,7 +196,10 @@ fn epub2_is_plain_2_0_1_even_from_dictionary_input() {
         !opf.contains("dictionary"),
         "epub2 output must never be a dictionary:\n{opf}"
     );
-    assert!(e.skm().is_none(), "epub2 output must have no Search Key Map");
+    assert!(
+        e.skm().is_none(),
+        "epub2 output must have no Search Key Map"
+    );
     for c in e.content_docs() {
         assert!(!c.contains("idx:"), "idx markup leaked into epub2 content");
         assert!(
@@ -240,7 +246,10 @@ fn epub3_book_from_plain_book_fixture() {
         !opf.contains("<dc:type>dictionary</dc:type>"),
         "a plain book must not declare dc:type=dictionary"
     );
-    assert!(e.skm().is_none(), "a plain book must have no Search Key Map");
+    assert!(
+        e.skm().is_none(),
+        "a plain book must have no Search Key Map"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -253,7 +262,10 @@ fn epub3_dictionary_auto_detected_from_xmetadata() {
         build_epub3(&dict_opf(), p, &EpubMeta::default()).unwrap();
     });
     let opf = e.opf();
-    assert!(opf.contains("version=\"3.0\""), "EPUB 3.3 version attribute");
+    assert!(
+        opf.contains("version=\"3.0\""),
+        "EPUB 3.3 version attribute"
+    );
     assert!(
         opf.contains("<dc:type>dictionary</dc:type>"),
         "auto-detected dictionary must declare dc:type=dictionary:\n{opf}"
@@ -282,7 +294,10 @@ fn epub3_dictionary_auto_detected_from_xmetadata() {
 
     let skm = e.skm().expect("a dictionary must ship exactly one skm.xml");
     assert!(skm.contains("<search-key-map"), "skm root element missing");
-    assert!(skm.contains("xml:lang"), "search-key-map root requires xml:lang");
+    assert!(
+        skm.contains("xml:lang"),
+        "search-key-map root requires xml:lang"
+    );
     assert!(skm.contains("<search-key-group"), "skm has no groups");
     assert!(skm.contains("<match "), "skm has no match elements");
 
@@ -330,7 +345,10 @@ fn epub3_book_mode_forces_plain_on_dictionary_input() {
         !e.opf().contains("<dc:type>dictionary</dc:type>"),
         "DictMode::Book must not emit a dictionary even on dictionary input"
     );
-    assert!(e.skm().is_none(), "DictMode::Book must not emit a Search Key Map");
+    assert!(
+        e.skm().is_none(),
+        "DictMode::Book must not emit a Search Key Map"
+    );
 }
 
 #[test]

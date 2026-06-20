@@ -105,7 +105,10 @@ impl EpubMeta {
             },
             DictMode::Auto => {
                 let looks_like_dict = opf.is_dictionary()
-                    || opf.dc_types.iter().any(|t| t.eq_ignore_ascii_case("dictionary"));
+                    || opf
+                        .dc_types
+                        .iter()
+                        .any(|t| t.eq_ignore_ascii_case("dictionary"));
                 if looks_like_dict {
                     ResolvedMode::Dictionary {
                         source: opf.dict_in_language.clone(),
@@ -392,7 +395,8 @@ fn build_epub3_dictionary(
         let mut body = String::new();
         let mut entry_outs: Vec<DictEntryOut> = Vec::new();
         for (e, anchor) in &pf.entries {
-            let body_html = rewrite_crossrefs(&clean_entry_body(&e.html_content, &e.headword), &xref_map);
+            let body_html =
+                rewrite_crossrefs(&clean_entry_body(&e.html_content, &e.headword), &xref_map);
             body.push_str("    <article epub:type=\"dictentry\" id=\"");
             body.push_str(anchor);
             body.push_str("\"><dfn>");
@@ -423,14 +427,7 @@ fn build_epub3_dictionary(
     let skm_xml = render_skm(&src_lang, &docs);
     files.push(ZipEntry::text("OEBPS/skm.xml", skm_xml));
 
-    let opf_xml = render_epub3_dict_opf(
-        &title,
-        &author,
-        &identifier,
-        &src_lang,
-        &tgt_lang,
-        &docs,
-    );
+    let opf_xml = render_epub3_dict_opf(&title, &author, &identifier, &src_lang, &tgt_lang, &docs);
     files.push(ZipEntry::text("OEBPS/content.opf", opf_xml));
 
     for d in &docs {
@@ -712,10 +709,7 @@ fn render_epub3_dict_opf(
     s.push_str("  </manifest>\n");
     s.push_str("  <spine>\n");
     for (i, _d) in docs.iter().enumerate() {
-        s.push_str(&format!(
-            "    <itemref idref=\"content_{:02}\"/>\n",
-            i + 1
-        ));
+        s.push_str(&format!("    <itemref idref=\"content_{:02}\"/>\n", i + 1));
     }
     s.push_str("  </spine>\n");
     s.push_str("</package>\n");
@@ -895,9 +889,8 @@ fn rewrite_crossrefs(
     use std::sync::OnceLock;
     // Capture the optional per-letter file and the hw_ fragment word.
     static XREF: OnceLock<Regex> = OnceLock::new();
-    let xref = XREF.get_or_init(|| {
-        Regex::new(r#"href="(?:content_\d+\.html)?#(hw_[^"]+)""#).unwrap()
-    });
+    let xref =
+        XREF.get_or_init(|| Regex::new(r#"href="(?:content_\d+\.html)?#(hw_[^"]+)""#).unwrap());
     xref.replace_all(body, |caps: &regex::Captures| {
         let frag = caps.get(1).unwrap().as_str();
         // The fragment in the source is `hw_<headword>` (raw UTF-8). Our map is
@@ -922,8 +915,8 @@ fn strip_internal_xref_hrefs(body: &str) -> String {
     use regex::Regex;
     use std::sync::OnceLock;
     static XREF: OnceLock<Regex> = OnceLock::new();
-    let xref = XREF
-        .get_or_init(|| Regex::new(r#"\s*href="(?:content_\d+\.html)?#hw_[^"]+""#).unwrap());
+    let xref =
+        XREF.get_or_init(|| Regex::new(r#"\s*href="(?:content_\d+\.html)?#hw_[^"]+""#).unwrap());
     xref.replace_all(body, "").into_owned()
 }
 
@@ -951,8 +944,7 @@ fn strip_dictionary_markup(html: &str) -> String {
     // Drop the whole <idx:orth>...</idx:orth> block (headword + inflections).
     let orth_block =
         ORTH_BLOCK.get_or_init(|| Regex::new(r"(?s)<idx:orth\b[^>]*>.*?</idx:orth>").unwrap());
-    let orth_self =
-        ORTH_SELF.get_or_init(|| Regex::new(r"<idx:orth\b[^>]*/>").unwrap());
+    let orth_self = ORTH_SELF.get_or_init(|| Regex::new(r"<idx:orth\b[^>]*/>").unwrap());
     let short_open = SHORT_OPEN.get_or_init(|| Regex::new(r"<idx:short\b[^>]*>").unwrap());
     let short_close = SHORT_CLOSE.get_or_init(|| Regex::new(r"</idx:short>").unwrap());
     let infl_block =
@@ -1135,8 +1127,22 @@ fn uuid_from_seed(seed: &str) -> String {
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     format!(
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-        bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15]
     )
 }
 
@@ -1208,8 +1214,8 @@ const CONTAINER_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 /// Write a conformant EPUB zip: `mimetype` first and STORED, then
 /// `META-INF/container.xml`, then every supplied OEBPS entry deflated.
 fn write_epub(out_path: &Path, files: &[ZipEntry]) -> Result<(), Box<dyn std::error::Error>> {
-    use zip::write::SimpleFileOptions;
     use zip::CompressionMethod;
+    use zip::write::SimpleFileOptions;
 
     let mut buf: Vec<u8> = Vec::new();
     {
@@ -1284,14 +1290,14 @@ mod tests {
 </idx:entry>"#;
         let cleaned = strip_dictionary_markup(raw);
         assert!(!cleaned.contains("idx:"), "idx leaked: {}", cleaned);
-        assert!(
-            cleaned.contains("1. body text"),
-            "body lost: {}",
-            cleaned
-        );
+        assert!(cleaned.contains("1. body text"), "body lost: {}", cleaned);
         // The orth headword block is dropped (caller emits <dfn>); the inner
         // <b>a</b> goes with it.
-        assert!(!cleaned.contains("<b>a</b>"), "orth block not dropped: {}", cleaned);
+        assert!(
+            !cleaned.contains("<b>a</b>"),
+            "orth block not dropped: {}",
+            cleaned
+        );
     }
 
     #[test]

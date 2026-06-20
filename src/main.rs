@@ -1173,7 +1173,14 @@ fn main() {
                 title,
                 author,
             } => {
-                do_epub(&input, output.as_ref(), EpubFormat::Epub2, title, author, None);
+                do_epub(
+                    &input,
+                    output.as_ref(),
+                    EpubFormat::Epub2,
+                    title,
+                    author,
+                    None,
+                );
             }
             Commands::Epub3 {
                 input,
