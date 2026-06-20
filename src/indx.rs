@@ -702,9 +702,9 @@ mod tests {
         let tag_values = [(1u8, 7u32), (2u8, 3u32)];
 
         for word in [
-            "государственного",       // 16 chars -> 32 bytes (old cliff)
-            "несовершеннолетних",      // 18 chars -> 36 bytes
-            "достопримечательность",   // 21 chars -> 42 bytes
+            "государственного",      // 16 chars -> 32 bytes (old cliff)
+            "несовершеннолетних",    // 18 chars -> 36 bytes
+            "достопримечательность", // 21 chars -> 42 bytes
         ] {
             let label = encode_indx_label(word);
             assert!(label.len() > 31, "{word:?} should exceed the old 5-bit cap");
