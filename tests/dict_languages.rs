@@ -279,10 +279,49 @@ fn check_generated_ordt(code: &str, c: &Lang, parsed: &ParsedMobi, idx: usize, p
     }
 }
 
+/// True if a code's headwords are dominantly in a script the static Greek
+/// ORDT covers (Latin/Greek). Mirrors `indx::greek_ordt_covers_script` so
+/// the test predicts whether the blob should be embedded without hardcoding
+/// a language list. Cyrillic (ru) is not covered.
+fn greek_ordt_script(code: &str) -> bool {
+    let mut total = 0usize;
+    let mut hits = 0usize;
+    for h in headwords(code) {
+        for ch in h.chars() {
+            if !ch.is_alphabetic() || (ch as u32) <= 0x7F {
+                continue;
+            }
+            total += 1;
+            let cp = ch as u32;
+            if matches!(cp,
+                0x00C0..=0x00FF | 0x0100..=0x024F | 0x0370..=0x03FF | 0x1F00..=0x1FFF)
+            {
+                hits += 1;
+            }
+        }
+    }
+    total == 0 || hits * 2 >= total
+}
+
 fn check_utf16(code: &str, _c: &Lang, parsed: &ParsedMobi, idx: usize, primary: &[u8]) {
-    // Static Greek collation blob: spl_count 2, oentries 7.
-    assert_eq!(u32_be(primary, 56), 2, "{code}: Greek blob spl_count");
-    assert_eq!(u32_be(primary, 168), 7, "{code}: Greek blob oentries");
+    // The static Greek collation blob (spl_count 2, oentries 7) is embedded
+    // only when the headwords are dominantly Latin/Greek. For Cyrillic and
+    // other scripts the blob is suppressed (OrdtMode::None) so the device
+    // collates by plain UTF-16BE, avoiding the issue #12 misroute.
+    if greek_ordt_script(code) {
+        assert_eq!(u32_be(primary, 56), 2, "{code}: Greek blob spl_count");
+        assert_eq!(u32_be(primary, 168), 7, "{code}: Greek blob oentries");
+        assert!(
+            primary.windows(4).any(|w| w == b"SPL1"),
+            "{code}: Latin/Greek dict must embed the Greek SPL collation blob"
+        );
+    } else {
+        assert_eq!(u32_be(primary, 168), 0, "{code}: non-Latin blob suppressed");
+        assert!(
+            !primary.windows(4).any(|w| w == b"SPL1"),
+            "{code}: non-Latin dict must not embed the Greek SPL collation blob"
+        );
+    }
 
     let indx = parse_indx(parsed, idx).unwrap();
     let decoded: BTreeSet<String> = indx

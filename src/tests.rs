@@ -643,6 +643,83 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_cyrillic_dict_suppresses_greek_ordt() {
+        // Issue #12: the static Greek ORDT/SPL blob only collates
+        // Latin/Greek scripts, so a Cyrillic (or other non-covered) headword
+        // dictionary must NOT embed it by default; it should fall back to
+        // pure UTF-16BE collation (the same effect as --strict-accents). A
+        // Latin dictionary must still embed the blob. Script is detected from
+        // the headword characters, not the language tag, so this fixture uses
+        // the default `en` OPF language with Cyrillic headwords.
+        fn build(dir: &Path, entries: &[(&str, &[&str])]) -> Vec<u8> {
+            let opf = create_dict_fixture(dir, entries);
+            let output = dir.join("output.mobi");
+            mobi::build_mobi(
+                &opf, &output, true, false, None, false, false, false, false, None, false, false,
+                false, false,
+            )
+            .expect("build_mobi failed");
+            fs::read(&output).unwrap()
+        }
+
+        fn orth_primary(data: &[u8]) -> Vec<u8> {
+            let (_, _, offsets) = parse_palmdb(data);
+            let rec0 = get_record(data, &offsets, 0);
+            let orth_idx = read_u32_be(rec0, 40) as usize;
+            get_record(data, &offsets, orth_idx).to_vec()
+        }
+
+        // offset 168 is oentries: 7 for the embedded Greek blob, 0 otherwise.
+        let cyr_dir = TempDir::new("cyr_dict");
+        let cyr = orth_primary(&build(
+            cyr_dir.path(),
+            &[
+                ("вода", &[]),
+                ("огонь", &[]),
+                ("гора", &[]),
+                ("река", &[]),
+                ("дерево", &[]),
+            ],
+        ));
+        let cyr_oentries = read_u32_be(&cyr, 168);
+        let cyr_has_spl = cyr.windows(4).any(|w| w == b"SPL1");
+        assert_eq!(
+            cyr_oentries, 0,
+            "Cyrillic dict must not embed the Greek ORDT (ordt_entries_count)"
+        );
+        assert!(
+            !cyr_has_spl,
+            "Cyrillic dict must not embed the Greek SPL collation tables"
+        );
+
+        let lat_dir = TempDir::new("lat_dict");
+        let lat = orth_primary(&build(
+            lat_dir.path(),
+            &[
+                ("water", &[]),
+                ("fire", &[]),
+                ("café", &[]),
+                ("même", &[]),
+                ("tree", &[]),
+            ],
+        ));
+        let lat_oentries = read_u32_be(&lat, 168);
+        let lat_has_spl = lat.windows(4).any(|w| w == b"SPL1");
+        assert_eq!(
+            lat_oentries, 7,
+            "Latin dict must still embed the Greek ORDT (ordt_entries_count)"
+        );
+        assert!(
+            lat_has_spl,
+            "Latin dict must still embed the Greek SPL collation tables"
+        );
+
+        println!(
+            "  \u{2713} Cyrillic dict suppresses Greek ORDT (oentries={cyr_oentries}); Latin keeps it (oentries={lat_oentries})"
+        );
+    }
+
     // =======================================================================
     // 4. Book MOBI validation
     // =======================================================================

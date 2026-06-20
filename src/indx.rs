@@ -85,6 +85,57 @@ pub fn encode_indx_label(text: &str) -> Vec<u8> {
     result
 }
 
+/// True if the static Greek ORDT/SPL collation blob is meaningful for a
+/// dictionary whose non-ASCII headword characters are `headword_chars`.
+///
+/// The static `ORDT_GREEK` tables were lifted from a kindlegen Greek
+/// dictionary and are tuned for Latin/Greek scripts (collation params
+/// A=65/Z=90, accent folding like "meme" matching "même"). They have no
+/// coverage of Cyrillic, Arabic, Hebrew, Armenian, Georgian, etc.;
+/// embedding them for such scripts feeds the firmware's fuzzy SPL
+/// collation Greek-tuned tables over codepoints they were never built
+/// for, which misroutes lookups at scattered leaf boundaries (issue #12).
+///
+/// `headword_chars` holds only the *non-ASCII* headword characters (the
+/// caller filters out `cp <= 0x7F`), so a pure-ASCII Latin dictionary has
+/// an empty set and is covered. When the set is non-empty we look at its
+/// cased letters: if at least half of them fall in scripts the Greek ORDT
+/// covers (Basic Latin, Latin-1 Supplement, Latin Extended-A/B, Greek and
+/// Coptic, Greek Extended) we keep the blob; otherwise the dominant script
+/// is something else (e.g. Cyrillic) and we suppress it in favor of plain
+/// UTF-16BE collation, exactly what `--strict-accents` does. Accented
+/// Latin (fr) and Latin-with-diacritics (tr) stay covered; Greek (el) too.
+fn greek_ordt_covers_script(headword_chars: &HashSet<char>) -> bool {
+    // Codepoint is a letter the static Greek ORDT was built to collate.
+    fn covered(cp: u32) -> bool {
+        matches!(cp,
+            0x0041..=0x005A | 0x0061..=0x007A // Basic Latin letters
+            | 0x00C0..=0x00FF                 // Latin-1 Supplement (accented Latin)
+            | 0x0100..=0x024F                 // Latin Extended-A and -B
+            | 0x0370..=0x03FF                 // Greek and Coptic
+            | 0x1F00..=0x1FFF                 // Greek Extended (polytonic)
+        )
+    }
+
+    let mut total = 0usize;
+    let mut hits = 0usize;
+    for ch in headword_chars {
+        if !ch.is_alphabetic() {
+            continue;
+        }
+        total += 1;
+        if covered(*ch as u32) {
+            hits += 1;
+        }
+    }
+
+    // Empty / no-letter set: pure-ASCII Latin dictionary, keep the blob.
+    // Otherwise require a majority of cased letters to be Latin/Greek; a
+    // 50% threshold tolerates a handful of stray Latin abbreviations in an
+    // otherwise Cyrillic dictionary while still suppressing the blob.
+    total == 0 || hits * 2 >= total
+}
+
 /// Build all INDX records for the orthographic (dictionary) index.
 ///
 /// `index_language` is the Windows primary language ID written to the
@@ -190,7 +241,13 @@ pub fn build_orth_indx(
     let ordt_mode1 = match gen_ordt {
         Some(tables) => OrdtMode::Generated(tables),
         None if strict_accents => OrdtMode::None,
-        None => OrdtMode::Greek,
+        // The static Greek ORDT/SPL blob only collates Latin/Greek scripts.
+        // For dictionaries whose headwords are dominantly some other script
+        // (Cyrillic, Arabic, ...) embedding it misroutes fuzzy lookups
+        // (issue #12); fall back to pure UTF-16BE collation, the same as
+        // `--strict-accents`. Latin/Greek/accented dictionaries keep it.
+        None if greek_ordt_covers_script(headword_chars) => OrdtMode::Greek,
+        None => OrdtMode::None,
     };
     let primary1 = build_indx_primary(
         &tagx1,
@@ -679,6 +736,30 @@ mod tests {
         // U+1F600 (GRINNING FACE) → surrogate pair D83D DE00 in UTF-16BE.
         let bytes = encode_indx_label("\u{1F600}");
         assert_eq!(bytes, vec![0xD8, 0x3D, 0xDE, 0x00]);
+    }
+
+    #[test]
+    fn greek_ordt_covers_latin_and_greek_but_not_cyrillic() {
+        // The non-ASCII headword char set the caller passes us (cp > 0x7F).
+        fn set(s: &str) -> HashSet<char> {
+            s.chars().collect()
+        }
+
+        // Pure-ASCII Latin dict: empty non-ASCII set, blob kept.
+        assert!(greek_ordt_covers_script(&HashSet::new()));
+        // Accented Latin (fr) and Latin-with-diacritics (tr) stay covered.
+        assert!(greek_ordt_covers_script(&set("éàçœ")));
+        assert!(greek_ordt_covers_script(&set("çşğöüı")));
+        // Greek (el) is covered.
+        assert!(greek_ordt_covers_script(&set("άέήίόύώ")));
+        // Cyrillic (ru) is not: suppress the Greek blob.
+        assert!(!greek_ordt_covers_script(&set("абвгдёжзийё")));
+        // A couple of stray Latin chars in an otherwise Cyrillic set still
+        // suppress (well under the 50% Latin threshold).
+        assert!(!greek_ordt_covers_script(&set("абвгдежзийab")));
+        // Other non-covered scripts also suppress.
+        assert!(!greek_ordt_covers_script(&set("بتثج"))); // Arabic
+        assert!(!greek_ordt_covers_script(&set("ԱԲԳԴ"))); // Armenian
     }
 
     #[test]
