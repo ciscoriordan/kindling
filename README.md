@@ -27,6 +27,7 @@ Pre-built binaries for Mac (Apple Silicon, Intel), Linux (x86_64), and Windows (
 - **Books**: EPUB or OPF input, embedded images, KF8-only (.azw3) by default with legacy dual-format (MOBI7+KF8) available via `--legacy-mobi`, HD image container, fixed-layout support
 - **Comics**: Image folder, CBZ, CBR, or EPUB input, device-specific resizing, spread splitting, margin cropping, auto-contrast, moire correction for color e-ink, manga RTL, webtoon with overlap fallback, Panel View, KF8-only (.azw3) by default, metadata overrides
 - **StarDict export**: `kindling stardict` builds a four-file StarDict bundle (`.ifo` / `.idx` / `.dict` / `.syn`) from the same OPF or EPUB dictionary input as `kindling build`, for use with GoldenDict, GoldenDict-ng, KOReader, sdcv, and other non-Kindle dictionary readers (see [StarDict export](#stardict-export))
+- **EPUB export**: `kindling epub2` and `kindling epub3` build a reflowable EPUB from the same OPF or EPUB input, conformant to EPUB 2.0.1 and EPUB 3.3 respectively (epubcheck-clean). EPUB2 is always a plain book; EPUB3 is a plain book by default and emits an EPUB Dictionaries and Glossaries layer (Search Key Map, `dc:type=dictionary`, `epub:type` semantics) when the input is a dictionary (see [EPUB export](#epub-export))
 - **EPUB repair**: `kindling repair` applies a small, byte-stable, idempotent set of structural fixes to an EPUB for cleaner Send-to-Kindle ingest (see [Repair](#repair))
 - **Metadata rewrite**: `kindling rewrite-metadata` updates title, authors, publisher, description, language, ISBN, ASIN, publication date, tags, series, and cover image on an existing MOBI/AZW3 in place without rebuilding from source. Byte-stable on no-op, idempotent, refuses DRM files (see [Rewrite metadata](#rewrite-metadata))
 - **Build-time HTML self-check**: every `build` runs a two-pass HTML balance check on the assembled MOBI text blob and on each individual PalmDB text record after splitting, catching regressions like dangling tags, `<hr/` corruption, and bold/italic state leaking across record boundaries (see [Build-time self-check](#build-time-self-check))
@@ -232,6 +233,25 @@ kindling-cli stardict input.opf --website "https://example.com/dict" --email "yo
 - `<name>.idx`: concatenation of `(headword\0, offset:u32be, size:u32be)`, sorted by `g_ascii_strcasecmp` (ASCII case-insensitive bytewise) so readers can binary-search.
 - `<name>.dict`: concatenation of per-entry HTML payloads. Each entry's `<idx:entry>` / `<idx:orth>` wrapper is stripped, `<idx:infl>` / `<idx:iform>` blocks are dropped (those forms are surfaced through `.syn` instead), and self-closing `<idx:orth value="X"/>` is rewritten to `<b>X</b>` so the headword stays visible in apps that render entries verbatim. Cross-entry references that target MOBI per-letter HTML (`content_NN.html#hw_X` or same-page `#hw_X`) are rewritten to StarDict's `bword://X` scheme so GoldenDict, GoldenDict-ng, KOReader, and sdcv resolve them as in-dictionary lookups.
 - `<name>.syn`: `(form\0, original_word_index:u32be)` pairs mapping each inflected form to its lemma's row in `.idx`, sorted by the same key as `.idx`. Omitted when the source dictionary has no inflections.
+
+### EPUB export
+
+```bash
+kindling-cli epub2 input.opf                          # plain reflowable EPUB2, writes input.epub2.epub
+kindling-cli epub3 input.opf                          # EPUB3; auto-detects a dictionary and adds the dictionary layer
+kindling-cli epub3 input.opf -o out.epub --book       # force a plain EPUB3 book even on dictionary input
+kindling-cli epub3 input.opf --dictionary el en       # force the dictionary layer with explicit source/target languages
+kindling-cli epub2 input.epub --title "My Book" --author "Jane Doe"
+```
+
+`kindling epub2` and `kindling epub3` read the same OPF or EPUB input as `kindling build` and emit a reflowable EPUB. Both write a spec-conformant archive: the `mimetype` entry first and stored uncompressed, then `META-INF/container.xml`, then the `OEBPS/*` payload deflated. The output validates clean under epubcheck (EPUB 2.0.1 rules for `epub2`, EPUB 3.3 rules for `epub3`).
+
+- `epub2` is always a plain, reflowable [EPUB 2.0.1](http://idpf.org/epub/20/spec/OPF_2.0.1_draft.htm) book (`<package version="2.0">` plus an NCX; the `version` attribute is `2.0`, `2.0.1` is the spec revision). It is never dictionary-aware: if the input carries Kindle dictionary markup (`<idx:*>` tags, `<DictionaryInLanguage>` metadata), the dictionary semantics are ignored and a plain readable book is produced. Dictionary output is an EPUB3-only feature by design.
+- `epub3` is a generic [EPUB 3.3](https://www.w3.org/TR/epub-33/) book (`<package version="3.0">` plus an EPUB3 nav document; the `version` attribute is `3.0` for all EPUB 3.x, `3.3` is the spec revision) by default. When the input looks like a dictionary, it additionally emits an [EPUB Dictionaries and Glossaries](https://www.w3.org/TR/epub-dictionaries/) layer (a profile on top of EPUB 3.3, not part of EPUB 3.3 core): a single Search Key Map (`skm.xml`), `<dc:type>dictionary</dc:type>`, `source-language` / `target-language` metadata (also declared as `<dc:language>`), and `epub:type="dictionary"` / `epub:type="dictentry"` semantics in the content. Each entry's body is re-parsed and re-serialized as well-formed XHTML so it passes epubcheck's strict DICT profile.
+
+The dictionary layer is selected automatically: if the OPF declares `<DictionaryInLanguage>` / `<DictionaryOutLanguage>` or `<dc:type>dictionary`, `epub3` emits a dictionary with those languages as source/target. Pass `--book` to force a plain book regardless, or `--dictionary SOURCE TARGET` to force the dictionary layer with explicit language codes (overriding both auto-detection and the OPF's own language fields). There is intentionally no EPUB2 dictionary mode.
+
+The Search Key Map holds exactly one `<search-key-group>` per headword (the spec mandates a single Search Key Map document per dictionary), with one `<match>` per searchable form: the headword plus every inflected form. At full dictionary scale this is a single large file, which is expected.
 
 ### Repair
 
@@ -454,7 +474,7 @@ kindling/
 ├── Cargo.toml                   # edition 2024, Rust 1.85+
 ├── src/
 │   ├── lib.rs                   # Library crate root, public API for external consumers
-│   ├── main.rs                  # CLI: build, comic, stardict, validate, repair, rewrite-metadata, kindlegen-compat
+│   ├── main.rs                  # CLI: build, comic, stardict, epub2, epub3, validate, repair, rewrite-metadata, kindlegen-compat
 │   ├── mobi.rs                  # PalmDB + MOBI record 0 + EXTH writer, UTF-8/tag-safe record splitter
 │   ├── mobi_check.rs            # Post-build MOBI readback: PalmDB, EXTH, text-record sanity
 │   ├── mobi_rewrite.rs          # In-place MOBI/AZW3 metadata and cover rewrite
@@ -466,6 +486,7 @@ kindling/
 │   ├── vwi.rs                   # Variable-width integer encoding
 │   ├── opf.rs                   # OPF and EPUB parsing (Method 1 and Method 2 covers)
 │   ├── epub.rs                  # EPUB extraction for books and comics
+│   ├── epub_build.rs            # EPUB2/EPUB3 output builders (generic book + EPUB3 dictionary layer)
 │   ├── comic.rs                 # Comic pipeline (crop, split, enhance, Panel View)
 │   ├── cbr.rs                   # CBR (RAR) extraction via bsdtar
 │   ├── moire.rs                 # Moire correction for color e-ink

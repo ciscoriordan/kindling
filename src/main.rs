@@ -8,8 +8,8 @@
 ///     kindling input.epub
 ///     kindling input.opf -o output.mobi -dont_append_source -verbose
 use kindling::{
-    comic, epub, extracted::ExtractedEpub, kdp_rules, mobi, mobi_check, mobi_dump, mobi_rewrite,
-    opf, repair, stardict, validate,
+    comic, epub, epub_build, extracted::ExtractedEpub, kdp_rules, mobi, mobi_check, mobi_dump,
+    mobi_rewrite, opf, repair, stardict, validate,
 };
 
 use std::path::PathBuf;
@@ -433,6 +433,70 @@ enum Commands {
         /// 2.4.2 optional field). Omitted when empty.
         #[arg(long)]
         website: Option<String>,
+    },
+
+    /// Build a generic, reflowable EPUB2 book from an OPF or EPUB.
+    ///
+    /// EPUB2 output is never dictionary-aware: if the input carries Kindle
+    /// dictionary markup (idx tags / x-metadata) the dictionary semantics are
+    /// ignored and a plain readable book is emitted. Dictionary output is an
+    /// EPUB3-only feature; use `kindling epub3` for that.
+    #[command(version, name = "epub2")]
+    Epub2 {
+        /// Input OPF or EPUB file (same shape as `kindling build`).
+        input: PathBuf,
+
+        /// Output EPUB2 file. Defaults to `<input-stem>.epub2.epub` next to
+        /// the input.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Override the book title (defaults to the OPF `dc:title`).
+        #[arg(long)]
+        title: Option<String>,
+
+        /// Override the author (defaults to the OPF `dc:creator`).
+        #[arg(long)]
+        author: Option<String>,
+    },
+
+    /// Build an EPUB3 book from an OPF or EPUB.
+    ///
+    /// By default this emits a generic, reflowable EPUB3 book. When the input
+    /// looks like a dictionary (DictionaryInLanguage/DictionaryOutLanguage set,
+    /// or `<dc:type>dictionary`), an extra W3C EPUB-Dictionaries layer is
+    /// emitted: a single Search Key Map, `dc:type=dictionary`, source/target
+    /// language metadata, and `epub:type` semantics. Use `--book` to force a
+    /// plain book, or `--dictionary SRC TARGET` to force a dictionary with
+    /// explicit language codes.
+    #[command(version, name = "epub3")]
+    Epub3 {
+        /// Input OPF or EPUB file (same shape as `kindling build`).
+        input: PathBuf,
+
+        /// Output EPUB3 file. Defaults to `<input-stem>.epub3.epub` next to
+        /// the input.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Override the book title (defaults to the OPF `dc:title`).
+        #[arg(long)]
+        title: Option<String>,
+
+        /// Override the author (defaults to the OPF `dc:creator`).
+        #[arg(long)]
+        author: Option<String>,
+
+        /// Force a plain EPUB3 book even when the input looks like a
+        /// dictionary. Mutually exclusive with `--dictionary`.
+        #[arg(long, conflicts_with = "dictionary")]
+        book: bool,
+
+        /// Force the EPUB3 dictionary layer with explicit SOURCE and TARGET
+        /// language codes (e.g. `--dictionary el en`), overriding auto-detect
+        /// and the OPF's own language fields. Mutually exclusive with `--book`.
+        #[arg(long, num_args = 2, value_names = ["SOURCE", "TARGET"])]
+        dictionary: Option<Vec<String>>,
     },
 
     /// Dump the structural contents of a MOBI/AZW3 file to stdout.
@@ -1103,6 +1167,44 @@ fn main() {
                     website,
                 );
             }
+            Commands::Epub2 {
+                input,
+                output,
+                title,
+                author,
+            } => {
+                do_epub(&input, output.as_ref(), EpubFormat::Epub2, title, author, None);
+            }
+            Commands::Epub3 {
+                input,
+                output,
+                title,
+                author,
+                book,
+                dictionary,
+            } => {
+                // Resolve the dictionary mode: --book forces a plain book,
+                // --dictionary SRC TARGET forces a dictionary, otherwise Auto.
+                let dict_mode = if book {
+                    epub_build::DictMode::Book
+                } else if let Some(pair) = dictionary {
+                    // clap guarantees exactly two values via num_args = 2.
+                    epub_build::DictMode::Dictionary {
+                        source: pair[0].clone(),
+                        target: pair[1].clone(),
+                    }
+                } else {
+                    epub_build::DictMode::Auto
+                };
+                do_epub(
+                    &input,
+                    output.as_ref(),
+                    EpubFormat::Epub3,
+                    title,
+                    author,
+                    Some(dict_mode),
+                );
+            }
             Commands::Dump { input } => {
                 do_dump(&input);
             }
@@ -1185,6 +1287,98 @@ fn do_stardict(
             if report.synwordcount > 0 {
                 eprintln!("  {}", report.syn_path.display());
             }
+        }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            process::exit(1);
+        }
+    }
+}
+
+/// Which EPUB profile to emit.
+#[derive(Clone, Copy)]
+enum EpubFormat {
+    Epub2,
+    Epub3,
+}
+
+/// Build an EPUB2 or EPUB3 from an OPF or EPUB input.
+///
+/// Mirrors `do_stardict`'s input handling: an `.epub` is unzipped into a temp
+/// directory and the inner OPF is used; an `.opf` is consumed in place. For
+/// EPUB2 the `dict_mode` argument is ignored (EPUB2 is always a plain book);
+/// for EPUB3 it selects the dictionary layer. On failure the process exits 1
+/// after emitting a single-line error.
+fn do_epub(
+    input: &PathBuf,
+    output: Option<&PathBuf>,
+    format: EpubFormat,
+    title: Option<String>,
+    author: Option<String>,
+    dict_mode: Option<epub_build::DictMode>,
+) {
+    let is_epub = input
+        .extension()
+        .map(|ext| ext.eq_ignore_ascii_case("epub"))
+        .unwrap_or(false);
+
+    let (temp_dir, opf_path): (Option<PathBuf>, PathBuf) = if is_epub {
+        match epub::extract_epub(input) {
+            Ok((dir, path)) => (Some(dir), path),
+            Err(e) => {
+                eprintln!("Error extracting EPUB: {}", e);
+                process::exit(1);
+            }
+        }
+    } else {
+        (None, input.clone())
+    };
+
+    let suffix = match format {
+        EpubFormat::Epub2 => "epub2",
+        EpubFormat::Epub3 => "epub3",
+    };
+    let output_path: PathBuf = match output {
+        Some(p) => p.clone(),
+        None => {
+            let stem = input
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "book".to_string());
+            let parent = input.parent().unwrap_or(std::path::Path::new("."));
+            parent.join(format!("{}.{}.epub", stem, suffix))
+        }
+    };
+
+    let meta = epub_build::EpubMeta {
+        title,
+        author,
+        identifier: None,
+        dict_mode: dict_mode.unwrap_or(epub_build::DictMode::Auto),
+    };
+
+    let result = (|| {
+        let opf = opf::OPFData::parse(&opf_path)?;
+        match format {
+            EpubFormat::Epub2 => epub_build::build_epub2(&opf, &output_path, &meta),
+            EpubFormat::Epub3 => epub_build::build_epub3(&opf, &output_path, &meta),
+        }
+    })();
+
+    if let Some(ref dir) = temp_dir {
+        epub::cleanup_temp_dir(dir);
+    }
+
+    match result {
+        Ok(()) => {
+            eprintln!(
+                "Wrote {} to {}",
+                match format {
+                    EpubFormat::Epub2 => "EPUB2",
+                    EpubFormat::Epub3 => "EPUB3",
+                },
+                output_path.display()
+            );
         }
         Err(e) => {
             eprintln!("Error: {}", e);

@@ -1,13 +1,15 @@
 //! kindling: Kindle MOBI/AZW3 builder library.
 //!
-//! This crate provides EPUB-to-MOBI/AZW3 conversion, a comic pipeline,
-//! KDP pre-flight validation, and post-build MOBI readback checks.
+//! This crate provides EPUB-to-MOBI/AZW3 conversion, EPUB2/EPUB3 and StarDict
+//! output builders, a comic pipeline, KDP pre-flight validation, and
+//! post-build MOBI readback checks.
 //! The same functionality is exposed through the `kindling-cli` binary,
 //! which is a thin wrapper around these modules.
 
 // Public API
 pub mod comic;
 pub mod epub;
+pub mod epub_build;
 pub mod extracted;
 pub mod kdp_rules;
 pub mod mobi;

@@ -893,6 +893,7 @@ name = "kindling-mobi"
 version = "0.18.3"
 dependencies = [
  "clap",
+ "ego-tree",
  "image",
  "lightningcss",
  "memchr",

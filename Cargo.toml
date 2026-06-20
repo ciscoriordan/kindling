@@ -21,6 +21,10 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+# ego-tree is scraper's tree backing store; depended on directly so the EPUB
+# entry-body XHTML serializer can walk `NodeRef<Node>` nodes by name. Pinned to
+# the version scraper already resolves so no extra crate is pulled in.
+ego-tree = "0.11"
 image = "0.25"
 memchr = "2"
 quick-xml = "0.36"
