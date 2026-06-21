@@ -229,24 +229,33 @@ fn dump_mobi_section(
     let infl_index = read_u32_be(record0, 44).unwrap_or(0);
     let names_index = read_u32_be(record0, 48).unwrap_or(0);
     let keys_index = read_u32_be(record0, 52).unwrap_or(0);
+    // The MOBI header has SIX "extra index" slots (MOBI 0x28..0x3C =
+    // record0 56..76), not four. Reading only four shifted every field from
+    // first_non_text onward 8 bytes early, which mislabeled full_name_length
+    // as dict_input_lang, locale as dict_output_lang, etc. (e.g. a Greek->
+    // English dict dumped dict_input_lang=22 — actually the 22-char name
+    // length — instead of the correct 8/9). Canonical offsets below
+    // (record0 = MOBI header offset + 16).
     let _extra0 = read_u32_be(record0, 56).unwrap_or(0);
     let _extra1 = read_u32_be(record0, 60).unwrap_or(0);
     let _extra2 = read_u32_be(record0, 64).unwrap_or(0);
     let _extra3 = read_u32_be(record0, 68).unwrap_or(0);
-    let first_non_text_index = read_u32_be(record0, 72).unwrap_or(0);
-    let full_name_offset = read_u32_be(record0, 76).unwrap_or(0);
-    let full_name_length = read_u32_be(record0, 80).unwrap_or(0);
-    let locale = read_u32_be(record0, 84).unwrap_or(0);
-    let dict_input_lang = read_u32_be(record0, 88).unwrap_or(0);
-    let dict_output_lang = read_u32_be(record0, 92).unwrap_or(0);
-    let min_version = read_u32_be(record0, 96).unwrap_or(0);
-    let first_image_index = read_u32_be(record0, 100).unwrap_or(0);
-    let huff_rec_index = read_u32_be(record0, 104).unwrap_or(0);
-    let huff_rec_count = read_u32_be(record0, 108).unwrap_or(0);
-    let datp_rec_index = read_u32_be(record0, 112).unwrap_or(0);
-    let datp_rec_count = read_u32_be(record0, 116).unwrap_or(0);
-    let exth_flags = read_u32_be(record0, 120).unwrap_or(0);
-    // offsets 124..172: 32 bytes unknown + 8 bytes reserved area
+    let _extra4 = read_u32_be(record0, 72).unwrap_or(0);
+    let _extra5 = read_u32_be(record0, 76).unwrap_or(0);
+    let first_non_text_index = read_u32_be(record0, 80).unwrap_or(0); // MOBI 0x40
+    let full_name_offset = read_u32_be(record0, 84).unwrap_or(0); // 0x44
+    let full_name_length = read_u32_be(record0, 88).unwrap_or(0); // 0x48
+    let locale = read_u32_be(record0, 92).unwrap_or(0); // 0x4C
+    let dict_input_lang = read_u32_be(record0, 96).unwrap_or(0); // 0x50
+    let dict_output_lang = read_u32_be(record0, 100).unwrap_or(0); // 0x54
+    let min_version = read_u32_be(record0, 104).unwrap_or(0); // 0x58
+    let first_image_index = read_u32_be(record0, 108).unwrap_or(0); // 0x5C
+    let huff_rec_index = read_u32_be(record0, 112).unwrap_or(0); // 0x60
+    let huff_rec_count = read_u32_be(record0, 116).unwrap_or(0); // 0x64
+    let datp_rec_index = read_u32_be(record0, 120).unwrap_or(0); // 0x68
+    let datp_rec_count = read_u32_be(record0, 124).unwrap_or(0); // 0x6C
+    let exth_flags = read_u32_be(record0, 128).unwrap_or(0); // 0x70
+    // offsets 132..168: reserved/unknown area before DRM fields
     let drm_offset = read_u32_be(record0, 168).unwrap_or(0);
     let drm_count = read_u32_be(record0, 172).unwrap_or(0);
     let drm_size = read_u32_be(record0, 176).unwrap_or(0);
