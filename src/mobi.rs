@@ -351,6 +351,7 @@ fn build_dictionary_mobi(
         &text_content,
         headwords_only,
         &opf.dict_in_language,
+        strict_accents,
     );
 
     eprintln!("Building INDX records...");
@@ -2891,6 +2892,7 @@ fn build_lookup_terms(
     text_bytes: &[u8],
     headwords_only: bool,
     dict_lang: &str,
+    strict_accents: bool,
 ) -> (Vec<LookupTerm>, Option<crate::ordt::OrdtTables>) {
     use std::collections::HashMap;
 
@@ -2954,7 +2956,14 @@ fn build_lookup_terms(
     }
 
     eprintln!("Encoding {} unique lookup terms...", terms.len());
-    let gen_ordt = if crate::ordt::uses_generated_ordt(dict_lang) {
+    // `--strict-accents` also routes Latin/Greek/Cyrillic dictionaries
+    // through the generated ORDT. For a non-CJK dictionary that table is the
+    // minimal 3-symbol kindlegen table with every letter left as an
+    // out-of-table literal, which the firmware matches exactly by code point
+    // - so é and e no longer fold (issue #8). Same all-literal mechanism that
+    // resolves Arabic/Chinese/Korean on device. Without the flag, non-CJK
+    // dictionaries keep the diacritic-folding Greek ORDT/SPL blob.
+    let gen_ordt = if crate::ordt::uses_generated_ordt(dict_lang) || strict_accents {
         let refs: Vec<&str> = ordered_labels.iter().map(|s| s.as_str()).collect();
         Some(crate::ordt::OrdtTables::new(&refs))
     } else {

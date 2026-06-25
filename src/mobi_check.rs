@@ -375,7 +375,11 @@ fn check_exth_metadata(
         )),
     }
 
-    // EXTH 501 - cde_content_type. Dictionaries are allowed to skip it.
+    // EXTH 501 - cde_content_type. Reflowable books MUST omit it: its mere
+    // presence makes the Kindle reader hide the back-to-library toolbar and
+    // trap the reader in the book (device-verified, issue #15). Dictionaries
+    // omit it too. Only comics (fixed-layout, a different reader, shelf set
+    // via --doc-type) are expected to carry one.
     match find_exth_string(&section.exth, 501) {
         Some(data) => {
             report.pass();
@@ -389,17 +393,14 @@ fn check_exth_metadata(
                 report.pass();
             }
         }
-        None if expected.is_dictionary => {
-            // Dictionaries historically omit 501; not a hard failure.
-            report.warn(format!(
-                "{}: EXTH 501 (cde_content_type) missing (dictionary, non-fatal)",
-                section_label
-            ));
-        }
-        None => report.fail(format!(
-            "{}: EXTH 501 (cde_content_type) missing",
+        None if expected.is_comic => report.fail(format!(
+            "{}: EXTH 501 (cde_content_type) missing on comic",
             section_label
         )),
+        None => {
+            // Books and dictionaries correctly omit 501.
+            report.pass();
+        }
     }
 
     // Author round-trip (P1, warn only).

@@ -404,18 +404,28 @@ pub fn build_book_exth(
         }
     }
 
-    // Document type (501) - controls where the book appears on Kindle.
-    // "EBOK" = Books shelf (WARNING: Amazon may auto-delete sideloaded EBOK
-    //          content when the Kindle connects to WiFi, since it verifies
-    //          the ASIN against the user's purchase history).
-    // "PDOC" = Documents shelf (default, safe for sideloaded content).
+    // Document type (501). Omitted by default (doc_type = None). Its mere
+    // PRESENCE - any value - makes the Kindle reader treat a reflowable book
+    // as a non-navigable document and hide the back-to-library toolbar,
+    // trapping the reader in the book. Device-verified on issue #15: both
+    // PDOC and EBOK broke home nav; omitting the record entirely (as
+    // kindlegen does for books) is the only thing that restores it. So a 501
+    // is written only when explicitly requested - the comic path passes
+    // --doc-type to assign a shelf, and comics are fixed-layout (a different
+    // reader, unaffected).
+    //   "EBOK" = Books shelf (WARNING: Amazon may auto-delete sideloaded EBOK
+    //            content on WiFi sync, since it verifies the ASIN against the
+    //            user's purchase history).
+    //   "PDOC" = Documents shelf.
     match doc_type {
         Some("EBOK") => {
             records.push(exth_record(501, b"EBOK"));
         }
-        _ => {
-            // PDOC is the default. We write it explicitly for clarity.
+        Some(_) => {
             records.push(exth_record(501, b"PDOC"));
+        }
+        None => {
+            // Omit EXTH 501: reflowable books keep their navigation chrome.
         }
     }
 
@@ -609,7 +619,11 @@ mod tests {
     }
 
     #[test]
-    fn test_exth_doc_type_pdoc_default() {
+    fn test_exth_doc_type_none_omits_501() {
+        // Reflowable books (doc_type = None) must NOT emit EXTH 501. The
+        // record's presence - any value - suppresses the Kindle reader's
+        // navigation chrome (back-to-library toolbar). Device-verified on
+        // issue #15. Only the comic path (explicit --doc-type) writes one.
         let exth = build_book_exth(
             "Test Book",
             "Author",
@@ -622,16 +636,18 @@ mod tests {
             None,
             None,
             false,
-            None, // doc_type: None should produce PDOC
+            None, // doc_type: None should omit EXTH 501 entirely
             None,
             None,
             None,
             None,
         );
         let records = parse_exth_records(&exth);
-        let rec501 = find_record(&records, 501).expect("EXTH 501 should exist");
-        assert_eq!(rec501, b"PDOC", "Default doc_type should be PDOC");
-        println!("  \u{2713} EXTH 501 default = PDOC");
+        assert!(
+            find_record(&records, 501).is_none(),
+            "Default (book) build must omit EXTH 501 so home nav works"
+        );
+        println!("  \u{2713} EXTH 501 omitted for reflowable books (home-nav fix)");
     }
 
     #[test]

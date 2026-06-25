@@ -511,7 +511,11 @@ pub fn build_comic_with_options(
         true,  // skip HD images (KCC doesn't emit HD container)
         false, // default creator identity
         options.kf8_only,
-        options.doc_type.as_deref(),
+        // Comics always carry a cde_content_type (EXTH 501): they are
+        // fixed-layout and need a shelf assignment. Default to PDOC when none
+        // was requested. (Reflowable books omit 501 to keep their home-nav
+        // chrome - issue #15 - but comics use a different reader, unaffected.)
+        options.doc_type.as_deref().or(Some("PDOC")),
         options.kindle_limits,
         options.self_check,
         options.kindlegen_parity,

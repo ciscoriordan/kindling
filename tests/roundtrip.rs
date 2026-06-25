@@ -210,7 +210,13 @@ fn roundtrip_simple_book() {
         "book: KF8 orth_index should point to fragment INDX, got 0x{:08x}",
         kf7.header.orth_index
     );
-    assert_required_exth(kf7, "book KF8", true);
+    // Reflowable books omit EXTH 501 (cde_content_type): its presence hides
+    // the Kindle reader's back-to-library toolbar (issue #15). Comics keep it.
+    assert_required_exth(kf7, "book KF8", false);
+    assert!(
+        kf7.exth_first(501).is_none(),
+        "book must omit EXTH 501 so home nav works"
+    );
 
     // KF8: FDST / skeleton / fragment indices must point at real records.
     let skel_idx = kf7.header.skeleton_index as usize;

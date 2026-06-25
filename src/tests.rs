@@ -607,29 +607,33 @@ mod tests {
         let default_indx = orth_primary(&build(dir_default.path(), false));
         let strict_indx = orth_primary(&build(dir_strict.path(), true));
 
-        // Default build: ORDT/SPL collation blob must be embedded.
-        let ordt_count_default = default_indx.windows(4).filter(|w| *w == b"ORDT").count();
+        // Default build: the diacritic-folding Greek ORDT/SPL collation
+        // blob is embedded (this is what makes "meme" match "même").
         let spl_present_default = default_indx.windows(4).any(|w| w == b"SPL1");
         assert!(
-            ordt_count_default >= 2,
-            "default orth INDX should contain ORDT1+ORDT2 magics (got {})",
-            ordt_count_default
-        );
-        assert!(
             spl_present_default,
-            "default orth INDX should contain SPL collation tables"
+            "default orth INDX should contain the SPL folding collation"
         );
 
-        // Strict build: no ORDT/SPL at all in the orth INDX.
-        let ordt_count_strict = strict_indx.windows(4).filter(|w| *w == b"ORDT").count();
+        // Strict build: the dictionary is routed through the generated ORDT
+        // instead. That table is the minimal 3-symbol kindlegen table (every
+        // letter left as an exact literal), so the orth INDX primary
+        // declares oentries=3 and a non-zero ORDT2 offset, and carries NO
+        // SPL folding table. This is what makes "même" match exactly (#8).
         let spl_present_strict = strict_indx.windows(4).any(|w| w == b"SPL1");
-        assert_eq!(
-            ordt_count_strict, 0,
-            "strict_accents orth INDX must not embed ORDT"
-        );
         assert!(
             !spl_present_strict,
-            "strict_accents orth INDX must not embed SPL"
+            "strict_accents orth INDX must not embed the SPL folding table"
+        );
+        let oentries = read_u32_be(&strict_indx, 168); // generated-ORDT table size
+        let ordt2_off = read_u32_be(&strict_indx, 176); // ORDT2 (values) offset
+        assert_eq!(
+            oentries, 3,
+            "strict_accents should use the minimal 3-symbol literal ORDT (got oentries={oentries})"
+        );
+        assert!(
+            ordt2_off != 0,
+            "strict_accents orth INDX must embed the generated ORDT2 table"
         );
 
         // Both builds must still declare 4 headword entries.
@@ -637,7 +641,7 @@ mod tests {
         assert_eq!(read_u32_be(&strict_indx, 36), 4);
 
         println!(
-            "  \u{2713} strict_accents toggle: default embeds ORDT/SPL ({} bytes), strict omits ({} bytes)",
+            "  \u{2713} strict_accents toggle: default embeds Greek SPL folding ({} bytes), strict uses generated literal ORDT oentries=3 ({} bytes)",
             default_indx.len(),
             strict_indx.len()
         );
@@ -7908,7 +7912,11 @@ mod tests {
     }
 
     #[test]
-    fn test_book_exth_501_doc_type_pdoc() {
+    fn test_book_exth_501_omitted() {
+        // A reflowable book must NOT carry EXTH 501 (cde_content_type): its
+        // presence makes the Kindle reader hide the back-to-library toolbar
+        // and trap the reader in the book. kindlegen writes none for books;
+        // kindling matches. Device-verified on issue #15.
         let dir = TempDir::new("book_exth_501");
         let jpeg = make_test_jpeg();
         let opf = create_book_fixture(dir.path(), Some(&jpeg));
@@ -7917,16 +7925,11 @@ mod tests {
         let rec0 = get_record(&data, &offsets, 0);
         let exth = parse_exth_records(rec0);
 
-        let entries = exth
-            .get(&501)
-            .expect("Book EXTH 501 (DocType) should be present");
-        let val = std::str::from_utf8(&entries[0]).unwrap();
-        assert_eq!(
-            val, "PDOC",
-            "Book EXTH 501 default should be 'PDOC', got '{}'",
-            val
+        assert!(
+            !exth.contains_key(&501),
+            "Book must omit EXTH 501 (cde_content_type) so home nav works"
         );
-        println!("  \u{2713} Book EXTH 501 (DocType): {}", val);
+        println!("  \u{2713} Book omits EXTH 501 (home-nav fix)");
     }
 
     #[test]

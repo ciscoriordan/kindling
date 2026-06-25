@@ -103,12 +103,12 @@ enum Commands {
         no_self_check: bool,
 
         /// Strict accent matching for dictionary lookups. By default
-        /// kindling embeds the kindlegen-derived ORDT/SPL collation tables
-        /// in the orth INDX, which makes Kindle fold diacritics at lookup
-        /// time ("meme" matches "même"). With this flag, the collation
-        /// blob is omitted: Kindle falls back to raw UTF-16BE ordering,
-        /// so exact-accent headwords always beat unaccented homographs
-        /// when both exist in the dictionary. No effect on book builds.
+        /// kindling embeds the kindlegen-derived ORDT/SPL collation tables,
+        /// which make Kindle fold diacritics at lookup time ("meme" matches
+        /// "même"). With this flag the dictionary is routed through a
+        /// per-character collation that leaves every letter as an exact
+        /// literal, so accented headwords match exactly ("même" returns
+        /// "même", not "meme"). No effect on book builds.
         #[arg(long)]
         strict_accents: bool,
     },
@@ -1014,16 +1014,19 @@ fn main() {
                     }
                 };
 
-                // Parse doc_type flag
+                // Parse doc_type flag. Comics carry an explicit
+                // cde_content_type (they are fixed-layout and need a shelf
+                // assignment); only reflowable books omit EXTH 501 (None) to
+                // keep their home-nav chrome (issue #15).
                 let doc_type_value = match doc_type.to_lowercase().as_str() {
                     "ebok" => Some("EBOK".to_string()),
-                    "pdoc" => None, // None means default PDOC
+                    "pdoc" => Some("PDOC".to_string()),
                     other => {
                         eprintln!(
                             "Warning: unknown --doc-type '{}', using default 'pdoc'",
                             other
                         );
-                        None
+                        Some("PDOC".to_string())
                     }
                 };
 

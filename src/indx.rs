@@ -603,9 +603,11 @@ fn build_indx_primary(
     }
 
     // Append ORDT/SPL sort tables for the main headword sub-index (hdr=199).
-    // `OrdtMode::None` (--strict-accents) suppresses the embed so Kindle
-    // reverts to plain UTF-16BE collation; exact-accented headwords then
-    // beat fuzzy matches at lookup time (see the --strict-accents CLI flag).
+    // The static Greek blob is the diacritic-folding default. With
+    // `--strict-accents`, the dictionary is instead routed through the
+    // generated ORDT (handled by `OrdtMode::Generated` above), whose
+    // minimal table leaves every letter as a literal that matches exactly,
+    // so this Greek embed is skipped and é/e no longer fold (issue #8).
     if embed_default && matches!(ordt_mode, OrdtMode::Greek) && !ORDT_GREEK.is_empty() {
         let ordt_start = record.len();
         record.extend_from_slice(ORDT_GREEK);

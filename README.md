@@ -186,8 +186,8 @@ Kindle library field mapping (what the Kindle actually displays for sideloaded c
 | Title | EXTH 503 (books/dicts) or KF8 Record 0 full_name (comics) | EXTH 503 is emitted for reflowable books and dictionaries. For fixed-layout comics, EXTH 503 is omitted - it breaks Kindle navigation (toolbar/go-home disappear). KCC/kindlegen also omit it for comics. For dual-format `.mobi`, Kindle reads full_name from KF8 Record 0, not KF7. |
 | Author | EXTH 100 | Set via `--author` flag or ComicInfo.xml `<Writer>`/`<Penciller>`. Defaults to "kindling". |
 | Cover | EXTH 201 (cover image offset in image pool) + EXTH 129 (KF8 cover URI) | Cover offset is 0-based index within image records starting at `first_image`. |
-| Document type | EXTH 501 | `PDOC` = Documents shelf (default), `EBOK` = Books shelf. Set via `--doc-type ebok`. |
-- **Document type**: `--doc-type ebok` to appear under Books instead of Documents on Kindle (default: `pdoc`)
+| Document type | EXTH 501 | Omitted entirely for reflowable books. Its mere presence (any value) makes the Kindle reader treat the book as a non-navigable document and hide the back-to-library toolbar, trapping the reader in the book (device-verified, issue #15). kindlegen writes none for books. Comics are fixed-layout (a different reader, unaffected) and set it via `--doc-type`: `PDOC` = Documents shelf, `EBOK` = Books shelf. |
+- **Document type** (comics): `--doc-type ebok` to appear under Books instead of Documents on Kindle (default: `pdoc`). Reflowable books write no content-type record, because its presence breaks the reader's home navigation.
 - **KF8-only by default**: comics output `.azw3` with only the KF8 section (no MOBI7); pass `--legacy-mobi` for the old dual-format behavior on pre-2012 Kindles
 
 ### Validation

@@ -518,6 +518,32 @@ mod tests {
     }
 
     #[test]
+    fn latin_accents_are_distinct_literals() {
+        // Issue #8: --strict-accents routes a Latin dictionary through the
+        // generated ORDT. With no kana the table is just the 3-symbol seed
+        // (NUL, %, _) and every letter is an out-of-table literal, which the
+        // firmware matches exactly by code point. So accented and base forms
+        // must NOT fold: "même" and "meme" encode to different labels.
+        let o = OrdtTables::new(&["même", "meme", "mère", "mere"]);
+        assert_eq!(o.count(), 3, "Latin dict gets the minimal 3-symbol table");
+        assert!(o.two_byte, "letters are literals -> two-byte labels");
+        // Each letter is encoded as its raw code point (a literal).
+        let m = elems(&o, &o.encode_label("même"));
+        assert_eq!(m, vec![0x006D, 0x00EA, 0x006D, 0x0065]); // m ê m e
+        assert_ne!(
+            o.encode_label("même"),
+            o.encode_label("meme"),
+            "accented and base forms must encode distinctly"
+        );
+        assert_ne!(o.encode_label("mère"), o.encode_label("mere"));
+        // ...and sort to distinct keys, so they are separate index entries.
+        assert_ne!(
+            o.sort_key(&o.encode_label("même")),
+            o.sort_key(&o.encode_label("meme"))
+        );
+    }
+
+    #[test]
     fn kana_are_symbols_kanji_are_literals() {
         // 食べる: 食 (kanji) is a literal code point, べ and る are symbols.
         let o = OrdtTables::new(&["食べる", "あい"]);
