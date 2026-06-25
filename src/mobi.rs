@@ -667,7 +667,12 @@ fn build_book_mobi(
         }
     }
 
-    let css_content = extract_css_content(opf);
+    let (css_content, css_basenames) = extract_css_content(opf, &html_parts);
+    // Spine hrefs aligned 1:1 with `html_parts` (same existing-file
+    // filter and order), so position i is the fragment id of the i-th
+    // spine HTML file. Used to rewrite internal `<a href>` links to
+    // `kindle:pos:fid:...` and to label the per-section NCX nodes.
+    let spine_hrefs = opf.get_content_html_hrefs();
     let kf8_title = if opf.title.is_empty() {
         "Book"
     } else {
@@ -676,8 +681,10 @@ fn build_book_mobi(
     let kf8_section = crate::kf8::build_kf8_section(
         &html_parts,
         &css_content,
+        &css_basenames,
         &href_to_recindex,
         &opf.spine_items,
+        &spine_hrefs,
         no_compress,
         kindlegen_parity,
         kf8_title,
@@ -1509,22 +1516,82 @@ fn build_html_parts(opf: &OPFData) -> Vec<String> {
     parts
 }
 
-/// Extract CSS content from the OPF manifest.
+/// Extract CSS content for the KF8 CSS flow.
 ///
-/// Reads all CSS files referenced in the manifest and concatenates them.
-fn extract_css_content(opf: &OPFData) -> String {
+/// Returns the concatenated CSS plus the set of basenames of every CSS
+/// file that was successfully read. The basename set lets the KF8 HTML
+/// transform rewrite the matching `<link href="...css">` references to
+/// `kindle:flow:0001` (and leave unknown `.css` links dangling, like
+/// kindlegen does).
+///
+/// Two discovery sources are unioned:
+///  1. The OPF manifest (items with `text/css` media-type or a `.css` href).
+///  2. A scan of every spine HTML part for `<link ... href="X.css">`.
+///     Many real EPUBs (e.g. the issue #15 sample) reference a stylesheet
+///     from every xhtml `<head>` but never declare it in the manifest, so
+///     a manifest-only walk silently drops the styling.
+///
+/// CSS files are resolved relative to `opf.base_dir` and de-duplicated by
+/// canonical path so a stylesheet shared by every part is concatenated
+/// once. Manifest CSS comes first, then link-discovered CSS in first-seen
+/// order, joined with `\n` (matching the previous behavior).
+fn extract_css_content(
+    opf: &OPFData,
+    html_parts: &[String],
+) -> (String, std::collections::HashSet<String>) {
     let mut css_parts: Vec<String> = Vec::new();
+    let mut extracted_basenames: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    // De-dupe by resolved path so the same stylesheet isn't concatenated
+    // once per referencing file.
+    let mut seen_paths: std::collections::HashSet<std::path::PathBuf> =
+        std::collections::HashSet::new();
 
+    let take_css = |href: &str,
+                    css_parts: &mut Vec<String>,
+                    extracted: &mut std::collections::HashSet<String>,
+                    seen: &mut std::collections::HashSet<std::path::PathBuf>| {
+        let decoded = percent_decode(href);
+        let css_path = opf.base_dir.join(&decoded);
+        let key = css_path.canonicalize().unwrap_or_else(|_| css_path.clone());
+        if !seen.insert(key) {
+            return;
+        }
+        if let Ok(content) = std::fs::read_to_string(&css_path) {
+            css_parts.push(content);
+            if let Some(fname) = decoded.rsplit('/').next() {
+                extracted.insert(fname.to_string());
+            }
+        }
+    };
+
+    // Source 1: manifest.
     for (_, (href, media_type)) in &opf.manifest {
         if media_type == "text/css" || href.ends_with(".css") {
-            let css_path = opf.base_dir.join(href);
-            if let Ok(content) = std::fs::read_to_string(&css_path) {
-                css_parts.push(content);
-            }
+            take_css(
+                href,
+                &mut css_parts,
+                &mut extracted_basenames,
+                &mut seen_paths,
+            );
         }
     }
 
-    css_parts.join("\n")
+    // Source 2: <link href="*.css"> scanned from the spine HTML.
+    let link_re = Regex::new(r#"(?i)<link\b[^>]*\bhref\s*=\s*"([^"]+\.css)"[^>]*>"#).unwrap();
+    for part in html_parts {
+        for caps in link_re.captures_iter(part) {
+            let href = caps.get(1).unwrap().as_str();
+            take_css(
+                href,
+                &mut css_parts,
+                &mut extracted_basenames,
+                &mut seen_paths,
+            );
+        }
+    }
+
+    (css_parts.join("\n"), extracted_basenames)
 }
 
 /// Read and concatenate all spine HTML files into a single text blob.
@@ -3464,34 +3531,46 @@ fn build_palmdb(title: &str, records: &[Vec<u8>]) -> Vec<u8> {
 /// kindlegen's output (Korean 0x0412, French 0x040C), so we mirror that.
 fn mobi_locale_code(lang: &str) -> u32 {
     let full = locale_code(lang);
-    let primary = lang.split(['-', '_']).next().unwrap_or(lang);
-    match primary {
+    let primary = lang
+        .split(['-', '_'])
+        .next()
+        .unwrap_or(lang)
+        .to_ascii_lowercase();
+    match primary.as_str() {
         "ko" | "fr" => full, // kindlegen keeps the full LCID for these
         _ => full & 0x3FF,   // neutral primary LCID
     }
 }
 
+/// Map an OPF `dc:language` tag to a Windows LCID. Matching is
+/// case-insensitive and tolerant of `_`/`-` separators, so `zh-cn`,
+/// `zh-CN`, and `ZH_CN` all resolve to Chinese (Simplified) rather than
+/// falling through to the en-US default (the bug behind issue #15's
+/// `locale = 9` on a `zh-cn` book).
 fn locale_code(lang: &str) -> u32 {
-    match lang {
-        "en" | "en-US" => 0x0409,
-        "en-GB" => 0x0809,
-        "el" | "el-GR" => 0x0408,
-        "de" | "de-DE" => 0x0407,
-        "fr" | "fr-FR" => 0x040C,
-        "es" | "es-ES" => 0x0C0A,
-        "it" | "it-IT" => 0x0410,
-        "pt" | "pt-BR" => 0x0416,
-        "pt-PT" => 0x0816,
-        "nl" | "nl-NL" => 0x0413,
-        "ru" | "ru-RU" => 0x0419,
-        "ja" | "ja-JP" => 0x0411,
-        "zh" | "zh-CN" => 0x0804,
-        "zh-TW" => 0x0404,
-        "ko" | "ko-KR" => 0x0412,
-        "ar" | "ar-SA" => 0x0401,
-        "he" | "he-IL" => 0x040D,
-        "tr" | "tr-TR" => 0x041F,
-        _ => 0x0409, // default to en-US
+    let norm = lang.replace('_', "-").to_ascii_lowercase();
+    match norm.as_str() {
+        "en-gb" => 0x0809,
+        "pt-pt" => 0x0816,
+        "zh-tw" | "zh-hk" | "zh-hant" => 0x0404,
+        _ => match norm.split('-').next().unwrap_or(&norm) {
+            "en" => 0x0409,
+            "el" => 0x0408,
+            "de" => 0x0407,
+            "fr" => 0x040C,
+            "es" => 0x0C0A,
+            "it" => 0x0410,
+            "pt" => 0x0416,
+            "nl" => 0x0413,
+            "ru" => 0x0419,
+            "ja" => 0x0411,
+            "zh" => 0x0804,
+            "ko" => 0x0412,
+            "ar" => 0x0401,
+            "he" => 0x040D,
+            "tr" => 0x041F,
+            _ => 0x0409, // default to en-US
+        },
     }
 }
 

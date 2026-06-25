@@ -477,16 +477,16 @@ pub fn parse_mobi_file(data: &[u8]) -> Result<ParsedMobi, String> {
 /// compress_text_palmdoc().
 pub fn extract_text_blob(parsed: &ParsedMobi, section: &MobiSection) -> Vec<u8> {
     let mut blob = Vec::new();
-    // Synthesize the flags we KNOW kindling's layer uses per section kind.
-    // We deliberately do NOT read the on-disk extra_data_flags here: KF7
-    // records written before the parser at offset-240 was corrected had
-    // garbage in that field, and even now it is a per-file toggle whose
-    // value (1 vs 3) is equivalent to picking KF8 vs KF7 trailer shapes.
-    let extra_data_flags: u32 = if section.header.file_version >= 8 {
-        1 // KF8: multibyte only
-    } else {
-        3 // KF7: multibyte + TBS
-    };
+    // Both KF7 and KF8 records carry multibyte (bit 0) + TBS (bit 1)
+    // trailing regions; kindling writes extra_record_flags = 3 for both.
+    // The backward-varint loop below strips the TBS region by its own
+    // length suffix, so this is correct regardless of how large the
+    // per-record TBS is. (The previous KF8 value of 1 relied on the old
+    // single-node TBS size byte coincidentally encoding the full strip
+    // length in its low 2 bits; the real multi-node TBS breaks that, so we
+    // must strip the TBS region properly via its backward-varint length.)
+    let _ = section.header.file_version;
+    let extra_data_flags: u32 = 3;
     let count = section.header.text_record_count as usize;
     let start = section.record_idx + 1;
     for i in 0..count {

@@ -335,6 +335,25 @@ impl OPFData {
             .collect()
     }
 
+    /// Return the manifest hrefs of HTML content files in spine order,
+    /// filtered to those that exist on disk. Index-aligned with
+    /// `get_content_html_paths` (and therefore with the KF8 skeleton /
+    /// fragment order), so position `i` in this list is the fragment id
+    /// of the `i`-th spine HTML file. Used to rewrite internal
+    /// `<a href="other.xhtml">` links to `kindle:pos:fid:...` targets.
+    pub fn get_content_html_hrefs(&self) -> Vec<String> {
+        self.spine_items
+            .iter()
+            .filter_map(|(_, href)| {
+                if self.base_dir.join(href).exists() {
+                    Some(href.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     /// Return image manifest items as (href, media_type) pairs, ordered by manifest id.
     ///
     /// Only includes items with media-type starting with "image/".

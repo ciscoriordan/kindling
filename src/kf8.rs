@@ -117,20 +117,31 @@ struct FragmentEntry {
 /// `spine_idx * 1_000_000` per page). Off by default — kindling's normal
 /// output is "better than kindlegen" (pretty-printed, aided img tags,
 /// IANA-correct `image/jpeg` mime).
+#[allow(clippy::too_many_arguments)]
 pub fn build_kf8_section(
     html_parts: &[String],
     css_content: &str,
+    css_basenames: &std::collections::HashSet<String>,
     href_to_recindex: &std::collections::HashMap<String, usize>,
     spine_items: &[(String, String)],
+    spine_hrefs: &[String],
     no_compress: bool,
     kindlegen_parity: bool,
     title: &str,
 ) -> Kf8Section {
     // Step 1: Build the split skeletons + fragments from each HTML part.
-    let (kf8_html, skeleton_entries, fragment_entries) =
-        build_kf8_html(html_parts, href_to_recindex, spine_items, kindlegen_parity);
+    // Internal `<a href>` links are rewritten to `kindle:pos:fid:...` and
+    // `<link href="*.css">` to `kindle:flow:0001` inside this step.
+    let (kf8_html, skeleton_entries, fragment_entries) = build_kf8_html(
+        html_parts,
+        href_to_recindex,
+        spine_items,
+        spine_hrefs,
+        css_basenames,
+        kindlegen_parity,
+    );
 
-    // Step 2: Append CSS as a separate flow.
+    // Step 2: Append CSS as a separate flow (only when there is CSS).
     let css_bytes = css_content.as_bytes();
     let html_length = kf8_html.len();
     let total_text_length = html_length + css_bytes.len();
@@ -140,16 +151,29 @@ pub fn build_kf8_section(
     let mut combined_text = kf8_html;
     combined_text.extend_from_slice(css_bytes);
 
-    // Step 3: Compress text into records.
-    let num_skeletons = skeleton_entries.len();
+    // Per-section NCX node boundaries: one node per skeleton (spine item),
+    // each starting at the skeleton's absolute offset in the HTML flow and
+    // running to the next skeleton (last one to the end of the HTML flow).
+    // This tiles the whole book so the device's reading-position / progress
+    // map advances across every chapter instead of collapsing onto the
+    // single front-matter record (issue #15). A genuine one-page comic has
+    // a single skeleton and therefore still gets a single node.
+    let ncx_nodes = build_ncx_nodes(&skeleton_entries, html_parts, html_length);
+    let node_offsets: Vec<usize> = ncx_nodes.iter().map(|n| n.offset).collect();
+
+    // Step 3: Compress text into records, stamping each record with a TBS
+    // that reflects which NCX nodes begin in or span it.
     let (text_records, text_length) = if no_compress {
-        split_text_uncompressed_kf8(&combined_text, num_skeletons)
+        split_text_uncompressed_kf8(&combined_text, &node_offsets, html_length)
     } else {
-        compress_text_kf8(&combined_text, num_skeletons)
+        compress_text_kf8(&combined_text, &node_offsets, html_length)
     };
 
-    // Step 4: FDST record.
+    // Step 4: FDST record. flow[1] carries the CSS flow when present and
+    // is an empty stub otherwise (unchanged from prior behavior, so the
+    // comic / dictionary paths that ship no CSS are byte-identical).
     let fdst = build_fdst(html_length, total_text_length);
+    let flow_count = 2; // Always 2 per KCC/libmobi
 
     // Step 5: Skeleton INDX records.
     let skeleton_indx = build_skeleton_indx(&skeleton_entries);
@@ -158,14 +182,12 @@ pub fn build_kf8_section(
     // the selector strings referenced by tag 2 of each fragment entry.
     let (fragment_indx, cncx_records) = build_fragment_indx_with_cncx(&fragment_entries);
 
-    // Step 7: NCX INDX with proper 5-tag structure + CNCX label record.
-    // Title is used as the TOC label in the NCX CNCX. Must be non-empty.
-    let (ncx_indx, ncx_cncx_records) = build_ncx_indx(title, &skeleton_entries, html_length);
+    // Step 7: NCX INDX with proper 5-tag structure + CNCX label records,
+    // one entry per section node.
+    let (ncx_indx, ncx_cncx_records) = build_ncx_indx(title, &ncx_nodes);
 
-    // Step 8: DATP record (stub).
-    let datp = build_datp();
-
-    let flow_count = 2; // Always 2 per KCC/libmobi
+    // Step 8: DATP record describing the NCX-node / text-record layout.
+    let datp = build_datp(&node_offsets, text_records.len());
 
     Kf8Section {
         text_records,
@@ -183,6 +205,50 @@ pub fn build_kf8_section(
     }
 }
 
+/// A single NCX (table-of-contents / reading-position) node.
+struct NcxNode {
+    /// Absolute byte offset of the section start in the HTML flow.
+    offset: usize,
+    /// Byte length of the section (to the next node, or end of flow).
+    length: usize,
+    /// Display label (chapter `<title>` if present, else a fallback).
+    label: String,
+    /// Fragment id this node points at (== the spine/skeleton index,
+    /// since kindling emits exactly one fragment per spine item).
+    fid: usize,
+}
+
+/// Derive one NCX node per skeleton, labelled by the spine file's
+/// `<title>` where available.
+fn build_ncx_nodes(
+    skeleton_entries: &[SkeletonEntry],
+    html_parts: &[String],
+    html_length: usize,
+) -> Vec<NcxNode> {
+    let title_re = Regex::new(r"(?is)<title[^>]*>(.*?)</title>").unwrap();
+    let mut nodes = Vec::with_capacity(skeleton_entries.len());
+    for (i, skel) in skeleton_entries.iter().enumerate() {
+        let end = skeleton_entries
+            .get(i + 1)
+            .map(|s| s.start_pos)
+            .unwrap_or(html_length);
+        let length = end.saturating_sub(skel.start_pos);
+        let label = html_parts
+            .get(i)
+            .and_then(|p| title_re.captures(p))
+            .map(|c| c.get(1).unwrap().as_str().trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| format!("Section {}", i + 1));
+        nodes.push(NcxNode {
+            offset: skel.start_pos,
+            length,
+            label,
+            fid: i,
+        });
+    }
+    nodes
+}
+
 /// Build KF8 HTML with aid attributes, kindle:embed image URLs, and the
 /// skeleton/fragment split.
 ///
@@ -192,9 +258,17 @@ fn build_kf8_html(
     html_parts: &[String],
     href_to_recindex: &std::collections::HashMap<String, usize>,
     spine_items: &[(String, String)],
+    spine_hrefs: &[String],
+    css_basenames: &std::collections::HashSet<String>,
     kindlegen_parity: bool,
 ) -> (Vec<u8>, Vec<SkeletonEntry>, Vec<FragmentEntry>) {
     let path_to_recindex = build_image_path_lookup(href_to_recindex, spine_items);
+    // Map every internal spine-file reference (full href and bare
+    // basename, raw and percent-decoded) to the 4-char base32 fragment id
+    // of that file, which equals its position in `spine_hrefs` because
+    // kindling emits exactly one fragment per spine item. Used to rewrite
+    // `<a href="other.xhtml">` to `kindle:pos:fid:FFFF:off:...`.
+    let href_to_fid = build_internal_link_lookup(spine_hrefs);
 
     let mut skeleton_entries: Vec<SkeletonEntry> = Vec::new();
     let mut fragment_entries: Vec<FragmentEntry> = Vec::new();
@@ -216,12 +290,16 @@ fn build_kf8_html(
             global_aid_counter
         };
         // 1. Normalize this spine item into Calibre-style KF8 output:
-        //    add aid attributes to aid-able tags and rewrite image src
-        //    URLs to `kindle:embed:....`.
+        //    add aid attributes to aid-able tags, rewrite image src URLs
+        //    to `kindle:embed:...`, internal `<a href>` links to
+        //    `kindle:pos:fid:...`, and `<link href="*.css">` to
+        //    `kindle:flow:0001`.
         let processed = process_kf8_part(
             raw_part,
             &mut aid_counter,
             &path_to_recindex,
+            &href_to_fid,
+            css_basenames,
             kindlegen_parity,
         );
         if !kindlegen_parity {
@@ -459,6 +537,8 @@ fn process_kf8_part(
     html: &str,
     aid_counter: &mut u32,
     path_to_recindex: &std::collections::HashMap<String, usize>,
+    href_to_fid: &std::collections::HashMap<String, String>,
+    css_basenames: &std::collections::HashSet<String>,
     kindlegen_parity: bool,
 ) -> String {
     let mut result = html.to_string();
@@ -492,6 +572,58 @@ fn process_kf8_part(
             }
         })
         .to_string();
+
+    // Rewrite `<link href="*.css">` references that point at a stylesheet
+    // we actually extracted into the CSS flow to `kindle:flow:0001`. CSS
+    // files we didn't extract (and non-CSS links like page-template.xpgt)
+    // are left untouched, exactly like kindlegen.
+    if !css_basenames.is_empty() {
+        let link_re =
+            Regex::new(r#"(?i)(<link\b[^>]*\bhref\s*=\s*")([^"]+\.css)("[^>]*>)"#).unwrap();
+        result = link_re
+            .replace_all(&result, |caps: &regex::Captures| {
+                let href = caps.get(2).unwrap().as_str();
+                let basename = href.rsplit('/').next().unwrap_or(href);
+                if css_basenames.contains(basename)
+                    || css_basenames.contains(&percent_decode_str(basename))
+                {
+                    format!(
+                        "{}kindle:flow:0001?mime=text/css{}",
+                        caps.get(1).unwrap().as_str(),
+                        caps.get(3).unwrap().as_str()
+                    )
+                } else {
+                    caps.get(0).unwrap().as_str().to_string()
+                }
+            })
+            .to_string();
+    }
+
+    // Rewrite internal `<a href="other.xhtml#frag">` links to
+    // `kindle:pos:fid:FFFF:off:OOOOOOOOOO`. FFFF is the 4-char base32
+    // fragment id of the target spine file; OFF is a 10-digit decimal
+    // byte offset within that fragment. Whole-file links (and, for now,
+    // `#frag` links) resolve to offset 0 (the start of the target file).
+    // External schemes and unknown targets are left untouched.
+    if !href_to_fid.is_empty() {
+        let a_re = Regex::new(r#"(?i)(<a\b[^>]*\bhref\s*=\s*")([^"]+)("[^>]*>)"#).unwrap();
+        result = a_re
+            .replace_all(&result, |caps: &regex::Captures| {
+                let href = caps.get(2).unwrap().as_str();
+                if let Some(fid) = resolve_internal_link(href, href_to_fid) {
+                    format!(
+                        "{}kindle:pos:fid:{}:off:{:010}{}",
+                        caps.get(1).unwrap().as_str(),
+                        fid,
+                        0,
+                        caps.get(3).unwrap().as_str()
+                    )
+                } else {
+                    caps.get(0).unwrap().as_str().to_string()
+                }
+            })
+            .to_string();
+    }
 
     // Add aid attributes to block / inline tags in Calibre's aid-able
     // set. We append the aid attribute just before the closing `>` of
@@ -590,39 +722,276 @@ fn build_image_path_lookup(
     path_to_recindex
 }
 
+/// Build the internal-link lookup: every spine HTML reference (full href
+/// and bare basename, raw and percent-decoded) maps to the 4-char base32
+/// fragment id of that file. The fragment id equals the file's position
+/// in `spine_hrefs` because kindling emits exactly one fragment per spine
+/// item. The first spine item wins on basename collisions.
+fn build_internal_link_lookup(spine_hrefs: &[String]) -> std::collections::HashMap<String, String> {
+    let mut map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for (i, href) in spine_hrefs.iter().enumerate() {
+        let fid = encode_base32_4char(i);
+        let decoded = percent_decode_str(href);
+        map.entry(href.clone()).or_insert_with(|| fid.clone());
+        map.entry(decoded.clone()).or_insert_with(|| fid.clone());
+        if let Some(b) = href.rsplit('/').next() {
+            map.entry(b.to_string()).or_insert_with(|| fid.clone());
+        }
+        if let Some(b) = decoded.rsplit('/').next() {
+            map.entry(b.to_string()).or_insert_with(|| fid.clone());
+        }
+    }
+    map
+}
+
+/// Resolve an `<a href>` value to a target fragment id, or `None` if it is
+/// an external link, a same-page anchor, or an unknown target (all left
+/// untouched). Strips any `#fragment` and a leading `./`.
+fn resolve_internal_link(
+    href: &str,
+    href_to_fid: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let href = href.trim();
+    let lower = href.to_ascii_lowercase();
+    for scheme in [
+        "http://",
+        "https://",
+        "mailto:",
+        "kindle:",
+        "tel:",
+        "data:",
+        "javascript:",
+        "ftp://",
+    ] {
+        if lower.starts_with(scheme) {
+            return None;
+        }
+    }
+    // Same-page anchor (no file part) — can't map to a file fid here.
+    if href.starts_with('#') {
+        return None;
+    }
+    let file = href.split('#').next().unwrap_or(href);
+    let file = file.strip_prefix("./").unwrap_or(file);
+    if file.is_empty() {
+        return None;
+    }
+    if let Some(f) = href_to_fid.get(file) {
+        return Some(f.clone());
+    }
+    let decoded = percent_decode_str(file);
+    if let Some(f) = href_to_fid.get(&decoded) {
+        return Some(f.clone());
+    }
+    let base = decoded.rsplit('/').next().unwrap_or(&decoded);
+    href_to_fid.get(base).cloned()
+}
+
+/// Minimal percent-decoder for href basename comparison (mirrors the one
+/// in `mobi.rs`; kept local to avoid a cross-module dependency).
+fn percent_decode_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut bytes = s.bytes();
+    while let Some(b) = bytes.next() {
+        if b == b'%' {
+            let h1 = bytes.next();
+            let h2 = bytes.next();
+            if let (Some(h1), Some(h2)) = (h1, h2) {
+                if let Ok(byte) = u8::from_str_radix(&format!("{}{}", h1 as char, h2 as char), 16) {
+                    out.push(byte as char);
+                    continue;
+                }
+            }
+            out.push('%');
+        } else {
+            out.push(b as char);
+        }
+    }
+    out
+}
+
 /// Append KF8 TBS (Trailing Byte Sequence) bytes to a text record.
 ///
 /// TBS tells the Kindle firmware which NCX entries overlap with a given
-/// text record. The format (from the end of the record):
-///   - Last byte = size | 0x80 (total TBS size including this byte)
-///   - Preceding bytes = type/data encoded values
-///
-/// For the simple case (1 NCX entry covering the whole book):
-///   - First text record (index 0): `[0x82, 0x80, 0x83]`
-///     type byte 0x82 = type 2 ("NCX boundary starts here"),
-///     value byte 0x80 = inverted VWI for 0 (NCX entry 0),
-///     size byte 0x83 = 3 | 0x80 (3 bytes total)
-///   - Subsequent records: `[0x81]`
-///     size byte 0x81 = 1 | 0x80 (1 byte = empty TBS, no new NCX entries)
-fn append_kf8_tbs(record: &mut Vec<u8>, record_index: usize, num_skeletons: usize) {
-    if record_index == 0 {
-        // First text record: type 2 = NCX entry starts here.
-        // Value encodes fragment/skeleton info. KCC uses (2*num_skeletons - 1)
-        // for a comic with N pages: 3 pages → value 5, matching kindlegen.
-        let value = if num_skeletons > 0 {
-            (2 * num_skeletons - 1) as u32
-        } else {
-            0
-        };
-        let value_bytes = encode_vwi_inv(value);
-        let tbs_size = 1 + value_bytes.len() + 1; // type + value + size
-        record.push(0x82); // type 2
-        record.extend_from_slice(&value_bytes);
-        record.push((tbs_size as u8) | 0x80); // size byte
-    } else {
-        // Subsequent records: empty TBS (no new NCX boundaries).
-        record.push(0x81);
+/// text record covering the byte range `[rec_start, rec_end)` of the
+/// uncompressed flow. See `build_tbs_entry` for the encoding.
+fn append_kf8_tbs(
+    record: &mut Vec<u8>,
+    rec_start: usize,
+    rec_end: usize,
+    node_offsets: &[usize],
+    html_length: usize,
+) {
+    record.extend_from_slice(&build_tbs_entry(
+        rec_start,
+        rec_end,
+        node_offsets,
+        html_length,
+    ));
+}
+
+/// Split a byte buffer into record-sized ranges that never cut through a
+/// UTF-8 multi-byte character. Each range is at most `max` bytes and ends
+/// on a codepoint boundary (the byte after the range is a UTF-8 lead or
+/// ASCII byte, never a `10xxxxxx` continuation byte). This lets every KF8
+/// text record carry the standard "no multibyte overlap" trailing byte
+/// (0x00) correctly — kindling previously hard-split at `max` and always
+/// wrote 0x00, corrupting the boundary for CJK/other multi-byte text.
+fn utf8_record_bounds(text: &[u8], max: usize) -> Vec<(usize, usize)> {
+    let mut bounds = Vec::new();
+    let mut pos = 0;
+    while pos < text.len() {
+        let mut end = (pos + max).min(text.len());
+        // Back off while the boundary byte is a UTF-8 continuation byte
+        // (would split a character). A character is at most 4 bytes, so
+        // this loops a tiny bounded number of times and never reaches pos.
+        while end < text.len() && end > pos && (text[end] & 0xC0) == 0x80 {
+            end -= 1;
+        }
+        bounds.push((pos, end));
+        pos = end;
     }
+    bounds
+}
+
+/// Forward MOBI variable-width integer (high bit terminates on the LAST
+/// byte). Mirrors calibre `encint(value, forward=True)`.
+fn encint_forward(value: u32) -> Vec<u8> {
+    let mut byts: Vec<u8> = Vec::new();
+    let mut v = value;
+    loop {
+        byts.push((v & 0x7f) as u8);
+        v >>= 7;
+        if v == 0 {
+            break;
+        }
+    }
+    byts[0] |= 0x80; // LSB (becomes last byte after reverse)
+    byts.reverse();
+    byts
+}
+
+/// Backward MOBI variable-width integer (high bit on the FIRST byte, so it
+/// can be read from the end). Mirrors calibre `encint(value, forward=False)`.
+fn encint_backward(value: u32) -> Vec<u8> {
+    let mut byts: Vec<u8> = Vec::new();
+    let mut v = value;
+    loop {
+        byts.push((v & 0x7f) as u8);
+        v >>= 7;
+        if v == 0 {
+            break;
+        }
+    }
+    let last = byts.len() - 1;
+    byts[last] |= 0x80; // MSB (becomes first byte after reverse)
+    byts.reverse();
+    byts
+}
+
+/// Encode a value+flags as a forward VWI with `flag_size` low flag bits.
+/// Mirrors calibre `encode_fvwi(val, flags, flag_size)`.
+fn encode_fvwi(val: u32, flags: u32, flag_size: u32) -> Vec<u8> {
+    encint_forward((val << flag_size) | flags)
+}
+
+/// Wrap a trailing-data entry with its backward-VWI length suffix.
+/// Mirrors calibre `encode_trailing_data`.
+fn encode_trailing_data(mut raw: Vec<u8>) -> Vec<u8> {
+    let mut lsize = 1usize;
+    loop {
+        let encoded = encint_backward((raw.len() + lsize) as u32);
+        if encoded.len() == lsize {
+            raw.extend_from_slice(&encoded);
+            return raw;
+        }
+        lsize += 1;
+    }
+}
+
+/// TBS type for a KF8 book NCX. This is `8` — the value Calibre's KF8
+/// writer (mobi/writer8/tbs.py) always emits, and the value kindlegen emits
+/// for reflowable books. Verified: this algorithm with tbs_type=8
+/// reproduces kindlegen's output for the issue #15 book byte-for-byte
+/// across all 220 text records. (kindlegen's *comic* output uses 5, which
+/// KindleUnpack's own reference calculator flags as a mismatch against the
+/// canonical 8; the firmware decodes either, and following the Calibre
+/// reference is the principled choice for both books and comics.)
+const KF8_TBS_TYPE: u32 = 8;
+
+/// Build the TBS (Trailing Byte Sequence) bytes for one text record, given
+/// the NCX node offsets (each node covers `[offset_i, offset_{i+1})`, the
+/// last running to `html_length`).
+///
+/// Reverse-engineered from kindlegen and validated byte-for-byte against
+/// crafted multi-section samples. For a flat (depth-1) book each record
+/// emits exactly one sequence:
+///   - a single node spanning the whole record  -> flags 0b011 (+ tbs_type, +0)
+///   - a single node that only ends/starts here -> flags 0b010 (+ tbs_type)
+///   - two or more nodes touch the record       -> flags 0b110 (+ tbs_type, + count)
+/// Records past the text (the CSS flow) carry an empty TBS.
+fn build_tbs_entry(
+    rec_start: usize,
+    rec_end: usize,
+    node_offsets: &[usize],
+    html_length: usize,
+) -> Vec<u8> {
+    let lo = rec_start;
+    let hi = rec_end;
+
+    if node_offsets.is_empty() || lo >= html_length {
+        // No navigable content in this record (e.g. the CSS flow tail).
+        return encode_trailing_data(Vec::new());
+    }
+
+    let n = node_offsets.len();
+    let node_end = |i: usize| -> usize {
+        if i + 1 < n {
+            node_offsets[i + 1]
+        } else {
+            html_length
+        }
+    };
+
+    // Nodes whose [offset, end) overlaps this record.
+    let mut touching: Vec<usize> = Vec::new();
+    for i in 0..n {
+        let off = node_offsets[i];
+        let end = node_end(i);
+        if off < hi && end > lo {
+            touching.push(i);
+        }
+    }
+
+    if touching.is_empty() {
+        return encode_trailing_data(Vec::new());
+    }
+
+    let first = touching[0];
+    let mut content: Vec<u8>;
+    if touching.len() == 1 {
+        let off = node_offsets[first];
+        let end = node_end(first);
+        if off < lo && end > hi {
+            // Spans the entire record (starts strictly before and ends
+            // strictly after — a node filling the record exactly is a
+            // 'completes', handled by the single-node branch below).
+            content = encode_fvwi(first as u32, 0b011, 3);
+            content.extend_from_slice(&encint_forward(KF8_TBS_TYPE));
+            content.extend_from_slice(&encint_forward(0));
+        } else {
+            // Single node starting and/or ending in this record.
+            content = encode_fvwi(first as u32, 0b010, 3);
+            content.extend_from_slice(&encint_forward(KF8_TBS_TYPE));
+        }
+    } else {
+        // Two or more nodes have a boundary in this record.
+        content = encode_fvwi(first as u32, 0b110, 3);
+        content.extend_from_slice(&encint_forward(KF8_TBS_TYPE));
+        content.push(touching.len() as u8);
+    }
+
+    encode_trailing_data(content)
 }
 
 /// Compress KF8 text into PalmDOC records with KF8 trailing bytes.
@@ -631,17 +1000,19 @@ fn append_kf8_tbs(record: &mut Vec<u8>, record_index: usize, num_skeletons: usiz
 /// Trailing bytes are appended in order: multibyte(0x00) then TBS.
 /// The firmware strips them from the end backward: TBS first (bit 1),
 /// then multibyte (bit 0).
-fn compress_text_kf8(text_bytes: &[u8], num_skeletons: usize) -> (Vec<Vec<u8>>, usize) {
+fn compress_text_kf8(
+    text_bytes: &[u8],
+    node_offsets: &[usize],
+    html_length: usize,
+) -> (Vec<Vec<u8>>, usize) {
     let total_length = text_bytes.len();
-    let chunk_size = RECORD_SIZE;
 
-    let records: Vec<Vec<u8>> = text_bytes
-        .chunks(chunk_size)
-        .enumerate()
-        .map(|(i, chunk)| {
-            let mut compressed = palmdoc::compress(chunk);
-            compressed.push(0x00); // multibyte (no overhang)
-            append_kf8_tbs(&mut compressed, i, num_skeletons);
+    let records: Vec<Vec<u8>> = utf8_record_bounds(text_bytes, RECORD_SIZE)
+        .into_iter()
+        .map(|(start, end)| {
+            let mut compressed = palmdoc::compress(&text_bytes[start..end]);
+            compressed.push(0x00); // multibyte: records are codepoint-aligned, no overhang
+            append_kf8_tbs(&mut compressed, start, end, node_offsets, html_length);
             compressed
         })
         .collect();
@@ -650,19 +1021,21 @@ fn compress_text_kf8(text_bytes: &[u8], num_skeletons: usize) -> (Vec<Vec<u8>>, 
 }
 
 /// Split KF8 text into uncompressed records (debug path).
-fn split_text_uncompressed_kf8(text_bytes: &[u8], num_skeletons: usize) -> (Vec<Vec<u8>>, usize) {
+fn split_text_uncompressed_kf8(
+    text_bytes: &[u8],
+    node_offsets: &[usize],
+    html_length: usize,
+) -> (Vec<Vec<u8>>, usize) {
     let total_length = text_bytes.len();
-    let chunk_size = RECORD_SIZE;
 
-    let records: Vec<Vec<u8>> = text_bytes
-        .chunks(chunk_size)
-        .enumerate()
-        .map(|(i, chunk)| {
-            let mut rec = chunk.to_vec();
+    let records: Vec<Vec<u8>> = utf8_record_bounds(text_bytes, RECORD_SIZE)
+        .into_iter()
+        .map(|(start, end)| {
+            let mut rec = text_bytes[start..end].to_vec();
             // Trailing bytes for extra_flags=3 (bit 0=multibyte,
             // bit 1=TBS). Same layout as compressed path.
-            rec.push(0x00); // multibyte (no overhang)
-            append_kf8_tbs(&mut rec, i, num_skeletons);
+            rec.push(0x00); // multibyte: records are codepoint-aligned, no overhang
+            append_kf8_tbs(&mut rec, start, end, node_offsets, html_length);
             rec
         })
         .collect();
@@ -1072,24 +1445,17 @@ fn build_fragment_indx_with_cncx(frags: &[FragmentEntry]) -> (Vec<Vec<u8>>, Vec<
     (vec![primary, data_record], cncx_records)
 }
 
-/// Build the NCX INDX (minimal stub with one entry per spine file).
-///
-/// We don't emit a real ToC here — the NCX exists purely so libmobi /
-/// Kindle have a non-0xFFFFFFFF index when parsing the header. A single
-/// entry with offset 0 (tag 1) is enough to keep the file well-formed.
-/// Build NCX INDX with the 5-tag structure required by Kindle firmware.
+/// Build the NCX INDX: one navigation / reading-position node per section.
 ///
 /// Tags: 1 (offset), 2 (length), 3 (CNCX label), 4 (depth), 6 (pos_fid).
-/// Emits a single NCX entry covering the entire text, matching kindlegen's
-/// behavior for simple comics. Returns (indx_records, cncx_records).
-fn build_ncx_indx(
-    title: &str,
-    skeleton_entries: &[SkeletonEntry],
-    text_length: usize,
-) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
-    // Build CNCX containing the book title as the TOC label.
+/// Emitting one node per spine item tiles the whole book so the device's
+/// reading-position / progress bar advances across every chapter, and the
+/// node labels populate the device table-of-contents. A single-section
+/// input (e.g. a one-page comic, or a dictionary's lone content file) still
+/// gets exactly one node, matching the prior behavior. The fragment id in
+/// tag 6 is the node's spine index (one fragment per spine item).
+fn build_ncx_indx(title: &str, nodes: &[NcxNode]) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
     let mut ncx_cncx = CncxBuilder::new();
-    let label_offset = ncx_cncx.add(title);
 
     // 5 tags matching kindlegen's NCX layout:
     //   tag 1: offset (1 val, mask 0x01)
@@ -1132,43 +1498,68 @@ fn build_ncx_indx(
         (6, 2, 0x10),
     ]);
 
-    // Single NCX entry covering the entire book.
-    let offset = if skeleton_entries.is_empty() {
-        0
-    } else {
-        skeleton_entries[0].start_pos
-    };
-    let length = if text_length > offset {
-        text_length - offset
-    } else {
-        0
-    };
+    // Fall back to a single whole-book node if there are no sections.
+    if nodes.is_empty() {
+        let label_offset = ncx_cncx.add(title);
+        let label = b"0";
+        let values: [Vec<u32>; 5] = [vec![0], vec![0], vec![label_offset], vec![0], vec![0, 0]];
+        let entry = encode_indx_entry(label, &tag_defs, &values);
+        let data_record = build_indx_data_record(&[entry]);
+        let ncx_cncx_count = ncx_cncx.record_count();
+        let primary = build_indx_primary(&tagx, 1, 1, ncx_cncx_count, &[(label.to_vec(), 1u32)]);
+        return (vec![primary, data_record], ncx_cncx.into_records());
+    }
 
-    // Label "0" matches kindlegen's minimal NCX label format.
-    let label = b"0";
-    let values: [Vec<u32>; 5] = [
-        vec![offset as u32], // tag 1: byte offset in text
-        vec![length as u32], // tag 2: length of region
-        vec![label_offset],  // tag 3: CNCX offset for title
-        vec![0],             // tag 4: depth (flat)
-        vec![0, 0],          // tag 6: pos_fid (frag 0, offset 0)
-    ];
-    let entry = encode_indx_entry(label, &tag_defs, &values);
+    // Entry labels are fixed-width zero-padded decimal indices so they
+    // sort correctly for the primary record's binary search.
+    let label_width = (nodes.len() - 1).to_string().len();
+    let mut entries: Vec<Vec<u8>> = Vec::with_capacity(nodes.len());
+    let mut last_label: Vec<u8> = Vec::new();
+    for (i, node) in nodes.iter().enumerate() {
+        let label_offset = ncx_cncx.add(&node.label);
+        let label = format!("{:0width$}", i, width = label_width).into_bytes();
+        let values: [Vec<u32>; 5] = [
+            vec![node.offset as u32],
+            vec![node.length as u32],
+            vec![label_offset],
+            vec![0], // flat depth
+            vec![node.fid as u32, 0],
+        ];
+        entries.push(encode_indx_entry(&label, &tag_defs, &values));
+        last_label = label;
+    }
 
-    let data_record = build_indx_data_record(&[entry]);
+    let data_record = build_indx_data_record(&entries);
     let ncx_cncx_count = ncx_cncx.record_count();
-    let primary = build_indx_primary(&tagx, 1, 1, ncx_cncx_count, &[(label.to_vec(), 1u32)]);
+    let primary = build_indx_primary(
+        &tagx,
+        1,
+        nodes.len(),
+        ncx_cncx_count,
+        &[(last_label, nodes.len() as u32)],
+    );
 
     (vec![primary, data_record], ncx_cncx.into_records())
 }
 
-/// Build a DATP record (stub - minimal valid record).
-fn build_datp() -> Vec<u8> {
-    // DATP contains precomputed TBS (Trailing Byte Sequence) index data.
-    // An all-zeros DATP crashes the Kindle renderer. These bytes are from
-    // a working kindlegen output for a simple comic (1 text record, 1 NCX
-    // entry). The format encodes NCX-to-text-record mappings.
-    // TODO: generate dynamically for multi-record text layouts.
+/// Build a DATP record.
+///
+/// kindlegen's DATP is a real, book-sized table (it scales with record
+/// count: ~12.5 KB for a 220-record book, 256 B for a 5-record one) that
+/// carries a per-location byte-length map — the on-device "Location N of M"
+/// data, essentially an embedded APNX. Generating that map faithfully is a
+/// large, separate, device-unverifiable feature.
+///
+/// The primary reading-position machinery the issue #15 bug hinged on is
+/// the NCX nodes plus the per-record TBS, both of which are now correct.
+/// This keeps the minimal non-crashing stub kindling has always shipped
+/// (every device-confirmed kindling book/comic used it), so the DATP is no
+/// worse than before while the NCX+TBS fix lands. A full location-length
+/// DATP is tracked as a follow-up. The parameters are threaded so it can be
+/// generated here later without another signature change.
+fn build_datp(_node_offsets: &[usize], _record_count: usize) -> Vec<u8> {
+    // An all-zeros DATP crashes the Kindle renderer; these non-zero bytes
+    // are from a working kindlegen comic output.
     vec![
         0x44, 0x41, 0x54, 0x50, // "DATP"
         0x00, 0x00, 0x00, 0x0D, // header value
@@ -1282,8 +1673,14 @@ mod tests {
             .collect();
         let href_to_recindex = std::collections::HashMap::new();
         let spine_items: Vec<(String, String)> = Vec::new();
-        let (combined, skels, frags) =
-            build_kf8_html(&parts, &href_to_recindex, &spine_items, false);
+        let (combined, skels, frags) = build_kf8_html(
+            &parts,
+            &href_to_recindex,
+            &spine_items,
+            &[],
+            &std::collections::HashSet::new(),
+            false,
+        );
         assert_eq!(skels.len(), 5);
         assert_eq!(frags.len(), 5);
         // Global sequence numbers must be 0, 1, 2, 3, 4 in order.
@@ -1311,7 +1708,14 @@ mod tests {
         let parts = vec![make_comic_page("0", "img.jpg")];
         let href_to_recindex = std::collections::HashMap::new();
         let spine_items: Vec<(String, String)> = Vec::new();
-        let (_, _, frags) = build_kf8_html(&parts, &href_to_recindex, &spine_items, false);
+        let (_, _, frags) = build_kf8_html(
+            &parts,
+            &href_to_recindex,
+            &spine_items,
+            &[],
+            &std::collections::HashSet::new(),
+            false,
+        );
         assert_eq!(frags.len(), 1);
         assert_eq!(frags[0].selector, "P-//*[@aid='0']");
     }
@@ -1321,7 +1725,14 @@ mod tests {
         let html = "<html><head></head><body><div><img src=\"a.jpg\"/></div></body></html>";
         let mut counter = 0u32;
         let lookup = std::collections::HashMap::new();
-        let out = process_kf8_part(html, &mut counter, &lookup, false);
+        let out = process_kf8_part(
+            html,
+            &mut counter,
+            &lookup,
+            &std::collections::HashMap::new(),
+            &std::collections::HashSet::new(),
+            false,
+        );
         assert!(out.contains("<body"));
         assert!(out.contains("aid=\""));
     }
@@ -1431,24 +1842,58 @@ mod tests {
     #[test]
     fn kf8_trailer_has_tbs() {
         let text = b"<html><body>hello</body></html>";
-        let (records, _) = compress_text_kf8(text, 1);
+        let html_len = text.len();
+        let (records, _) = compress_text_kf8(text, &[0], html_len);
         assert_eq!(records.len(), 1);
-        // Trailing bytes: multibyte(0x00) then TBS.
-        // For record 0 (first text record): TBS = [0x82, 0x80, 0x83]
-        // (type 2, NCX entry 0, size 3). Total trailing = 4 bytes.
+        // Trailing bytes: multibyte(0x00) then TBS. With one NCX node that
+        // ends inside this (only) record, the TBS is the single-node form
+        // [fvwi(0, 0b010), encint(tbs_type=8), size]:
+        //   fvwi(0,0b010) = encint(2) = 0x82
+        //   encint(8)     = 0x88
+        //   size          = encint_backward(3) = 0x83
         let rec = &records[0];
         let len = rec.len();
         assert!(len >= 4, "record too short for trailing bytes");
-        // TBS for 1 skeleton: [0x82, 0x81, 0x83] (type 2, value=2*1-1=1, size 3)
-        assert_eq!(rec[len - 1], 0x83, "TBS size byte should be 0x83");
+        assert_eq!(rec[len - 1], 0x83, "TBS size byte should be 0x83 (len 3)");
+        assert_eq!(rec[len - 2], 0x88, "TBS tbs_type byte should be 0x88 (8)");
         assert_eq!(
-            rec[len - 2],
-            0x81,
-            "TBS value byte should be 0x81 (inv VWI for 1)"
+            rec[len - 3],
+            0x82,
+            "TBS fvwi byte should be 0x82 (node 0, flags 0b010)"
         );
-        assert_eq!(rec[len - 3], 0x82, "TBS type byte should be 0x82");
         // Multibyte byte is before TBS
         assert_eq!(rec[len - 4], 0x00, "multibyte byte should be 0x00");
+    }
+
+    #[test]
+    fn tbs_reproduces_kindlegen_book() {
+        // Authoritative ground truth: kindlegen's KF8 output for the issue
+        // #15 book (风语). These are the real NCX node offsets and per-record
+        // TBS bytes decoded from kindlegen; this algorithm reproduces all
+        // 220 records byte-for-byte, and these 5 cover every TBS shape.
+        let nodes: Vec<usize> = vec![
+            927, 3044, 4938, 52388, 106655, 153104, 231736, 290843, 356200, 418731, 497431, 599014,
+            688414, 742564, 776048, 837875,
+        ];
+        let html_length = 898065;
+        // kindlegen used hard 4096-byte record boundaries; pass them
+        // explicitly (rec_start, rec_end) since the real build now uses
+        // codepoint-aligned boundaries instead.
+        const RS: usize = 4096;
+        let expected: [(usize, &[u8]); 5] = [
+            (0, &[0x86, 0x88, 0x02, 0x84]), // node0 completes + node1 starts (count 2)
+            (1, &[0x8e, 0x88, 0x02, 0x84]), // node1 ends + node2 starts (count 2)
+            (2, &[0x93, 0x88, 0x80, 0x84]), // node2 spans the whole record
+            (12, &[0x96, 0x88, 0x02, 0x84]), // node2 ends + node3 starts
+            (219, &[0xfa, 0x88, 0x83]),     // last node completes (single)
+        ];
+        for (rec, want) in expected {
+            let got = build_tbs_entry(rec * RS, (rec + 1) * RS, &nodes, html_length);
+            assert_eq!(
+                got, want,
+                "record {rec} TBS mismatch: got {got:02x?}, want {want:02x?}"
+            );
+        }
     }
 
     #[test]
@@ -1466,8 +1911,10 @@ mod tests {
         let section = build_kf8_section(
             &parts,
             css,
+            &std::collections::HashSet::new(),
             &href_to_recindex,
             &spine_items,
+            &[],
             true,  // no_compress for deterministic byte counts
             false, // kindlegen_parity
             "Test Book",
@@ -1497,20 +1944,24 @@ mod tests {
             u32::from_be_bytes(section.fragment_indx[0][52..56].try_into().unwrap()),
             1
         );
-        // Text records end with TBS trailing bytes.
-        // First record: TBS = [0x82, 0x80, 0x83] (size byte 0x83).
-        // Subsequent records: TBS = [0x81] (size byte 0x81).
-        for (i, r) in section.text_records.iter().enumerate() {
+        // Every text record ends with a TBS whose final byte is the
+        // backward-VWI length suffix (high bit set). Record 0 carries the
+        // two front-matter nodes, so it must be the multi-node count form
+        // (fvwi(0,0b110)=0x86, tbs_type=0x88, count=0x02, size=0x84).
+        for r in &section.text_records {
             let last = *r.last().unwrap();
-            if i == 0 {
-                assert_eq!(last, 0x83, "first text record TBS size byte should be 0x83");
-            } else {
-                assert_eq!(
-                    last, 0x81,
-                    "subsequent text record TBS size byte should be 0x81"
-                );
-            }
+            assert!(
+                last & 0x80 != 0,
+                "text record TBS must end with a backward-VWI size byte"
+            );
         }
+        let r0 = &section.text_records[0];
+        let n = r0.len();
+        assert_eq!(
+            &r0[n - 4..],
+            &[0x86, 0x88, 0x02, 0x84],
+            "record 0 should carry the 2-node count-form TBS"
+        );
     }
 
     #[test]
@@ -1533,13 +1984,13 @@ mod tests {
     fn ncx_indx_has_five_tags() {
         // NCX INDX must have 5 tags (offset, length, label, depth, pos_fid)
         // for Kindle firmware to render content. A 1-tag stub crashes the renderer.
-        let skels = vec![SkeletonEntry {
-            label: "SKEL0000000000".to_string(),
-            start_pos: 0,
-            length: 100,
-            chunk_count: 1,
+        let nodes = vec![NcxNode {
+            offset: 0,
+            length: 500,
+            label: "Test".to_string(),
+            fid: 0,
         }];
-        let (ncx_recs, ncx_cncx) = build_ncx_indx("Test", &skels, 500);
+        let (ncx_recs, ncx_cncx) = build_ncx_indx("Test", &nodes);
 
         // Should produce primary + data records
         assert_eq!(ncx_recs.len(), 2, "NCX should have primary + data");
@@ -1579,13 +2030,13 @@ mod tests {
 
     #[test]
     fn ncx_cncx_contains_title() {
-        let skels = vec![SkeletonEntry {
-            label: "SKEL0000000000".to_string(),
-            start_pos: 0,
-            length: 100,
-            chunk_count: 1,
+        let nodes = vec![NcxNode {
+            offset: 0,
+            length: 500,
+            label: "My Comic Title".to_string(),
+            fid: 0,
         }];
-        let (_, ncx_cncx) = build_ncx_indx("My Comic Title", &skels, 500);
+        let (_, ncx_cncx) = build_ncx_indx("My Comic Title", &nodes);
         assert_eq!(ncx_cncx.len(), 1);
         // CNCX should contain the title with inverted VWI length prefix
         let cncx = &ncx_cncx[0];
@@ -1601,7 +2052,7 @@ mod tests {
 
     #[test]
     fn datp_is_32_bytes_with_content() {
-        let datp = build_datp();
+        let datp = build_datp(&[0], 1);
         assert_eq!(datp.len(), 32, "DATP must be 32 bytes (not 152-byte stub)");
         assert_eq!(&datp[0..4], b"DATP");
         // Must NOT be all zeros after header (crashes Kindle renderer)
@@ -1618,8 +2069,10 @@ mod tests {
         let section = build_kf8_section(
             &parts,
             "",
+            &std::collections::HashSet::new(),
             &std::collections::HashMap::new(),
             &Vec::new(),
+            &[],
             true,
             false,
             "Test",
@@ -1647,8 +2100,10 @@ mod tests {
         let section = build_kf8_section(
             &parts,
             "body{margin:0}",
+            &std::collections::HashSet::new(),
             &href_to_recindex,
             &spine_items,
+            &[],
             true,  // no_compress for readable output
             false, // kindlegen_parity off (test normal mode)
             "Test Book",
