@@ -96,4 +96,9 @@ jobs:
             echo "kindling-mobi $TAG_VERSION already on crates.io - skipping publish"
             exit 0
           fi
-          cargo publish
+          # --allow-dirty: if a version bump committed a stale Cargo.lock,
+          # cargo regenerates it here, leaving the tag checkout dirty and
+          # aborting the publish. Tolerate that (the only diff is the lock's
+          # own version line). Best practice is still to commit Cargo.lock
+          # alongside the Cargo.toml bump.
+          cargo publish --allow-dirty
