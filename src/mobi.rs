@@ -643,7 +643,25 @@ fn build_book_mobi(
 
     // Build KF8 section (used by both dual and KF8-only modes)
     eprintln!("Building KF8 section...");
-    let html_parts = build_html_parts(opf);
+    let mut html_parts = build_html_parts(opf);
+    // Spine hrefs aligned 1:1 with `html_parts`; position i is the fragment
+    // id of the i-th spine HTML file. Used to rewrite internal `<a href>`
+    // links to `kindle:pos:fid:...` and to label the per-section NCX nodes.
+    let mut spine_hrefs = opf.get_content_html_hrefs();
+
+    // Drop a leading bare cover page from the reading flow (matches
+    // kindlegen): the Kindle renders the metadata cover full-page, so an
+    // in-spine cover page just yields a small image. Never for comics
+    // (every page is an image) and never when it would empty the spine.
+    if !opf.is_fixed_layout
+        && html_parts.len() > 1
+        && spine_hrefs.len() == html_parts.len()
+        && is_bare_cover_page(&html_parts[0], opf.get_cover_image_href().as_deref())
+    {
+        eprintln!("Dropping in-spine cover page (cover renders full-page from metadata)");
+        html_parts.remove(0);
+        spine_hrefs.remove(0);
+    }
 
     // Kindle publishing limits checks for books
     if kindle_limits {
@@ -668,11 +686,6 @@ fn build_book_mobi(
     }
 
     let (css_content, css_basenames) = extract_css_content(opf, &html_parts);
-    // Spine hrefs aligned 1:1 with `html_parts` (same existing-file
-    // filter and order), so position i is the fragment id of the i-th
-    // spine HTML file. Used to rewrite internal `<a href>` links to
-    // `kindle:pos:fid:...` and to label the per-section NCX nodes.
-    let spine_hrefs = opf.get_content_html_hrefs();
     let kf8_title = if opf.title.is_empty() {
         "Book"
     } else {
@@ -781,7 +794,7 @@ fn build_book_mobi(
         // Record order must match kindlegen: FDST, FLIS, FCIS, DATP, EOF
         let kf8_flis_idx = kf8_fdst_idx + 1;
         let kf8_fcis_idx = kf8_flis_idx + 1;
-        let kf8_datp_idx = kf8_fcis_idx + 1;
+        let _kf8_datp_idx = kf8_fcis_idx + 1; // record still emitted; pointer NULLed
         let kf8_srcs_idx = if srcs_record.is_some() {
             Some(kf8_fcis_idx + 1)
         } else {
@@ -824,7 +837,13 @@ fn build_book_mobi(
             kf8_skeleton_start,
             kf8_fragment_start,
             kf8_ncx_start,
-            kf8_datp_idx,
+            // DATP pointer is NULL: a stub DATP (sized for a 1-record
+            // comic) makes the firmware crash to a white page when it tries
+            // to advance past text record 0 in a multi-record book. Calibre
+            // emits no DATP and renders fine; the device builds positions
+            // from the per-record TBS instead. The (now-orphan) record is
+            // still written but never referenced. (issue #15)
+            0xFFFFFFFF_usize,
             kf8_flis_idx,
             kf8_fcis_idx,
             no_compress,
@@ -952,7 +971,7 @@ fn build_book_mobi(
         // Record order must match kindlegen: FDST, FLIS, FCIS, DATP, EOF
         let kf8_flis_idx = kf8_fdst_idx + 1;
         let kf8_fcis_idx = kf8_flis_idx + 1;
-        let kf8_datp_idx = kf8_fcis_idx + 1;
+        let _kf8_datp_idx = kf8_fcis_idx + 1; // record still emitted; pointer NULLed
         // +2 skips the NULL pad record (text_count+1=NULL, +2=first INDX)
         let kf8_first_nonbook = kf8_text_count + 2;
 
@@ -1017,7 +1036,13 @@ fn build_book_mobi(
             kf8_skeleton_start,
             kf8_fragment_start,
             kf8_ncx_start,
-            kf8_datp_idx,
+            // DATP pointer is NULL: a stub DATP (sized for a 1-record
+            // comic) makes the firmware crash to a white page when it tries
+            // to advance past text record 0 in a multi-record book. Calibre
+            // emits no DATP and renders fine; the device builds positions
+            // from the per-record TBS instead. The (now-orphan) record is
+            // still written but never referenced. (issue #15)
+            0xFFFFFFFF_usize,
             kf8_flis_idx,
             kf8_fcis_idx,
             no_compress,
@@ -1500,6 +1525,41 @@ fn get_jpeg_dimensions(data: &[u8]) -> Option<(u32, u32)> {
         }
     }
     None
+}
+
+/// Whether a cleaned spine HTML part is a bare cover page: it has no
+/// visible text and its only image is the book's cover image. kindlegen
+/// drops such a leading page from the reading flow and lets the Kindle
+/// render the metadata cover full-page; keeping it in the spine instead
+/// shows the cover as a small in-flow image. Conservative on purpose so a
+/// real (text-bearing) first chapter is never dropped.
+fn is_bare_cover_page(part: &str, cover_href: Option<&str>) -> bool {
+    let cover_base = match cover_href.and_then(|h| h.rsplit('/').next()) {
+        Some(b) => b,
+        None => return false,
+    };
+    // Only consider the <body>; the <head>/<title> text is not content.
+    let body_re = Regex::new(r"(?is)<body[^>]*>(.*?)</body>").unwrap();
+    let body = match body_re.captures(part) {
+        Some(c) => c.get(1).unwrap().as_str(),
+        None => return false,
+    };
+    // Any non-whitespace text in the body means this isn't a bare cover.
+    let tag_re = Regex::new(r"(?s)<[^>]*>").unwrap();
+    if !tag_re.replace_all(body, "").trim().is_empty() {
+        return false;
+    }
+    // The body's only image must be the cover image.
+    let img_re = Regex::new(r#"(?i)<img\b[^>]*\bsrc\s*=\s*"([^"]+)""#).unwrap();
+    img_re.captures_iter(body).any(|c| {
+        c.get(1)
+            .unwrap()
+            .as_str()
+            .rsplit('/')
+            .next()
+            .map(|b| b == cover_base || percent_decode(b) == cover_base)
+            .unwrap_or(false)
+    })
 }
 
 /// Get the individual cleaned HTML parts for each spine item (for KF8).

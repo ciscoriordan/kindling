@@ -830,30 +830,6 @@ fn append_kf8_tbs(
     ));
 }
 
-/// Split a byte buffer into record-sized ranges that never cut through a
-/// UTF-8 multi-byte character. Each range is at most `max` bytes and ends
-/// on a codepoint boundary (the byte after the range is a UTF-8 lead or
-/// ASCII byte, never a `10xxxxxx` continuation byte). This lets every KF8
-/// text record carry the standard "no multibyte overlap" trailing byte
-/// (0x00) correctly — kindling previously hard-split at `max` and always
-/// wrote 0x00, corrupting the boundary for CJK/other multi-byte text.
-fn utf8_record_bounds(text: &[u8], max: usize) -> Vec<(usize, usize)> {
-    let mut bounds = Vec::new();
-    let mut pos = 0;
-    while pos < text.len() {
-        let mut end = (pos + max).min(text.len());
-        // Back off while the boundary byte is a UTF-8 continuation byte
-        // (would split a character). A character is at most 4 bytes, so
-        // this loops a tiny bounded number of times and never reaches pos.
-        while end < text.len() && end > pos && (text[end] & 0xC0) == 0x80 {
-            end -= 1;
-        }
-        bounds.push((pos, end));
-        pos = end;
-    }
-    bounds
-}
-
 /// Forward MOBI variable-width integer (high bit terminates on the LAST
 /// byte). Mirrors calibre `encint(value, forward=True)`.
 fn encint_forward(value: u32) -> Vec<u8> {
@@ -994,52 +970,83 @@ fn build_tbs_entry(
     encode_trailing_data(content)
 }
 
+/// Build the multibyte-overlap trailing entry for a text record whose hard
+/// 4096-byte boundary falls at `boundary` in the combined flow.
+///
+/// MOBI text records are split at a FIXED 4096-byte uncompressed size (the
+/// firmware relies on this for record-walking), so a multi-byte UTF-8
+/// character can straddle a boundary. The standard fix (what kindlegen
+/// does) is to append, to the record before the split, the trailing
+/// continuation bytes of the split character followed by a count byte whose
+/// low 2 bits are the number of continuation bytes. The firmware strips
+/// this entry as `(last_byte & 3) + 1` bytes. No split -> a single `0x00`.
+fn multibyte_overlap_entry(text: &[u8], boundary: usize) -> Vec<u8> {
+    let mut k = 0;
+    while boundary + k < text.len() && (text[boundary + k] & 0xC0) == 0x80 {
+        k += 1;
+    }
+    let mut entry = Vec::with_capacity(k + 1);
+    entry.extend_from_slice(&text[boundary..boundary + k]);
+    entry.push(k as u8); // count byte: low 2 bits = continuation-byte count (0..3)
+    entry
+}
+
 /// Compress KF8 text into PalmDOC records with KF8 trailing bytes.
 ///
-/// KF8 records use `extra_flags = 3` (bit 0 = multibyte, bit 1 = TBS).
-/// Trailing bytes are appended in order: multibyte(0x00) then TBS.
-/// The firmware strips them from the end backward: TBS first (bit 1),
-/// then multibyte (bit 0).
+/// Records are split at a hard 4096-byte boundary (matching kindlegen; the
+/// firmware assumes fixed-size uncompressed records). `extra_flags = 3`
+/// (bit 0 = multibyte, bit 1 = TBS); trailing bytes are appended
+/// multibyte-then-TBS, and stripped from the end TBS-first then multibyte.
 fn compress_text_kf8(
     text_bytes: &[u8],
     node_offsets: &[usize],
     html_length: usize,
 ) -> (Vec<Vec<u8>>, usize) {
     let total_length = text_bytes.len();
-
-    let records: Vec<Vec<u8>> = utf8_record_bounds(text_bytes, RECORD_SIZE)
-        .into_iter()
-        .map(|(start, end)| {
-            let mut compressed = palmdoc::compress(&text_bytes[start..end]);
-            compressed.push(0x00); // multibyte: records are codepoint-aligned, no overhang
-            append_kf8_tbs(&mut compressed, start, end, node_offsets, html_length);
-            compressed
-        })
-        .collect();
-
+    let mut records: Vec<Vec<u8>> = Vec::new();
+    let mut start = 0;
+    while start < total_length {
+        let end = (start + RECORD_SIZE).min(total_length);
+        let mut compressed = palmdoc::compress(&text_bytes[start..end]);
+        compressed.extend_from_slice(&multibyte_overlap_entry(text_bytes, end));
+        // TBS keyed on the hard record boundary [start, start+RECORD_SIZE).
+        append_kf8_tbs(
+            &mut compressed,
+            start,
+            start + RECORD_SIZE,
+            node_offsets,
+            html_length,
+        );
+        records.push(compressed);
+        start = end;
+    }
     (records, total_length)
 }
 
-/// Split KF8 text into uncompressed records (debug path).
+/// Split KF8 text into uncompressed records (debug path). Same hard 4096
+/// boundary + multibyte overlap + TBS layout as the compressed path.
 fn split_text_uncompressed_kf8(
     text_bytes: &[u8],
     node_offsets: &[usize],
     html_length: usize,
 ) -> (Vec<Vec<u8>>, usize) {
     let total_length = text_bytes.len();
-
-    let records: Vec<Vec<u8>> = utf8_record_bounds(text_bytes, RECORD_SIZE)
-        .into_iter()
-        .map(|(start, end)| {
-            let mut rec = text_bytes[start..end].to_vec();
-            // Trailing bytes for extra_flags=3 (bit 0=multibyte,
-            // bit 1=TBS). Same layout as compressed path.
-            rec.push(0x00); // multibyte: records are codepoint-aligned, no overhang
-            append_kf8_tbs(&mut rec, start, end, node_offsets, html_length);
-            rec
-        })
-        .collect();
-
+    let mut records: Vec<Vec<u8>> = Vec::new();
+    let mut start = 0;
+    while start < total_length {
+        let end = (start + RECORD_SIZE).min(total_length);
+        let mut rec = text_bytes[start..end].to_vec();
+        rec.extend_from_slice(&multibyte_overlap_entry(text_bytes, end));
+        append_kf8_tbs(
+            &mut rec,
+            start,
+            start + RECORD_SIZE,
+            node_offsets,
+            html_length,
+        );
+        records.push(rec);
+        start = end;
+    }
     (records, total_length)
 }
 
