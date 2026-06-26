@@ -93,6 +93,7 @@ kindling-cli build input.opf -o output.mobi --headwords-only  # index headwords 
 kindling-cli build input.opf -o output.mobi --no-kindle-limits  # skip per-letter HTML grouping
 kindling-cli build input.opf -o output.mobi --no-validate     # skip KDP pre-flight validation
 kindling-cli build input.opf -o output.mobi --strict-accents  # exact accent match (see below)
+KINDLING_STRICT_ACCENTS=1 kindling-cli build input.opf -o output.mobi  # same as --strict-accents, for wrappers that can't pass the flag (pyglossary/reader.dict)
 ```
 
 The input OPF must reference HTML files with `<idx:entry>`, `<idx:orth>`, and `<idx:iform>` markup following the [Amazon Kindle Publishing Guidelines](http://kindlegen.s3.amazonaws.com/AmazonKindlePublishingGuidelines.pdf). Both headwords and inflected forms are indexed so that looking up any form on the Kindle finds the correct dictionary entry.
