@@ -2531,6 +2531,37 @@ mod record_split_tests {
     }
 
     #[test]
+    fn locale_code_covers_grc_cyrillic_and_latin() {
+        // Ancient Greek shares modern Greek's LCID so the firmware folds Greek
+        // instead of treating the text as English (issue #8).
+        assert_eq!(locale_code("grc"), 0x0408);
+        assert_eq!(locale_code("el"), 0x0408);
+        // Cyrillic and Latin additions resolve to their own LCID, not en-US.
+        assert_eq!(locale_code("uk"), 0x0422);
+        assert_eq!(locale_code("bg"), 0x0402);
+        assert_eq!(locale_code("pl"), 0x0415);
+        assert_eq!(locale_code("vi"), 0x042A);
+        // Case- and separator-insensitive, like the existing entries.
+        assert_eq!(locale_code("PL"), 0x0415);
+        assert_eq!(locale_code("uk-UA"), 0x0422);
+        // Unmapped codes still fall back to en-US.
+        assert_eq!(locale_code("xx"), 0x0409);
+
+        // The MOBI locale field keeps only the neutral primary id (except
+        // ko/fr), so grc and el land on the same Greek-neutral value, and none
+        // of the new languages carry a sublanguage tag that would make the
+        // firmware skip normalization (the issue #11 regression).
+        assert_eq!(mobi_locale_code("grc"), 0x0008);
+        assert_eq!(mobi_locale_code("el"), 0x0008);
+        assert_eq!(mobi_locale_code("uk"), 0x0022);
+        assert_eq!(mobi_locale_code("pl"), 0x0015);
+        assert_eq!(mobi_locale_code("xx"), 0x0009);
+        // Korean and French keep their full LCID, per kindlegen.
+        assert_eq!(mobi_locale_code("ko"), 0x0412);
+        assert_eq!(mobi_locale_code("fr"), 0x040C);
+    }
+
+    #[test]
     fn incomplete_utf8_tail_bytes_on_lead_only_two_byte() {
         // "α" = CE B1. Drop the B1 to leave a dangling lead byte.
         let bytes = [0xCEu8];
@@ -3642,6 +3673,60 @@ fn locale_code(lang: &str) -> u32 {
             "ar" => 0x0401,
             "he" => 0x040D,
             "tr" => 0x041F,
+            // Greek script. Ancient Greek (grc) has no Windows LCID of its
+            // own, so it shares modern Greek's, which is what the firmware
+            // needs to fold Greek diacritics instead of treating the text as
+            // English (issue #8).
+            "grc" => 0x0408,
+            // Cyrillic-script languages. Only the primary language id (low 10
+            // bits) survives in the MOBI locale field, so any default-sublang
+            // LCID per language is fine; these stop Cyrillic dictionaries from
+            // defaulting to the English locale.
+            "uk" => 0x0422,
+            "bg" => 0x0402,
+            "be" => 0x0423,
+            "mk" => 0x042F,
+            "sr" => 0x0C1A,
+            "mn" => 0x0450,
+            "ky" => 0x0440,
+            "kk" => 0x043F,
+            "tg" => 0x0428,
+            "tt" => 0x0444,
+            "ba" => 0x046D,
+            // Latin-script languages. The firmware's English folding already
+            // handles most Latin diacritics, but the language-correct LCID is
+            // the right hint and avoids any English-specific normalization.
+            "pl" => 0x0415,
+            "cs" => 0x0405,
+            "sk" => 0x041B,
+            "hu" => 0x040E,
+            "ro" => 0x0418,
+            "hr" => 0x041A,
+            "sl" => 0x0424,
+            "fi" => 0x040B,
+            "sv" => 0x041D,
+            "da" => 0x0406,
+            "nb" | "nn" | "no" => 0x0414,
+            "is" => 0x040F,
+            "ca" => 0x0403,
+            "eu" => 0x042D,
+            "gl" => 0x0456,
+            "et" => 0x0425,
+            "lv" => 0x0426,
+            "lt" => 0x0427,
+            "sq" => 0x041C,
+            "af" => 0x0436,
+            "cy" => 0x0452,
+            "ga" => 0x083C,
+            "id" => 0x0421,
+            "ms" => 0x043E,
+            "vi" => 0x042A,
+            "sw" => 0x0441,
+            "mt" => 0x043A,
+            "oc" => 0x0482,
+            "mi" => 0x0481,
+            "lb" => 0x046E,
+            "fo" => 0x0438,
             _ => 0x0409, // default to en-US
         },
     }
