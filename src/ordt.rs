@@ -7,8 +7,11 @@
 //!
 //! kindling routes Japanese, Chinese, Korean, and Arabic through this
 //! module (see `uses_generated_ordt`). Latin/Greek/Cyrillic dictionaries
-//! keep the UTF-16BE label scheme with the static Greek ORDT/SPL blob,
-//! verified working on real devices.
+//! keep the UTF-16BE label scheme with the static Greek ORDT/SPL blob
+//! (diacritic-folding default), verified working on real devices. With
+//! `--strict-accents` they instead get a full per-letter ORDT (see
+//! `new_exact`) that folds accent/case collation weights but keeps each
+//! character a distinct symbol, for exact-accent matching (issue #8).
 //!
 //! # The per-character scheme (validated on hardware)
 //!
@@ -216,6 +219,37 @@ pub struct OrdtTables {
     two_byte: bool,
 }
 
+/// Fold a character to its base letter for accent-strict collation weights:
+/// lowercase it and strip Latin diacritics, so every accent/case variant of a
+/// letter (é/è/ê/ë/É → e, à/â/ä/À → a, ç/Ç → c, ...) collates to one weight.
+/// Used by [`OrdtTables::new_exact`]; characters with no Latin base (digits,
+/// punctuation, non-Latin scripts) fold only by case. See issue #8.
+fn fold_base(c: char) -> char {
+    let lower = c.to_lowercase().next().unwrap_or(c);
+    match lower {
+        'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => 'a',
+        'ç' | 'ć' | 'č' | 'ċ' | 'ĉ' => 'c',
+        'ð' | 'ď' | 'đ' => 'd',
+        'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' => 'e',
+        'ĝ' | 'ğ' | 'ġ' | 'ģ' => 'g',
+        'ĥ' | 'ħ' => 'h',
+        'ì' | 'í' | 'î' | 'ï' | 'ĩ' | 'ī' | 'ĭ' | 'į' | 'ı' => 'i',
+        'ĵ' => 'j',
+        'ķ' => 'k',
+        'ĺ' | 'ļ' | 'ľ' | 'ŀ' | 'ł' => 'l',
+        'ñ' | 'ń' | 'ņ' | 'ň' => 'n',
+        'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ŏ' | 'ő' => 'o',
+        'ŕ' | 'ŗ' | 'ř' => 'r',
+        'ś' | 'ŝ' | 'ş' | 'š' | 'ș' => 's',
+        'ţ' | 'ť' | 'ŧ' | 'ț' => 't',
+        'ù' | 'ú' | 'û' | 'ü' | 'ũ' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' => 'u',
+        'ŵ' => 'w',
+        'ý' | 'ÿ' | 'ŷ' => 'y',
+        'ź' | 'ż' | 'ž' => 'z',
+        other => other,
+    }
+}
+
 impl OrdtTables {
     /// Build the per-character collation table for a dictionary whose
     /// lookup labels are `labels`. The hiragana and katakana blocks are
@@ -360,6 +394,86 @@ impl OrdtTables {
                 None => true,
             });
         let two_byte = has_literal || ordt2.len() > 256;
+
+        OrdtTables {
+            ordt1,
+            ordt2,
+            sym_of,
+            two_byte,
+        }
+    }
+
+    /// Build a full accent-strict ORDT for a Latin/Greek/Cyrillic dictionary
+    /// (the `--strict-accents` path).
+    ///
+    /// Every character the dictionary uses becomes its own ORDT symbol so the
+    /// encoded labels keep ê distinct from e, but accented and case variants
+    /// of a letter share a single collation WEIGHT (é=è=ê=ë=e, à=â=ä=a, A=a,
+    /// ...), exactly like kindlegen's Latin dictionary ORDT. This is the
+    /// counter-intuitive key (issue #8): the Kindle firmware does not collate a
+    /// Latin/French dictionary with the dict's own per-letter weights - it
+    /// binary-searches with its built-in accent+case-folding French collation
+    /// and requires the stored headword labels to be PRE-SORTED in that folded
+    /// order. Folding the weights makes accented headwords sort adjacent to
+    /// their base form (so the firmware's folded search lands in the right
+    /// neighborhood), while the distinct symbols let the final byte comparison
+    /// pick the exact headword. Assigning every character a DISTINCT weight (an
+    /// earlier attempt) scattered accented headwords far from their base, so
+    /// the folded search mis-landed `meme`->`même` and never reached `mère`.
+    pub fn new_exact(labels: &[&str]) -> OrdtTables {
+        let mut ordt1: Vec<u16> = Vec::new();
+        let mut ordt2: Vec<u16> = Vec::new();
+        let mut sym_of: HashMap<char, u16> = HashMap::new();
+
+        let add = |cp: u32,
+                   weight: u16,
+                   o1: &mut Vec<u16>,
+                   o2: &mut Vec<u16>,
+                   m: &mut HashMap<char, u16>| {
+            let sym = o2.len() as u16;
+            o2.push(cp as u16);
+            o1.push(weight);
+            if let Some(c) = char::from_u32(cp) {
+                m.entry(c).or_insert(sym);
+            }
+        };
+
+        // Fixed seed: NUL, %, _ (kindlegen always emits these as ignorable
+        // weight-0 symbols).
+        add(0x0000, 0, &mut ordt1, &mut ordt2, &mut sym_of);
+        add(0x0025, 0, &mut ordt1, &mut ordt2, &mut sym_of); // %
+        add(0x005F, 0, &mut ordt1, &mut ordt2, &mut sym_of); // _
+
+        let mut chars: Vec<char> = labels.iter().flat_map(|s| s.chars()).collect();
+        chars.sort_unstable();
+        chars.dedup();
+
+        // Assign each fold-base letter a collation weight in alphabetical
+        // order; every accent/case variant of that letter shares the weight.
+        let mut bases: Vec<char> = chars.iter().map(|&c| fold_base(c)).collect();
+        bases.sort_unstable();
+        bases.dedup();
+        let mut base_weight: HashMap<char, u16> = HashMap::new();
+        for (i, b) in bases.iter().enumerate() {
+            base_weight.insert(*b, (i as u16).saturating_add(1));
+        }
+
+        // Each unique BMP character becomes its own symbol carrying its
+        // fold-base's weight. Code points above U+FFFF cannot index the u16
+        // symbol table and are left out (none occur in accented Latin).
+        for c in chars {
+            let cp = c as u32;
+            if cp <= 0xFFFF && !sym_of.contains_key(&c) {
+                let weight = *base_weight.get(&fold_base(c)).unwrap_or(&0);
+                add(cp, weight, &mut ordt1, &mut ordt2, &mut sym_of);
+            }
+        }
+
+        // Single-byte labels (ordt_type = 1, like kindlegen) when the table
+        // fits a byte index; every label character is in the table, so there
+        // are no literals to force two-byte elements unless the table itself
+        // exceeds 256 symbols.
+        let two_byte = ordt2.len() > 256;
 
         OrdtTables {
             ordt1,
@@ -518,29 +632,42 @@ mod tests {
     }
 
     #[test]
-    fn latin_accents_are_distinct_literals() {
+    fn strict_accents_folds_weights_keeps_symbols_distinct() {
         // Issue #8: --strict-accents routes a Latin dictionary through the
-        // generated ORDT. With no kana the table is just the 3-symbol seed
-        // (NUL, %, _) and every letter is an out-of-table literal, which the
-        // firmware matches exactly by code point. So accented and base forms
-        // must NOT fold: "même" and "meme" encode to different labels.
-        let o = OrdtTables::new(&["même", "meme", "mère", "mere"]);
-        assert_eq!(o.count(), 3, "Latin dict gets the minimal 3-symbol table");
-        assert!(o.two_byte, "letters are literals -> two-byte labels");
-        // Each letter is encoded as its raw code point (a literal).
-        let m = elems(&o, &o.encode_label("même"));
-        assert_eq!(m, vec![0x006D, 0x00EA, 0x006D, 0x0065]); // m ê m e
+        // full per-letter ORDT (new_exact). Every character is its own symbol
+        // (so labels distinguish ê from e), but accent/case variants share a
+        // collation WEIGHT so accented headwords sort ADJACENT to their base.
+        // That folded-weight, distinct-symbol layout is what makes the
+        // firmware match accents exactly on device.
+        let o = OrdtTables::new_exact(&["même", "meme", "mère", "mere"]);
+        assert!(!o.two_byte, "single-byte symbol labels (ordt_type=1)");
+        assert!(
+            o.count() > 3,
+            "full per-letter table, not the 3-symbol seed"
+        );
+
+        // Distinct symbols: meme and même encode to different labels.
         assert_ne!(
             o.encode_label("même"),
             o.encode_label("meme"),
-            "accented and base forms must encode distinctly"
+            "accented and base forms must encode to distinct symbols"
         );
         assert_ne!(o.encode_label("mère"), o.encode_label("mere"));
-        // ...and sort to distinct keys, so they are separate index entries.
-        assert_ne!(
+
+        // Folded weights: meme and même collate EQUAL (sort adjacent), unlike
+        // the distinct-symbol labels. Same for mere/mère.
+        assert_eq!(
             o.sort_key(&o.encode_label("même")),
-            o.sort_key(&o.encode_label("meme"))
+            o.sort_key(&o.encode_label("meme")),
+            "accent and base must share a collation weight (sort adjacent)"
         );
+        assert_eq!(
+            o.sort_key(&o.encode_label("mère")),
+            o.sort_key(&o.encode_label("mere"))
+        );
+        // ...but meme's folded key sorts below mere's (e-weight < r-weight),
+        // so the groups stay in alphabetical order.
+        assert!(o.sort_key(&o.encode_label("meme")) < o.sort_key(&o.encode_label("mere")));
     }
 
     #[test]

@@ -2956,16 +2956,20 @@ fn build_lookup_terms(
     }
 
     eprintln!("Encoding {} unique lookup terms...", terms.len());
-    // `--strict-accents` also routes Latin/Greek/Cyrillic dictionaries
-    // through the generated ORDT. For a non-CJK dictionary that table is the
-    // minimal 3-symbol kindlegen table with every letter left as an
-    // out-of-table literal, which the firmware matches exactly by code point
-    // - so é and e no longer fold (issue #8). Same all-literal mechanism that
-    // resolves Arabic/Chinese/Korean on device. Without the flag, non-CJK
+    // CJK dictionaries (ja/zh/ko/ar) get the generated kana/literal ORDT.
+    // `--strict-accents` instead routes Latin/Greek/Cyrillic dictionaries
+    // through a FULL accent-strict ORDT: every letter is its own symbol with
+    // its own distinct collation weight (like kindlegen's ~150-symbol Latin
+    // table), so accents match exactly. The minimal all-literal table made
+    // the firmware fall back to its own French collation, which folded é/e
+    // and dropped accented headwords (issue #8). Without the flag, non-CJK
     // dictionaries keep the diacritic-folding Greek ORDT/SPL blob.
-    let gen_ordt = if crate::ordt::uses_generated_ordt(dict_lang) || strict_accents {
+    let gen_ordt = if crate::ordt::uses_generated_ordt(dict_lang) {
         let refs: Vec<&str> = ordered_labels.iter().map(|s| s.as_str()).collect();
         Some(crate::ordt::OrdtTables::new(&refs))
+    } else if strict_accents {
+        let refs: Vec<&str> = ordered_labels.iter().map(|s| s.as_str()).collect();
+        Some(crate::ordt::OrdtTables::new_exact(&refs))
     } else {
         None
     };

@@ -615,21 +615,27 @@ mod tests {
             "default orth INDX should contain the SPL folding collation"
         );
 
-        // Strict build: the dictionary is routed through the generated ORDT
-        // instead. That table is the minimal 3-symbol kindlegen table (every
-        // letter left as an exact literal), so the orth INDX primary
-        // declares oentries=3 and a non-zero ORDT2 offset, and carries NO
-        // SPL folding table. This is what makes "même" match exactly (#8).
+        // Strict build: the dictionary is routed through the full per-letter
+        // ORDT (new_exact) instead. Every character is its own single-byte
+        // symbol (ordt_type=1, oentries > the 3-symbol seed) but accent/case
+        // variants share a collation weight, and there is NO SPL folding
+        // table. This folded-weight, distinct-symbol layout is what makes the
+        // firmware match accents exactly on device (issue #8).
         let spl_present_strict = strict_indx.windows(4).any(|w| w == b"SPL1");
         assert!(
             !spl_present_strict,
             "strict_accents orth INDX must not embed the SPL folding table"
         );
+        let ordt_type = read_u32_be(&strict_indx, 164); // 1 = single-byte symbols
         let oentries = read_u32_be(&strict_indx, 168); // generated-ORDT table size
         let ordt2_off = read_u32_be(&strict_indx, 176); // ORDT2 (values) offset
         assert_eq!(
-            oentries, 3,
-            "strict_accents should use the minimal 3-symbol literal ORDT (got oentries={oentries})"
+            ordt_type, 1,
+            "strict ORDT should be single-byte (ordt_type=1) like kindlegen"
+        );
+        assert!(
+            oentries > 3,
+            "strict_accents should use the full per-letter ORDT, not the 3-symbol seed (got oentries={oentries})"
         );
         assert!(
             ordt2_off != 0,
@@ -641,7 +647,7 @@ mod tests {
         assert_eq!(read_u32_be(&strict_indx, 36), 4);
 
         println!(
-            "  \u{2713} strict_accents toggle: default embeds Greek SPL folding ({} bytes), strict uses generated literal ORDT oentries=3 ({} bytes)",
+            "  \u{2713} strict_accents toggle: default embeds Greek SPL folding ({} bytes), strict uses full per-letter ORDT ordt_type=1 oentries={oentries} ({} bytes)",
             default_indx.len(),
             strict_indx.len()
         );
