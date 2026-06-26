@@ -30,6 +30,7 @@ Pre-built binaries for Mac (Apple Silicon, Intel), Linux (x86_64), and Windows (
 - **EPUB export**: `kindling epub2` and `kindling epub3` build a reflowable EPUB from the same OPF or EPUB input, conformant to EPUB 2.0.1 and EPUB 3.3 respectively (epubcheck-clean). EPUB2 is always a plain book; EPUB3 is a plain book by default and emits an EPUB Dictionaries and Glossaries layer (Search Key Map, `dc:type=dictionary`, `epub:type` semantics) when the input is a dictionary (see [EPUB export](#epub-export))
 - **EPUB repair**: `kindling repair` applies a small, byte-stable, idempotent set of structural fixes to an EPUB for cleaner Send-to-Kindle ingest (see [Repair](#repair))
 - **Metadata rewrite**: `kindling rewrite-metadata` updates title, authors, publisher, description, language, ISBN, ASIN, publication date, tags, series, and cover image on an existing MOBI/AZW3 in place without rebuilding from source. Byte-stable on no-op, idempotent, refuses DRM files (see [Rewrite metadata](#rewrite-metadata))
+- **Structural dump**: `kindling dump` prints the parsed structure of a MOBI/AZW3 (PalmDB, MOBI header, EXTH, INDX/ORDT tables, entry labels) as line-oriented `section.field = value` output, so two dumps can be compared with `diff` (see [Dump](#dump))
 - **Build-time HTML self-check**: every `build` runs a two-pass HTML balance check on the assembled MOBI text blob and on each individual PalmDB text record after splitting, catching regressions like dangling tags, `<hr/` corruption, and bold/italic state leaking across record boundaries (see [Build-time self-check](#build-time-self-check))
 - **UTF-8 and tag-safe record splitter**: text records end on HTML `<hr/>` entry boundaries where possible, otherwise back off past any unclosed `<` tag and any incomplete UTF-8 multi-byte character, so multi-byte characters are never truncated and chunks never end mid-tag
 - Drop-in *kindlegen* replacement (same CLI flags, same status codes)
@@ -77,7 +78,7 @@ Add the crate to your `Cargo.toml` (published as `kindling-mobi`; the library na
 
 ```toml
 [dependencies]
-kindling-mobi = "0.18"
+kindling-mobi = "0.20"
 ```
 
 Then `use kindling::...`. Public API is defined in `src/lib.rs`.
@@ -315,6 +316,15 @@ kindling-cli input.opf  -no_validate             # skip KDP pre-flight validatio
 
 Drop-in replacement. Same CLI syntax, same status codes (`:I1036:` on success, `:E23026:` on failure). The KDP pre-flight validator runs by default in kindlegen-compat mode too; pass `-no_validate` (or `--no-validate`) to skip it.
 
+### Dump
+
+```bash
+kindling-cli dump input.mobi      # structural dump to stdout
+kindling-cli dump input.azw3
+```
+
+`kindling dump` prints the parsed structure of a MOBI/AZW3 file one `section.field = value` line at a time: PalmDB and MOBI header fields, every EXTH record, the INDX and ORDT2 tables, and entry labels. Text and image records are summarized by length and magic only. The line-oriented output is designed so `diff -u` between two dumps surfaces semantic differences without drowning in absolute-offset noise, which is how the kindlegen parity work is done. It is a read-only inspection tool and never writes to the input.
+
 ## Performance and Comparisons
 
 ### vs kindlegen
@@ -475,11 +485,13 @@ kindling/
 ├── Cargo.toml                   # edition 2024, Rust 1.85+
 ├── src/
 │   ├── lib.rs                   # Library crate root, public API for external consumers
-│   ├── main.rs                  # CLI: build, comic, stardict, epub2, epub3, validate, repair, rewrite-metadata, kindlegen-compat
+│   ├── main.rs                  # CLI: build, comic, stardict, epub2, epub3, validate, repair, rewrite-metadata, dump, kindlegen-compat
 │   ├── mobi.rs                  # PalmDB + MOBI record 0 + EXTH writer, UTF-8/tag-safe record splitter
 │   ├── mobi_check.rs            # Post-build MOBI readback: PalmDB, EXTH, text-record sanity
 │   ├── mobi_rewrite.rs          # In-place MOBI/AZW3 metadata and cover rewrite
+│   ├── mobi_dump.rs             # Structural dump of a MOBI/AZW3 (the `dump` subcommand)
 │   ├── kf8.rs                   # KF8 section, BOUNDARY, FDST, skeleton/fragment indexes
+│   ├── cncx.rs                  # CNCX (compiled NCX) records for KF8 navigation
 │   ├── indx.rs                  # Orthographic INDX records for dictionaries (ORDT/SPL sort tables)
 │   ├── ordt.rs                  # Generated ORDT collation tables and label encoding (ja/zh/ko/ar)
 │   ├── palmdoc.rs               # PalmDOC LZ77 compression
@@ -487,8 +499,10 @@ kindling/
 │   ├── vwi.rs                   # Variable-width integer encoding
 │   ├── opf.rs                   # OPF and EPUB parsing (Method 1 and Method 2 covers)
 │   ├── epub.rs                  # EPUB extraction for books and comics
+│   ├── extracted.rs             # Normalized in-memory view of an extracted EPUB/OPF
 │   ├── epub_build.rs            # EPUB2/EPUB3 output builders (generic book + EPUB3 dictionary layer)
 │   ├── comic.rs                 # Comic pipeline (crop, split, enhance, Panel View)
+│   ├── profile.rs               # Per-device comic profiles (screen size, gamma)
 │   ├── cbr.rs                   # CBR (RAR) extraction via bsdtar
 │   ├── moire.rs                 # Moire correction for color e-ink
 │   ├── validate.rs              # KDP pre-flight driver; iterates `checks::CHECKS`
@@ -502,9 +516,11 @@ kindling/
 ├── tests/
 │   ├── cli.rs                   # CLI smoke tests for validate, repair, rewrite-metadata, build, comic
 │   ├── kindlegen_parity.rs      # Byte/field parity vs committed kindlegen reference .mobi files
-│   ├── ja_dict.rs               # Japanese dictionary ORDT structure + kindlegen collation cross-validation
-│   ├── dict_languages.rs        # Per-language dictionary tests (en/el/fr/ru/tr/zh/ko/ar)
+│   ├── dict_languages.rs        # Per-language dictionary tests (en/el/fr/ru/tr/ja/zh/ko/ar)
 │   ├── roundtrip.rs             # Structural round-trip of kindling output via inline MOBI reader
+│   ├── stardict.rs              # StarDict bundle structure (.ifo/.idx/.dict/.syn)
+│   ├── epub_conformance.rs      # EPUB2/EPUB3 output structure and dictionary-layer checks
+│   ├── epub_tests_corpus.rs     # Opt-in w3c/epub-tests corpus harness (KINDLING_CORPUS_DIR)
 │   ├── common/                  # Inline MOBI reader used by roundtrip and parity tests
 │   └── fixtures/                # One fixture per rule cluster plus the parity/ subtree
 └── target/release/kindling-cli  # compiled binary
@@ -520,7 +536,7 @@ cargo test -- --show-output   # include println! output
 cargo test --test cli         # CLI smoke tests only
 ```
 
-The suite currently contains around 790 tests spanning unit tests in `src/tests.rs` and per-cluster tests in `src/checks/`, CLI integration tests in `tests/cli.rs` that invoke the compiled `kindling-cli` binary against OPF/EPUB/MOBI fixtures under `tests/fixtures/`, structural round-trip tests in `tests/roundtrip.rs`, per-language dictionary tests in `tests/dict_languages.rs`, and kindlegen parity tests in `tests/kindlegen_parity.rs`. An opt-in corpus harness in `tests/epub_tests_corpus.rs` runs every test in a local [w3c/epub-tests](https://github.com/w3c/epub-tests) checkout through the validator to surface false positives and measure coverage; set `KINDLING_CORPUS_DIR` to the checkout path and run `cargo test --release --test epub_tests_corpus -- --ignored --nocapture`.
+The suite currently contains over 810 tests spanning unit tests in `src/tests.rs` and per-cluster tests in `src/checks/`, CLI integration tests in `tests/cli.rs` that invoke the compiled `kindling-cli` binary against OPF/EPUB/MOBI fixtures under `tests/fixtures/`, structural round-trip tests in `tests/roundtrip.rs`, per-language dictionary tests in `tests/dict_languages.rs`, and kindlegen parity tests in `tests/kindlegen_parity.rs`. An opt-in corpus harness in `tests/epub_tests_corpus.rs` runs every test in a local [w3c/epub-tests](https://github.com/w3c/epub-tests) checkout through the validator to surface false positives and measure coverage; set `KINDLING_CORPUS_DIR` to the checkout path and run `cargo test --release --test epub_tests_corpus -- --ignored --nocapture`.
 
 - **PalmDB and MOBI structure**: PalmDB header fields, record count and offset tables, MOBI header (magic, version, encoding, language, capability marker 0x50 vs 0x4850), text record count, image record ranges, boundary records, FLIS/FCIS/EOF/SRCS records, trailing byte order
 - **Record 0 cross-checks**: MOBI header offsets are internally consistent with the PalmDOC header, EXTH block, full name, and image/INDX record indexes
