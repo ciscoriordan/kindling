@@ -108,7 +108,10 @@ enum Commands {
         /// "même"). With this flag the dictionary is routed through a
         /// per-character collation that leaves every letter as an exact
         /// literal, so accented headwords match exactly ("même" returns
-        /// "même", not "meme"). No effect on book builds.
+        /// "même", not "meme"). No effect on book builds. Can also be enabled
+        /// with the KINDLING_STRICT_ACCENTS=1 environment variable, which is
+        /// the only way to reach it when kindling runs as a kindlegen
+        /// replacement under a wrapper (e.g. pyglossary / reader.dict).
         #[arg(long)]
         strict_accents: bool,
     },
@@ -527,17 +530,46 @@ fn is_kindlegen_compat_mode() -> bool {
     lower.ends_with(".opf") || lower.ends_with(".epub")
 }
 
+/// Whether strict accent matching is requested via the environment.
+///
+/// `--strict-accents` is a `build` subcommand flag, but kindling is often run
+/// as a drop-in kindlegen replacement under a wrapper that controls the command
+/// line itself - notably pyglossary's Mobi writer (used by reader.dict), which
+/// invokes the binary as `kindlegen <opf> -gen_ff_mobi7 -dont_append_source -o
+/// content.mobi` with no way to forward extra flags. The wrapper does inherit
+/// the parent environment, so `KINDLING_STRICT_ACCENTS=1` is the one channel
+/// that reaches kindling in that setup. Honored in both compat and normal
+/// `build` mode. See issue #8.
+fn strict_accents_from_env() -> bool {
+    strict_accents_env_value(std::env::var("KINDLING_STRICT_ACCENTS").ok())
+}
+
+/// Pure interpretation of the `KINDLING_STRICT_ACCENTS` value, split out so it
+/// can be unit-tested without touching the process environment. Treats unset,
+/// empty, and the usual falsey tokens as off; anything else (e.g. "1", "true")
+/// as on.
+fn strict_accents_env_value(raw: Option<String>) -> bool {
+    match raw {
+        Some(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            !matches!(v.as_str(), "" | "0" | "false" | "no" | "off")
+        }
+        None => false,
+    }
+}
+
 /// Parse kindlegen-compatible arguments.
 /// Accepts: kindling <input_file> [-o <filename>] [-dont_append_source] [-locale <value>]
 ///          [-c0] [-c1] [-c2] [-verbose] [-no_validate | --no-validate]
-///          [-no_self_check | --no-self-check]
-/// Returns (input, output_override, no_validate, no_self_check)
-fn parse_kindlegen_args() -> (PathBuf, Option<String>, bool, bool) {
+///          [-no_self_check | --no-self-check] [-strict_accents | --strict-accents]
+/// Returns (input, output_override, no_validate, no_self_check, strict_accents)
+fn parse_kindlegen_args() -> (PathBuf, Option<String>, bool, bool, bool) {
     let args: Vec<String> = std::env::args().collect();
     let input = PathBuf::from(&args[1]);
     let mut output_name: Option<String> = None;
     let mut no_validate = false;
     let mut no_self_check = false;
+    let mut strict_accents = false;
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
@@ -565,13 +597,17 @@ fn parse_kindlegen_args() -> (PathBuf, Option<String>, bool, bool) {
                 no_self_check = true;
                 i += 1;
             }
+            "--strict-accents" | "-strict_accents" => {
+                strict_accents = true;
+                i += 1;
+            }
             _ => {
                 // Unknown flag, skip
                 i += 1;
             }
         }
     }
-    (input, output_name, no_validate, no_self_check)
+    (input, output_name, no_validate, no_self_check, strict_accents)
 }
 
 /// Resolve the output path for a build.
@@ -821,7 +857,11 @@ fn do_build(
 fn main() {
     if is_kindlegen_compat_mode() {
         // Kindlegen-compatible invocation: kindling <file> [-o name] [flags...]
-        let (input, output_name, no_validate, no_self_check) = parse_kindlegen_args();
+        let (input, output_name, no_validate, no_self_check, strict_accents_arg) =
+            parse_kindlegen_args();
+        // A wrapper that fixes the kindlegen command line (e.g. pyglossary)
+        // can't pass -strict_accents, so also accept it from the environment.
+        let strict_accents = strict_accents_arg || strict_accents_from_env();
 
         // In kindlegen compat mode, -o specifies just a filename next to the input
         let output_path = if let Some(name) = output_name {
@@ -844,7 +884,7 @@ fn main() {
             true,
             no_validate,
             !no_self_check,
-            false,
+            strict_accents,
         );
     } else {
         let cli = Cli::parse();
@@ -937,7 +977,7 @@ fn main() {
                     effective_kindle_limits,
                     no_validate,
                     !no_self_check,
-                    strict_accents,
+                    strict_accents || strict_accents_from_env(),
                 );
             }
             Commands::Comic {
@@ -1793,4 +1833,28 @@ fn json_string(s: &str) -> String {
     }
     out.push('"');
     out
+}
+
+#[cfg(test)]
+mod env_tests {
+    use super::strict_accents_env_value;
+
+    #[test]
+    fn strict_accents_env_value_truthy_and_falsey() {
+        // Unset and falsey tokens are off.
+        assert!(!strict_accents_env_value(None));
+        for off in ["", "  ", "0", "false", "False", "NO", "off", "OFF"] {
+            assert!(
+                !strict_accents_env_value(Some(off.to_string())),
+                "{off:?} should be off"
+            );
+        }
+        // Anything else is on (pyglossary users typically export =1).
+        for on in ["1", "true", "TRUE", "yes", "on", "strict"] {
+            assert!(
+                strict_accents_env_value(Some(on.to_string())),
+                "{on:?} should be on"
+            );
+        }
+    }
 }
