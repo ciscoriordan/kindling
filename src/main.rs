@@ -607,7 +607,13 @@ fn parse_kindlegen_args() -> (PathBuf, Option<String>, bool, bool, bool) {
             }
         }
     }
-    (input, output_name, no_validate, no_self_check, strict_accents)
+    (
+        input,
+        output_name,
+        no_validate,
+        no_self_check,
+        strict_accents,
+    )
 }
 
 /// Resolve the output path for a build.
