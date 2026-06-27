@@ -610,10 +610,11 @@ mod validate {
         // Regression for issue #16: reader-dict numbers senses with <ol> and
         // letters/roman-numbers sub-senses with inline list-style-type. The
         // issue #6 style-stripping dropped those markers, so the Kindle popup
-        // rendered the lists with no bullets/numbers (looked like
-        // list-style-type:none). We now convert list-style-type to the legacy
-        // `type` attribute the MOBI7 popup honours, and give bare <ol> an
-        // explicit decimal marker, while still removing style/class.
+        // rendered the lists with no numbers (looked like list-style-type:none).
+        // The popup ignores list-style-type CSS and <ol type>, but honours
+        // <li value="N"> -- which is what kindlegen emits. We now number every
+        // ordered <li> the same way (counter restarts at 1 per nested <ol>),
+        // while still stripping style/class.
         let (tmp, opf) = stage_fixture("dict_list_markers", "content.opf");
         let out = run_build(&["--no-validate", opf.to_str().unwrap()]);
         assert!(
@@ -627,18 +628,18 @@ mod validate {
 
         // PalmDOC back-references hide repeated short strings from a raw byte
         // scan, so decompress the text and assert on the rendered markup.
+        // The fixture has one <ol> with two senses wrapping a lower-alpha and a
+        // lower-roman nested <ol>, so three lists each open at value 1 and the
+        // outer list's second item is value 2 -- matching kindlegen.
         let rawml = mobi_rawml(&expected);
-        assert!(
-            rawml.contains("<ol type=\"1\">"),
-            "bare <ol> must get a decimal type marker\n{rawml}"
+        assert_eq!(
+            rawml.matches("<li value=\"1\">").count(),
+            3,
+            "each list (outer + 2 nested) opens at value 1\n{rawml}"
         );
         assert!(
-            rawml.contains("<ol type=\"a\">"),
-            "lower-alpha must become type=\"a\"\n{rawml}"
-        );
-        assert!(
-            rawml.contains("<ol type=\"i\">"),
-            "lower-roman must become type=\"i\"\n{rawml}"
+            rawml.contains("<li value=\"2\">"),
+            "outer list's second sense is numbered 2\n{rawml}"
         );
         assert!(
             !rawml.contains("style="),
