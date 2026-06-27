@@ -2565,6 +2565,13 @@ mod record_split_tests {
         // Korean and French keep their full LCID, per kindlegen.
         assert_eq!(mobi_locale_code("ko"), 0x0412);
         assert_eq!(mobi_locale_code("fr"), 0x040C);
+
+        // Arabic-script languages get their own neutral primary LCID (they
+        // route through the generated all-literal ORDT like ar).
+        assert_eq!(mobi_locale_code("fa"), 0x0029);
+        assert_eq!(mobi_locale_code("ur"), 0x0020);
+        assert_eq!(mobi_locale_code("ps"), 0x0063);
+        assert_eq!(mobi_locale_code("ckb"), 0x0092);
     }
 
     #[test]
@@ -3791,6 +3798,15 @@ fn locale_code(lang: &str) -> u32 {
             "mi" => 0x0481,
             "lb" => 0x046E,
             "fo" => 0x0438,
+            // Arabic-script languages (generated all-literal ORDT, like ar).
+            // The neutral primary LCID is what the firmware's per-language
+            // query normalization is keyed on (issue #11).
+            "fa" => 0x0429,
+            "ur" => 0x0420,
+            "ps" => 0x0463,
+            "ug" => 0x0480,
+            "sd" => 0x0859,
+            "ckb" => 0x0492,
             _ => 0x0409, // default to en-US
         },
     }

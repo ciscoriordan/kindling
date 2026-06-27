@@ -5,13 +5,13 @@
 //! entry labels must be encoded the same way. The mapping is defined by a
 //! pair of ORDT tables embedded in the primary INDX record. See issue #11.
 //!
-//! kindling routes Japanese, Chinese, Korean, and Arabic through this
-//! module (see `uses_generated_ordt`). Latin/Greek/Cyrillic dictionaries
-//! keep the UTF-16BE label scheme with the static Greek ORDT/SPL blob
-//! (diacritic-folding default), verified working on real devices. With
-//! `--strict-accents` they instead get a full per-letter ORDT (see
-//! `new_exact`) that folds accent/case collation weights but keeps each
-//! character a distinct symbol, for exact-accent matching (issue #8).
+//! kindling routes Japanese, Chinese, Korean, and the Arabic-script
+//! languages (`ar`, `fa`, `ur`, `ps`, `ug`, `sd`, `ckb`) through this module
+//! (see `uses_generated_ordt`). Latin dictionaries default to a full
+//! per-letter ORDT (see `new_exact`) that folds accent/case collation weights
+//! while keeping each character a distinct symbol, for exact-accent matching
+//! (issue #8); `--fold-accents` gives them the diacritic-folding Greek
+//! ORDT/SPL blob instead. Greek and Cyrillic keep the UTF-16BE label scheme.
 //!
 //! # The per-character scheme (validated on hardware)
 //!
@@ -615,17 +615,26 @@ impl OrdtTables {
 
 /// True if a dictionary input language selects the generated ORDT path.
 ///
-/// Japanese (proven, issue #11), Chinese, Korean, and Arabic: scripts whose
-/// firmware lookup encodes queries per character against the embedded ORDT
-/// tables. Latin/Greek/Cyrillic dictionaries stay on the UTF-16BE path,
-/// which is verified working on real devices.
+/// Japanese (proven, issue #11), Chinese, and Korean encode queries per
+/// character against the embedded ORDT tables. The Arabic-script languages
+/// (Arabic, Persian, Urdu, Pashto, Uyghur, Sindhi, Central Kurdish) all store
+/// their letters as literal code points through the same all-literal table
+/// that `ar` uses (no kana, so `OrdtTables::new` emits the minimal table), so
+/// they share this path; only the MOBI locale differs per language. Latin,
+/// Greek, and Cyrillic dictionaries stay on the UTF-16BE / exact-ORDT path.
 pub fn uses_generated_ordt(lang: &str) -> bool {
     let primary = lang
         .split(['-', '_'])
         .next()
         .unwrap_or(lang)
         .to_ascii_lowercase();
-    matches!(primary.as_str(), "ja" | "zh" | "ko" | "ar")
+    matches!(
+        primary.as_str(),
+        // CJK
+        "ja" | "zh" | "ko"
+        // Arabic-script (all-literal ORDT, like `ar`)
+        | "ar" | "fa" | "ur" | "ps" | "ug" | "sd" | "ckb"
+    )
 }
 
 #[cfg(test)]
@@ -919,8 +928,19 @@ mod tests {
         assert!(uses_generated_ordt("zh"));
         assert!(uses_generated_ordt("ko"));
         assert!(uses_generated_ordt("ar"));
+        // Arabic-script languages share the all-literal `ar` path.
+        for code in ["fa", "ur", "ps", "ug", "sd", "ckb", "fa-IR", "ur_PK"] {
+            assert!(
+                uses_generated_ordt(code),
+                "{code} should use generated ORDT"
+            );
+        }
         assert!(!uses_generated_ordt("el"));
         assert!(!uses_generated_ordt("en"));
+        // Latin Kurdish (Kurmanji) and other non-Arabic codes stay off the
+        // generated path; only the Arabic-script Kurdish code ckb is on it.
+        assert!(!uses_generated_ordt("ku"));
+        assert!(!uses_generated_ordt("kmr"));
         assert!(!uses_generated_ordt("jam"));
     }
 }
