@@ -102,18 +102,27 @@ enum Commands {
         #[arg(long)]
         no_self_check: bool,
 
-        /// Strict accent matching for dictionary lookups. By default
-        /// kindling embeds the kindlegen-derived ORDT/SPL collation tables,
-        /// which make Kindle fold diacritics at lookup time ("meme" matches
-        /// "même"). With this flag the dictionary is routed through a
-        /// per-character collation that leaves every letter as an exact
-        /// literal, so accented headwords match exactly ("même" returns
-        /// "même", not "meme"). No effect on book builds. Can also be enabled
-        /// with the KINDLING_STRICT_ACCENTS=1 environment variable, which is
-        /// the only way to reach it when kindling runs as a kindlegen
-        /// replacement under a wrapper (e.g. pyglossary / reader.dict).
-        #[arg(long)]
+        /// Force exact accent matching for any script. Latin dictionaries
+        /// already default to exact matching, where accent and case variants
+        /// share a collation weight (so the index sorts folded and accent-
+        /// initial headwords resolve) but each letter stays a distinct symbol,
+        /// so "même" returns "même" not "meme" (issue #8). This flag forces the
+        /// same exact collation for Greek/Cyrillic too. No effect on book
+        /// builds. Also settable via KINDLING_STRICT_ACCENTS=1, the only way to
+        /// reach it under a wrapper that controls the command line (e.g.
+        /// pyglossary / reader.dict). Mutually exclusive with --fold-accents.
+        #[arg(long, conflicts_with = "fold_accents")]
         strict_accents: bool,
+
+        /// Opt into kindlegen-style accent folding for a Latin dictionary
+        /// instead of the exact-matching default: the diacritic-folding Greek
+        /// ORDT/SPL collation blob, so "meme" also matches "même". The labels
+        /// are still folded-sorted, so accent-initial headwords resolve. Use
+        /// this for byte-for-byte kindlegen parity or accent-insensitive
+        /// lookup. No effect on Greek/Cyrillic (already folding) or book
+        /// builds. Also settable via KINDLING_FOLD_ACCENTS=1.
+        #[arg(long, conflicts_with = "strict_accents")]
+        fold_accents: bool,
     },
 
     /// Convert comic images/CBZ/CBR/EPUB to Kindle-optimized MOBI
@@ -541,14 +550,20 @@ fn is_kindlegen_compat_mode() -> bool {
 /// that reaches kindling in that setup. Honored in both compat and normal
 /// `build` mode. See issue #8.
 fn strict_accents_from_env() -> bool {
-    strict_accents_env_value(std::env::var("KINDLING_STRICT_ACCENTS").ok())
+    env_flag_truthy(std::env::var("KINDLING_STRICT_ACCENTS").ok())
 }
 
-/// Pure interpretation of the `KINDLING_STRICT_ACCENTS` value, split out so it
-/// can be unit-tested without touching the process environment. Treats unset,
-/// empty, and the usual falsey tokens as off; anything else (e.g. "1", "true")
-/// as on.
-fn strict_accents_env_value(raw: Option<String>) -> bool {
+/// Whether kindlegen-style accent folding is requested via the environment,
+/// the wrapper-friendly counterpart to `--fold-accents`. See
+/// `strict_accents_from_env` for why the env channel exists.
+fn fold_accents_from_env() -> bool {
+    env_flag_truthy(std::env::var("KINDLING_FOLD_ACCENTS").ok())
+}
+
+/// Pure interpretation of a boolean env-var value, split out so it can be
+/// unit-tested without touching the process environment. Treats unset, empty,
+/// and the usual falsey tokens as off; anything else (e.g. "1", "true") as on.
+fn env_flag_truthy(raw: Option<String>) -> bool {
     match raw {
         Some(v) => {
             let v = v.trim().to_ascii_lowercase();
@@ -562,14 +577,17 @@ fn strict_accents_env_value(raw: Option<String>) -> bool {
 /// Accepts: kindling <input_file> [-o <filename>] [-dont_append_source] [-locale <value>]
 ///          [-c0] [-c1] [-c2] [-verbose] [-no_validate | --no-validate]
 ///          [-no_self_check | --no-self-check] [-strict_accents | --strict-accents]
-/// Returns (input, output_override, no_validate, no_self_check, strict_accents)
-fn parse_kindlegen_args() -> (PathBuf, Option<String>, bool, bool, bool) {
+///          [-fold_accents | --fold-accents]
+/// Returns (input, output_override, no_validate, no_self_check, strict_accents,
+/// fold_accents)
+fn parse_kindlegen_args() -> (PathBuf, Option<String>, bool, bool, bool, bool) {
     let args: Vec<String> = std::env::args().collect();
     let input = PathBuf::from(&args[1]);
     let mut output_name: Option<String> = None;
     let mut no_validate = false;
     let mut no_self_check = false;
     let mut strict_accents = false;
+    let mut fold_accents = false;
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
@@ -601,6 +619,10 @@ fn parse_kindlegen_args() -> (PathBuf, Option<String>, bool, bool, bool) {
                 strict_accents = true;
                 i += 1;
             }
+            "--fold-accents" | "-fold_accents" => {
+                fold_accents = true;
+                i += 1;
+            }
             _ => {
                 // Unknown flag, skip
                 i += 1;
@@ -613,6 +635,7 @@ fn parse_kindlegen_args() -> (PathBuf, Option<String>, bool, bool, bool) {
         no_validate,
         no_self_check,
         strict_accents,
+        fold_accents,
     )
 }
 
@@ -680,6 +703,7 @@ fn do_build(
     no_validate: bool,
     self_check: bool,
     strict_accents: bool,
+    fold_accents: bool,
 ) {
     let is_epub = input
         .extension()
@@ -790,6 +814,7 @@ fn do_build(
             self_check,
             false, // kindlegen_parity: only meaningful for the comic path
             strict_accents,
+            fold_accents,
         ),
         None => mobi::build_mobi(
             &opf_path,
@@ -806,6 +831,7 @@ fn do_build(
             self_check,
             false, // kindlegen_parity: only meaningful for the comic path
             strict_accents,
+            fold_accents,
         ),
     };
 
@@ -863,11 +889,12 @@ fn do_build(
 fn main() {
     if is_kindlegen_compat_mode() {
         // Kindlegen-compatible invocation: kindling <file> [-o name] [flags...]
-        let (input, output_name, no_validate, no_self_check, strict_accents_arg) =
+        let (input, output_name, no_validate, no_self_check, strict_accents_arg, fold_accents_arg) =
             parse_kindlegen_args();
         // A wrapper that fixes the kindlegen command line (e.g. pyglossary)
-        // can't pass -strict_accents, so also accept it from the environment.
+        // can't pass the accent flags, so also accept them from the environment.
         let strict_accents = strict_accents_arg || strict_accents_from_env();
+        let fold_accents = fold_accents_arg || fold_accents_from_env();
 
         // In kindlegen compat mode, -o specifies just a filename next to the input
         let output_path = if let Some(name) = output_name {
@@ -891,6 +918,7 @@ fn main() {
             no_validate,
             !no_self_check,
             strict_accents,
+            fold_accents,
         );
     } else {
         let cli = Cli::parse();
@@ -912,6 +940,7 @@ fn main() {
                 no_validate,
                 no_self_check,
                 strict_accents,
+                fold_accents,
             } => {
                 // Default: ON for dictionaries, OFF for books.
                 // Since we don't know the content type yet at parse time, we pass
@@ -984,6 +1013,7 @@ fn main() {
                     no_validate,
                     !no_self_check,
                     strict_accents || strict_accents_from_env(),
+                    fold_accents || fold_accents_from_env(),
                 );
             }
             Commands::Comic {
@@ -1843,24 +1873,21 @@ fn json_string(s: &str) -> String {
 
 #[cfg(test)]
 mod env_tests {
-    use super::strict_accents_env_value;
+    use super::env_flag_truthy;
 
     #[test]
-    fn strict_accents_env_value_truthy_and_falsey() {
+    fn env_flag_truthy_handles_truthy_and_falsey() {
         // Unset and falsey tokens are off.
-        assert!(!strict_accents_env_value(None));
+        assert!(!env_flag_truthy(None));
         for off in ["", "  ", "0", "false", "False", "NO", "off", "OFF"] {
             assert!(
-                !strict_accents_env_value(Some(off.to_string())),
+                !env_flag_truthy(Some(off.to_string())),
                 "{off:?} should be off"
             );
         }
         // Anything else is on (pyglossary users typically export =1).
         for on in ["1", "true", "TRUE", "yes", "on", "strict"] {
-            assert!(
-                strict_accents_env_value(Some(on.to_string())),
-                "{on:?} should be on"
-            );
+            assert!(env_flag_truthy(Some(on.to_string())), "{on:?} should be on");
         }
     }
 }

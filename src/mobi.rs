@@ -47,6 +47,7 @@ pub fn build_mobi(
     self_check: bool,
     kindlegen_parity: bool,
     strict_accents: bool,
+    fold_accents: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let extracted = ExtractedEpub::from_opf_path(opf_path)?;
     build_mobi_from_extracted(
@@ -64,6 +65,7 @@ pub fn build_mobi(
         self_check,
         kindlegen_parity,
         strict_accents,
+        fold_accents,
     )
 }
 
@@ -89,6 +91,7 @@ pub fn build_mobi_from_extracted(
     self_check: bool,
     kindlegen_parity: bool,
     strict_accents: bool,
+    fold_accents: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let opf = &extracted.opf;
 
@@ -116,6 +119,7 @@ pub fn build_mobi_from_extracted(
             kindle_limits,
             self_check,
             strict_accents,
+            fold_accents,
         )
     } else {
         if kf8_only {
@@ -173,6 +177,7 @@ fn build_dictionary_mobi(
     kindle_limits: bool,
     self_check: bool,
     strict_accents: bool,
+    fold_accents: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Parse all dictionary entries from HTML content
     let mut all_entries: Vec<DictionaryEntry> = Vec::new();
@@ -352,6 +357,7 @@ fn build_dictionary_mobi(
         headwords_only,
         &opf.dict_in_language,
         strict_accents,
+        fold_accents,
     );
 
     eprintln!("Building INDX records...");
@@ -2912,6 +2918,33 @@ fn is_entry_boundary(text_bytes: &[u8], bold_pos: usize) -> bool {
 /// headword's text position. Matches lemma v1.0.0 / kindling v0.5.0
 /// behaviour, the last demonstrably on-device-working state.
 ///
+/// Whether a dictionary's headwords are predominantly Latin-script. Used to
+/// pick the default accent collation: Latin dictionaries need folded sorting
+/// and default to exact-accent matching, while Greek and Cyrillic keep the
+/// byte-order path the firmware already collates correctly. A pure-ASCII
+/// (English) headword set counts as Latin.
+fn headwords_are_latin(entries: &[DictionaryEntry]) -> bool {
+    let mut latin = 0usize;
+    let mut other = 0usize;
+    for entry in entries {
+        for ch in entry.headword.chars() {
+            let cp = ch as u32;
+            // Only non-ASCII letters carry script signal; ASCII is shared.
+            if cp <= 0x7F || !ch.is_alphabetic() {
+                continue;
+            }
+            match cp {
+                // Latin-1 Supplement, Latin Extended-A/B, Latin Extended
+                // Additional (Vietnamese etc.).
+                0x00C0..=0x024F | 0x1E00..=0x1EFF => latin += 1,
+                _ => other += 1,
+            }
+        }
+    }
+    // No non-ASCII letters at all (plain ASCII Latin), or a Latin majority.
+    other == 0 || latin >= other
+}
+
 /// For languages on the generated-ORDT path (Japanese, Chinese, Korean,
 /// Arabic; see `crate::ordt::uses_generated_ordt`), labels are encoded
 /// as ORDT symbol sequences and sorted by their collation keys instead
@@ -2924,6 +2957,7 @@ fn build_lookup_terms(
     headwords_only: bool,
     dict_lang: &str,
     strict_accents: bool,
+    fold_accents: bool,
 ) -> (Vec<LookupTerm>, Option<crate::ordt::OrdtTables>) {
     use std::collections::HashMap;
 
@@ -2987,18 +3021,31 @@ fn build_lookup_terms(
     }
 
     eprintln!("Encoding {} unique lookup terms...", terms.len());
-    // CJK dictionaries (ja/zh/ko/ar) get the generated kana/literal ORDT.
-    // `--strict-accents` instead routes Latin/Greek/Cyrillic dictionaries
-    // through a FULL accent-strict ORDT: every letter is its own symbol with
-    // its own distinct collation weight (like kindlegen's ~150-symbol Latin
-    // table), so accents match exactly. The minimal all-literal table made
-    // the firmware fall back to its own French collation, which folded é/e
-    // and dropped accented headwords (issue #8). Without the flag, non-CJK
-    // dictionaries keep the diacritic-folding Greek ORDT/SPL blob.
+    // Is this a Latin-script dictionary? Latin headwords need folded
+    // collation, because the firmware folds Latin diacritics at lookup and a
+    // raw byte-order label sort scatters accented letters far from their base
+    // (ś = U+015B sorts after z, where the Polish search never looks, so
+    // `świat` is never found - issue #8). Greek and Cyrillic already sort the
+    // same in byte order as the firmware collates them, so they keep the
+    // byte-order path.
+    let is_latin = headwords_are_latin(entries);
+
+    // Accent collation:
+    //   - CJK (ja/zh/ko/ar): generated kana/literal ORDT (per-character).
+    //   - Exact mode: a full per-character ORDT where every letter is its own
+    //     symbol but accent/case variants share a collation weight, so accents
+    //     match exactly while still sorting folded (issue #8). This is the
+    //     DEFAULT for Latin dictionaries, and what `--strict-accents` forces
+    //     for any script.
+    //   - Fold mode (no ORDT here): the diacritic-folding Greek ORDT/SPL blob,
+    //     matching kindlegen. The DEFAULT for Greek/Cyrillic, and what
+    //     `--fold-accents` forces for Latin. Latin fold builds still need the
+    //     folded label sort below so accent-initial headwords resolve.
+    let want_exact = strict_accents || (is_latin && !fold_accents);
     let gen_ordt = if crate::ordt::uses_generated_ordt(dict_lang) {
         let refs: Vec<&str> = ordered_labels.iter().map(|s| s.as_str()).collect();
         Some(crate::ordt::OrdtTables::new(&refs))
-    } else if strict_accents {
+    } else if want_exact {
         let refs: Vec<&str> = ordered_labels.iter().map(|s| s.as_str()).collect();
         Some(crate::ordt::OrdtTables::new_exact(&refs))
     } else {
@@ -3031,7 +3078,24 @@ fn build_lookup_terms(
                     .then_with(|| label_bytes_map[a].cmp(&label_bytes_map[b]))
             });
         }
+        None if is_latin => {
+            // Fold mode on a Latin dictionary (`--fold-accents`): the Greek
+            // ORDT/SPL blob folds at lookup, so the labels must be pre-sorted
+            // in folded order or accent-initial headwords are missed. Tie-break
+            // by raw bytes for determinism.
+            let fold_keys: HashMap<&String, Vec<char>> = label_bytes_map
+                .keys()
+                .map(|label| (label, crate::ordt::folded_sort_key(label)))
+                .collect();
+            sorted_labels.sort_by(|a, b| {
+                fold_keys[a]
+                    .cmp(&fold_keys[b])
+                    .then_with(|| label_bytes_map[a].cmp(&label_bytes_map[b]))
+            });
+        }
         None => {
+            // Greek / Cyrillic / other: byte order already matches how the
+            // firmware collates these scripts.
             sorted_labels.sort_by(|a, b| label_bytes_map[a].cmp(&label_bytes_map[b]));
         }
     }

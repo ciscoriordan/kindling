@@ -252,6 +252,7 @@ mod tests {
             false, // self_check (off in tests; dedicated tests cover the checker)
             false, // kindlegen_parity
             false, // strict_accents
+            false, // fold_accents
         )
         .expect("build_mobi failed");
         fs::read(&output_path).expect("could not read output MOBI")
@@ -580,7 +581,7 @@ mod tests {
     /// exact-accented headwords beat fuzzy matches.
     #[test]
     fn test_dict_strict_accents_toggle() {
-        fn build(dir: &Path, strict: bool) -> Vec<u8> {
+        fn build(dir: &Path, strict: bool, fold: bool) -> Vec<u8> {
             let opf = create_dict_fixture(
                 dir,
                 &[("meme", &[]), ("même", &[]), ("mere", &[]), ("mère", &[])],
@@ -588,7 +589,7 @@ mod tests {
             let output = dir.join("output.mobi");
             mobi::build_mobi(
                 &opf, &output, true, false, None, false, false, false, false, None, false, false,
-                false, strict,
+                false, strict, fold,
             )
             .expect("build_mobi failed");
             fs::read(&output).unwrap()
@@ -601,18 +602,26 @@ mod tests {
             get_record(data, &offsets, orth_idx).to_vec()
         }
 
-        let dir_default = TempDir::new("strict_off");
-        let dir_strict = TempDir::new("strict_on");
+        let dir_default = TempDir::new("acc_default");
+        let dir_fold = TempDir::new("acc_fold");
+        let dir_strict = TempDir::new("acc_strict");
 
-        let default_indx = orth_primary(&build(dir_default.path(), false));
-        let strict_indx = orth_primary(&build(dir_strict.path(), true));
+        let default_indx = orth_primary(&build(dir_default.path(), false, false));
+        let fold_indx = orth_primary(&build(dir_fold.path(), false, true));
+        let strict_indx = orth_primary(&build(dir_strict.path(), true, false));
 
-        // Default build: the diacritic-folding Greek ORDT/SPL collation
+        // --fold-accents build: the diacritic-folding Greek ORDT/SPL collation
         // blob is embedded (this is what makes "meme" match "même").
-        let spl_present_default = default_indx.windows(4).any(|w| w == b"SPL1");
         assert!(
-            spl_present_default,
-            "default orth INDX should contain the SPL folding collation"
+            fold_indx.windows(4).any(|w| w == b"SPL1"),
+            "--fold-accents orth INDX should contain the SPL folding collation"
+        );
+
+        // Default build is now exact for Latin, so it must NOT embed the SPL
+        // folding table (it uses the per-letter ORDT, asserted below).
+        assert!(
+            !default_indx.windows(4).any(|w| w == b"SPL1"),
+            "default (exact) orth INDX must not embed the SPL folding table"
         );
 
         // Strict build: the dictionary is routed through the full per-letter
@@ -642,32 +651,40 @@ mod tests {
             "strict_accents orth INDX must embed the generated ORDT2 table"
         );
 
-        // Both builds must still declare 4 headword entries.
+        // The default (exact) build must use the same per-letter ORDT, not the
+        // 3-symbol seed, since exact is now the Latin default.
+        assert!(
+            read_u32_be(&default_indx, 168) > 3,
+            "default (exact) should use the full per-letter ORDT"
+        );
+
+        // All builds must still declare 4 headword entries.
         assert_eq!(read_u32_be(&default_indx, 36), 4);
+        assert_eq!(read_u32_be(&fold_indx, 36), 4);
         assert_eq!(read_u32_be(&strict_indx, 36), 4);
 
         println!(
-            "  \u{2713} strict_accents toggle: default embeds Greek SPL folding ({} bytes), strict uses full per-letter ORDT ordt_type=1 oentries={oentries} ({} bytes)",
-            default_indx.len(),
-            strict_indx.len()
+            "  \u{2713} accent collation: default and --strict-accents use the full per-letter ORDT (exact, ordt_type=1 oentries={oentries}); --fold-accents embeds the Greek SPL folding blob ({} bytes)",
+            fold_indx.len()
         );
     }
 
     #[test]
     fn test_cyrillic_dict_suppresses_greek_ordt() {
-        // Issue #12: the static Greek ORDT/SPL blob only collates
-        // Latin/Greek scripts, so a Cyrillic (or other non-covered) headword
-        // dictionary must NOT embed it by default; it should fall back to
-        // pure UTF-16BE collation (the same effect as --strict-accents). A
-        // Latin dictionary must still embed the blob. Script is detected from
-        // the headword characters, not the language tag, so this fixture uses
-        // the default `en` OPF language with Cyrillic headwords.
+        // Issue #12: the static Greek ORDT/SPL blob only collates Latin/Greek
+        // scripts, so when fold mode would embed it, a Cyrillic (or other
+        // non-covered) headword dictionary must still suppress it and fall back
+        // to pure UTF-16BE collation. A Latin dictionary keeps the blob. Script
+        // is detected from the headword characters, not the language tag, so
+        // this fixture uses the default `en` OPF language with Cyrillic
+        // headwords. Built with --fold-accents, since exact (the default for
+        // Latin) never embeds the blob.
         fn build(dir: &Path, entries: &[(&str, &[&str])]) -> Vec<u8> {
             let opf = create_dict_fixture(dir, entries);
             let output = dir.join("output.mobi");
             mobi::build_mobi(
                 &opf, &output, true, false, None, false, false, false, false, None, false, false,
-                false, false,
+                false, false, true, // fold_accents (so the blob would embed for Latin)
             )
             .expect("build_mobi failed");
             fs::read(&output).unwrap()
@@ -868,6 +885,7 @@ mod tests {
             false, // self_check (off in tests for speed)
             false, // kindlegen_parity
             false, // strict_accents
+            false, // fold_accents
         )
         .expect("build_mobi (kf8_only) failed");
         fs::read(&output_path).expect("could not read output AZW3")
@@ -5254,6 +5272,7 @@ mod tests {
             false, // self_check
             false, // kindlegen_parity
             false, // strict_accents
+            false, // fold_accents
         )
         .expect("build_mobi with kindle_limits should succeed");
 
@@ -5311,6 +5330,7 @@ mod tests {
             false, // self_check
             false, // kindlegen_parity
             false, // strict_accents
+            false, // fold_accents
         )
         .expect("build_mobi with kindle_limits for book should succeed");
 
@@ -5342,6 +5362,7 @@ mod tests {
             false, // self_check
             false, // kindlegen_parity
             false, // strict_accents
+            false, // fold_accents
         )
         .expect("build_mobi without kindle_limits should succeed");
 
@@ -5477,6 +5498,7 @@ mod tests {
             false, // self_check
             false, // kindlegen_parity
             false, // strict_accents
+            false, // fold_accents
         )
         .expect("build_mobi with kindle_limits should succeed");
 
@@ -5593,6 +5615,7 @@ mod tests {
             false, // self_check
             false, // kindlegen_parity
             false, // strict_accents
+            false, // fold_accents
         )
         .expect("build_mobi with kindle_limits failed");
         fs::read(&output_path).expect("could not read output MOBI")
@@ -6213,6 +6236,7 @@ mod tests {
             false, // self_check
             false, // kindlegen_parity
             false, // strict_accents
+            false, // fold_accents
         )
         .expect("compressed build_mobi failed");
         let data_comp = fs::read(&output_comp).expect("could not read compressed MOBI");
@@ -8058,7 +8082,7 @@ mod tests {
         let output_c = dir_c.path().join("output_comp.mobi");
         mobi::build_mobi(
             &opf_c, &output_c, false, false, None, false, false, false, false, None, false, false,
-            false, false,
+            false, false, false, // fold_accents
         )
         .expect("compressed build failed");
         let data_c = fs::read(&output_c).unwrap();
@@ -9541,7 +9565,7 @@ mod tests {
         let output = dir.path().join("out.mobi");
         mobi::build_mobi(
             &opf, &output, true, false, None, false, false, false, false, None, false, false,
-            false, false,
+            false, false, false, // fold_accents
         )
         .expect("build should succeed for clean OPF");
         assert!(output.exists(), "MOBI output file must exist");
@@ -10060,6 +10084,7 @@ mod tests {
             true,  // self_check ENABLED
             false, // kindlegen_parity
             false, // strict_accents
+            false, // fold_accents
         )
         .expect("build with self_check enabled should succeed");
 

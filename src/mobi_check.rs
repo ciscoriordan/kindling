@@ -984,7 +984,7 @@ mod tests {
         let out = dir.join("out.mobi");
         crate::mobi::build_mobi(
             &opf, &out, true, false, None, false, true, false, false, None, false, false, false,
-            false,
+            false, false, // fold_accents
         )
         .expect("build should succeed");
 
@@ -1017,7 +1017,7 @@ mod tests {
         let out = dir.join("out.mobi");
         crate::mobi::build_mobi(
             &opf, &out, true, false, None, false, true, false, false, None, false, false, false,
-            false,
+            false, false, // fold_accents
         )
         .unwrap();
 
@@ -1069,7 +1069,7 @@ mod tests {
         let out = dir.join("out.mobi");
         crate::mobi::build_mobi(
             &opf, &out, true, false, None, false, true, false, false, None, false, false, false,
-            false,
+            false, false, // fold_accents
         )
         .unwrap();
 

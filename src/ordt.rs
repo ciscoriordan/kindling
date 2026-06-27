@@ -250,6 +250,18 @@ fn fold_base(c: char) -> char {
     }
 }
 
+/// Folded collation key for a Latin headword label: each character mapped
+/// through `fold_base` (case + Latin diacritic folding). Latin dictionaries
+/// must be sorted in this order, not raw UTF-16BE byte order, so the
+/// firmware's folding collation can find accent-initial headwords. Under raw
+/// byte order `świat` (ś = U+015B) sorts after `z`, where the firmware's
+/// Polish search never looks, so the lookup misses (issue #8). This mirrors
+/// the folded weights `new_exact` assigns, so the exact and fold paths order
+/// labels the same way.
+pub(crate) fn folded_sort_key(label: &str) -> Vec<char> {
+    label.chars().map(fold_base).collect()
+}
+
 impl OrdtTables {
     /// Build the per-character collation table for a dictionary whose
     /// lookup labels are `labels`. The hiragana and katakana blocks are

@@ -339,6 +339,77 @@ fn check_utf16(code: &str, _c: &Lang, parsed: &ParsedMobi, idx: usize, primary: 
     }
 }
 
+/// Mirrors `mobi::headwords_are_latin`: a dictionary whose non-ASCII headword
+/// letters are dominantly Latin (or pure ASCII) defaults to the exact
+/// (new_exact) ORDT. Greek and Cyrillic stay on the UTF-16BE path.
+fn is_latin_dict(code: &str) -> bool {
+    let mut latin = 0usize;
+    let mut other = 0usize;
+    for h in headwords(code) {
+        for ch in h.chars() {
+            let cp = ch as u32;
+            if cp <= 0x7F || !ch.is_alphabetic() {
+                continue;
+            }
+            match cp {
+                0x00C0..=0x024F | 0x1E00..=0x1EFF => latin += 1,
+                _ => other += 1,
+            }
+        }
+    }
+    other == 0 || latin >= other
+}
+
+/// Latin dictionaries default to the exact (new_exact) ORDT: single-byte
+/// symbols (ordt_type=1), accent/case variants folded for sorting but kept
+/// distinct, and no Greek SPL folding blob (issue #8). Labels round-trip
+/// losslessly and entries are in folded collation order.
+fn check_exact_ordt(code: &str, _c: &Lang, parsed: &ParsedMobi, idx: usize, primary: &[u8]) {
+    assert_eq!(
+        u32_be(primary, 164),
+        1,
+        "{code}: exact ordt_type should be 1"
+    );
+    assert!(
+        u32_be(primary, 168) > 3,
+        "{code}: exact dict should use the full per-letter ORDT, not the 3-symbol seed"
+    );
+    assert!(
+        !primary.windows(4).any(|w| w == b"SPL1"),
+        "{code}: exact dict must not embed the Greek SPL folding blob"
+    );
+    let ordt = parse_indx_ordt2(primary).unwrap_or_else(|| panic!("{code}: missing ORDT tables"));
+    let two_byte = ordt.ordt_type == 2;
+    let indx = parse_indx(parsed, idx).unwrap();
+    let hw = headwords(code);
+
+    // new_exact keeps every character a distinct symbol, so the labels decode
+    // back to the exact headword set.
+    let decoded: BTreeSet<String> = indx
+        .entries
+        .iter()
+        .map(|e| decode_percharacter(&e.label, &ordt.codepoints, two_byte))
+        .collect();
+    let want: BTreeSet<String> = hw.iter().cloned().collect();
+    assert_eq!(decoded, want, "{code}: decoded headword set (exact)");
+
+    // Entries are in non-decreasing folded collation order under the rebuilt
+    // table (same headwords, same document order, identical to the file's).
+    let refs: Vec<&str> = hw.iter().map(|s| s.as_str()).collect();
+    let tables = OrdtTables::new_exact(&refs);
+    let keys: Vec<Vec<u32>> = indx
+        .entries
+        .iter()
+        .map(|e| tables.sort_key(&e.label))
+        .collect();
+    for i in 1..keys.len() {
+        assert!(
+            keys[i - 1] <= keys[i],
+            "{code}: entries out of folded collation order at {i}"
+        );
+    }
+}
+
 fn check(code: &str) {
     let c = LANGS.iter().find(|l| l.code == code).unwrap();
     let parsed = build(code, code);
@@ -346,6 +417,8 @@ fn check(code: &str) {
     check_common(code, c, &parsed, idx, primary);
     if uses_generated_ordt(code) {
         check_generated_ordt(code, c, &parsed, idx, primary);
+    } else if is_latin_dict(code) {
+        check_exact_ordt(code, c, &parsed, idx, primary);
     } else {
         check_utf16(code, c, &parsed, idx, primary);
     }
