@@ -370,6 +370,75 @@ mod validate {
         (tmp, opf)
     }
 
+    /// Decompress a kindling-built MOBI's PalmDOC text records into the merged
+    /// rawml string. Needed when asserting on emitted markup, since PalmDOC
+    /// back-references hide repeated short strings (e.g. `type="1"`) from a raw
+    /// byte scan of the file.
+    fn mobi_rawml(path: &std::path::Path) -> String {
+        let data = std::fs::read(path).expect("read mobi");
+        let rec_count = u16::from_be_bytes([data[76], data[77]]) as usize;
+        let offset_at = |i: usize| {
+            let p = 78 + i * 8;
+            u32::from_be_bytes([data[p], data[p + 1], data[p + 2], data[p + 3]]) as usize
+        };
+        let bounds: Vec<usize> = (0..rec_count)
+            .map(offset_at)
+            .chain(std::iter::once(data.len()))
+            .collect();
+        let rec0 = &data[bounds[0]..bounds[1]];
+        let compression = u16::from_be_bytes([rec0[0], rec0[1]]);
+        let text_recs = u16::from_be_bytes([rec0[8], rec0[9]]) as usize;
+        let mut out: Vec<u8> = Vec::new();
+        for r in 1..=text_recs {
+            let rec = &data[bounds[r]..bounds[r + 1]];
+            if compression == 2 {
+                palmdoc_decompress_into(rec, &mut out);
+            } else {
+                out.extend_from_slice(rec);
+            }
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    /// Minimal PalmDOC (LZ77 + RLE) decompressor. Tolerant of the per-record
+    /// trailing bytes (multibyte overlap + TBS) by stopping on a truncated or
+    /// out-of-range back-reference.
+    fn palmdoc_decompress_into(src: &[u8], out: &mut Vec<u8>) {
+        let mut i = 0;
+        while i < src.len() {
+            let b = src[i];
+            i += 1;
+            match b {
+                0 => out.push(0),
+                1..=8 => {
+                    let n = (b as usize).min(src.len() - i);
+                    out.extend_from_slice(&src[i..i + n]);
+                    i += n;
+                }
+                0x09..=0x7f => out.push(b),
+                0x80..=0xbf => {
+                    if i >= src.len() {
+                        break;
+                    }
+                    let c = ((b as usize) << 8) | src[i] as usize;
+                    i += 1;
+                    let dist = (c >> 3) & 0x7ff;
+                    let len = (c & 7) + 3;
+                    if dist == 0 || dist > out.len() {
+                        break;
+                    }
+                    for _ in 0..len {
+                        out.push(out[out.len() - dist]);
+                    }
+                }
+                0xc0..=0xff => {
+                    out.push(b' ');
+                    out.push(b ^ 0x80);
+                }
+            }
+        }
+    }
+
     #[test]
     fn build_non_dict_defaults_to_azw3() {
         // `clean_book` has no DictionaryInLanguage metadata, so is_dictionary()
@@ -533,6 +602,51 @@ mod validate {
         assert!(
             !bytes.windows(7).any(|w| w == b"style=\""),
             "style=\"...\" attribute must be stripped from dict entries"
+        );
+    }
+
+    #[test]
+    fn build_dict_preserves_list_markers() {
+        // Regression for issue #16: reader-dict numbers senses with <ol> and
+        // letters/roman-numbers sub-senses with inline list-style-type. The
+        // issue #6 style-stripping dropped those markers, so the Kindle popup
+        // rendered the lists with no bullets/numbers (looked like
+        // list-style-type:none). We now convert list-style-type to the legacy
+        // `type` attribute the MOBI7 popup honours, and give bare <ol> an
+        // explicit decimal marker, while still removing style/class.
+        let (tmp, opf) = stage_fixture("dict_list_markers", "content.opf");
+        let out = run_build(&["--no-validate", opf.to_str().unwrap()]);
+        assert!(
+            out.status.success(),
+            "build dict_list_markers should succeed\n{}",
+            dump(&out)
+        );
+
+        let expected = tmp.path().join("content.mobi");
+        assert!(expected.exists(), "expected dict output at {:?}", expected);
+
+        // PalmDOC back-references hide repeated short strings from a raw byte
+        // scan, so decompress the text and assert on the rendered markup.
+        let rawml = mobi_rawml(&expected);
+        assert!(
+            rawml.contains("<ol type=\"1\">"),
+            "bare <ol> must get a decimal type marker\n{rawml}"
+        );
+        assert!(
+            rawml.contains("<ol type=\"a\">"),
+            "lower-alpha must become type=\"a\"\n{rawml}"
+        );
+        assert!(
+            rawml.contains("<ol type=\"i\">"),
+            "lower-roman must become type=\"i\"\n{rawml}"
+        );
+        assert!(
+            !rawml.contains("style="),
+            "style attribute must still be stripped (issue #6)\n{rawml}"
+        );
+        assert!(
+            !rawml.contains("list-style"),
+            "list-style CSS must not survive in the output\n{rawml}"
         );
     }
 

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package unique-identifier="uid">
+<metadata>
+<dc-metadata xmlns:dc="http://purl.org/metadata/dublin_core">
+<dc:Title>Dict With List Markers</dc:Title>
+<dc:Language>fr</dc:Language>
+<dc:Identifier id="uid">dict-list-markers-fixture</dc:Identifier>
+<dc:Creator>Kindling Test Suite</dc:Creator>
+</dc-metadata>
+<x-metadata>
+<DictionaryInLanguage>fr</DictionaryInLanguage>
+<DictionaryOutLanguage>fr</DictionaryOutLanguage>
+</x-metadata>
+</metadata>
+<manifest>
+<item href="content.html" id="content.html" media-type="application/xhtml+xml"/>
+</manifest>
+<spine><itemref idref="content.html"/></spine>
+<guide></guide>
+</package>

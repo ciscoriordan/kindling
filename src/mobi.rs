@@ -1827,6 +1827,106 @@ fn build_text_content_by_letter(opf: &OPFData, entries: &[DictionaryEntry]) -> V
     combined.into_bytes()
 }
 
+/// Map a CSS `list-style-type` value to the legacy HTML `type` attribute the
+/// Kindle MOBI7 renderer understands. Returns `None` for `none` / `inherit` /
+/// anything with no `type` equivalent, so the caller leaves the marker to the
+/// renderer's default instead of forcing one.
+fn list_style_to_type(value: &str) -> Option<&'static str> {
+    match value {
+        "decimal" | "decimal-leading-zero" => Some("1"),
+        "lower-alpha" | "lower-latin" => Some("a"),
+        "upper-alpha" | "upper-latin" => Some("A"),
+        "lower-roman" => Some("i"),
+        "upper-roman" => Some("I"),
+        "disc" => Some("disc"),
+        "circle" => Some("circle"),
+        "square" => Some("square"),
+        _ => None,
+    }
+}
+
+/// Turn `list-style-type` CSS on `<ol>`/`<ul>`/`<li>` into the legacy HTML
+/// `type` attribute, and give bare ordered/unordered lists an explicit marker
+/// `type`.
+///
+/// reader-dict authors numbered senses as `<ol>` and lettered / roman
+/// sub-senses as `<ol style="list-style-type:lower-alpha|lower-roman">`
+/// (issue #16). The Kindle MOBI7 dictionary-popup renderer ignores inline
+/// `list-style-type` CSS, and `strip_idx_markup`'s blanket `style=`/`class=`
+/// removal (issue #6) dropped it entirely, so list markers vanished on-device
+/// (the symptom looks exactly like `list-style-type: none`). The popup
+/// renderer does honour the old `type` attribute the way kindlegen emits it,
+/// so `<ol style="list-style-type:lower-alpha">` becomes `<ol type="a">`, and
+/// a plain `<ol>` / `<ul>` becomes `<ol type="1">` / `<ul type="disc">` so the
+/// marker still renders. `style=` / `class=` are still removed from the list
+/// tags here, keeping the issue #6 fix intact.
+fn convert_list_markers(html: &str) -> String {
+    use std::sync::OnceLock;
+    static LIST_TAG: OnceLock<Regex> = OnceLock::new();
+    static LST_VAL: OnceLock<Regex> = OnceLock::new();
+    static STYLE_DQ: OnceLock<Regex> = OnceLock::new();
+    static STYLE_SQ: OnceLock<Regex> = OnceLock::new();
+    static CLASS_DQ: OnceLock<Regex> = OnceLock::new();
+    static CLASS_SQ: OnceLock<Regex> = OnceLock::new();
+    static TYPE_ATTR: OnceLock<Regex> = OnceLock::new();
+    let list_tag = LIST_TAG.get_or_init(|| Regex::new(r"(?i)<(ol|ul|li)\b([^>]*)>").unwrap());
+    let lst_val =
+        LST_VAL.get_or_init(|| Regex::new(r"(?i)list-style(?:-type)?\s*:\s*([a-z-]+)").unwrap());
+    let style_dq = STYLE_DQ.get_or_init(|| Regex::new(r#"(?i)\s+style\s*=\s*"[^"]*""#).unwrap());
+    let style_sq = STYLE_SQ.get_or_init(|| Regex::new(r#"(?i)\s+style\s*=\s*'[^']*'"#).unwrap());
+    let class_dq = CLASS_DQ.get_or_init(|| Regex::new(r#"(?i)\s+class\s*=\s*"[^"]*""#).unwrap());
+    let class_sq = CLASS_SQ.get_or_init(|| Regex::new(r#"(?i)\s+class\s*=\s*'[^']*'"#).unwrap());
+    let type_attr = TYPE_ATTR
+        .get_or_init(|| Regex::new(r#"(?i)\s+type\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)"#).unwrap());
+
+    list_tag
+        .replace_all(html, |caps: &regex::Captures| {
+            let tag = caps[1].to_ascii_lowercase();
+            let attrs = &caps[2];
+            let lst = lst_val.captures(attrs).map(|c| c[1].to_ascii_lowercase());
+            // Drop style/class from the list tag (issue #6) before deciding the
+            // marker type, so only the resolved `type` attribute survives.
+            let mut cleaned = style_dq.replace_all(attrs, "").into_owned();
+            cleaned = style_sq.replace_all(&cleaned, "").into_owned();
+            cleaned = class_dq.replace_all(&cleaned, "").into_owned();
+            cleaned = class_sq.replace_all(&cleaned, "").into_owned();
+
+            let new_type: Option<&str> = match lst.as_deref() {
+                // Explicit list-style-type: honour it, or leave the default
+                // alone for none/inherit/unknown (list_style_to_type -> None).
+                Some(v) => list_style_to_type(v),
+                // No list-style-type: force the standard marker so the popup
+                // renderer draws one (it otherwise shows nothing).
+                None => match tag.as_str() {
+                    "ol" => Some("1"),
+                    "ul" => Some("disc"),
+                    _ => None,
+                },
+            };
+
+            if new_type.is_some() {
+                // Replace any pre-existing type attribute with the resolved one.
+                cleaned = type_attr.replace_all(&cleaned, "").into_owned();
+            }
+
+            let mut out = String::with_capacity(cleaned.len() + 12);
+            out.push('<');
+            out.push_str(&tag);
+            out.push_str(&cleaned);
+            if let Some(t) = new_type {
+                if !out.ends_with(' ') {
+                    out.push(' ');
+                }
+                out.push_str("type=\"");
+                out.push_str(t);
+                out.push('"');
+            }
+            out.push('>');
+            out
+        })
+        .into_owned()
+}
+
 /// Strip idx: namespace tags from HTML, keeping only display content.
 fn strip_idx_markup(html: &str) -> String {
     use std::sync::OnceLock;
@@ -1957,6 +2057,15 @@ fn strip_idx_markup(html: &str) -> String {
     }
     if result.contains("</idx:entry>") {
         result = std::borrow::Cow::Owned(entry_close.replace_all(&result, "<hr/>").to_string());
+    }
+
+    // Convert list-style-type CSS to the legacy `type` attribute and give bare
+    // <ol>/<ul> an explicit marker type, so list markers survive the style
+    // stripping below and still render in the Kindle dictionary popup
+    // (reader-dict, issue #16). This also removes style/class from the list
+    // tags, so the blanket strip below only has to handle the rest.
+    if result.contains("<ol") || result.contains("<ul") || result.contains("<li") {
+        result = std::borrow::Cow::Owned(convert_list_markers(&result));
     }
 
     // Strip class="..." and style="..." attributes from tag bodies.
@@ -2469,6 +2578,78 @@ fn split_text_uncompressed(text_bytes: &[u8]) -> (Vec<Vec<u8>>, usize) {
 #[cfg(test)]
 mod record_split_tests {
     use super::*;
+
+    #[test]
+    fn list_markers_converted_to_type_attribute() {
+        // reader-dict (issue #16): numbered senses are <ol>, lettered/roman
+        // sub-senses use inline list-style-type. strip_idx_markup must keep the
+        // markers as the legacy `type` attribute the MOBI7 popup honours, and
+        // give the bare <ol> an explicit decimal marker, while still removing
+        // the style attribute (issue #6).
+        let html = concat!(
+            "<idx:entry><idx:orth><b>peri</b></idx:orth>",
+            "<p><b>Nom</b></p><ol>",
+            "<li>main sense</li>",
+            "<ol style=\"list-style-type:lower-alpha\">",
+            "<li>sub sense</li>",
+            "<ol style=\"list-style-type:lower-roman\"><li>sub sub</li></ol>",
+            "</ol><li>second sense</li></ol></idx:entry>"
+        );
+        let out = strip_idx_markup(html);
+        assert!(
+            out.contains("<ol type=\"1\">"),
+            "bare <ol> -> type=1: {out}"
+        );
+        assert!(
+            out.contains("<ol type=\"a\">"),
+            "lower-alpha -> type=a: {out}"
+        );
+        assert!(
+            out.contains("<ol type=\"i\">"),
+            "lower-roman -> type=i: {out}"
+        );
+        assert!(!out.contains("style="), "style attr must be gone: {out}");
+        assert!(
+            !out.contains("list-style"),
+            "list-style must be gone: {out}"
+        );
+    }
+
+    #[test]
+    fn convert_list_markers_handles_ul_and_preserves_other_attrs() {
+        // Bare <ul> gets a disc marker; explicit list-style-type wins; a <li>
+        // value attribute (start-number override) is preserved; non-list tags
+        // are untouched.
+        let out = convert_list_markers(
+            "<ul><li>x</li></ul><ul style='list-style-type:square'><li>y</li></ul>\
+             <ol><li value=\"3\">z</li></ol><p style=\"color:red\">keep</p>",
+        );
+        assert!(
+            out.contains("<ul type=\"disc\">"),
+            "bare <ul> -> disc: {out}"
+        );
+        assert!(
+            out.contains("<ul type=\"square\">"),
+            "square -> type=square: {out}"
+        );
+        assert!(
+            out.contains("<li value=\"3\">"),
+            "<li value> preserved: {out}"
+        );
+        // The <ol> here is bare, so it also picks up the decimal marker.
+        assert!(
+            out.contains("<ol type=\"1\">"),
+            "bare <ol> -> type=1: {out}"
+        );
+        // Non-list tags are left exactly as-is by this pass.
+        assert!(
+            out.contains("<p style=\"color:red\">"),
+            "non-list tag untouched: {out}"
+        );
+        // <link> must not be mistaken for <li>.
+        let link = convert_list_markers("<link href=\"x.css\"/>");
+        assert_eq!(link, "<link href=\"x.css\"/>", "<link> untouched: {link}");
+    }
 
     /// Strip the two trailing bytes (TBS 0x81 + multibyte 0x00) written by
     /// both record-producing functions.
