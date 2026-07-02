@@ -8,6 +8,13 @@ on:
 permissions:
   contents: write
 
+# GitHub occasionally delivers the same tag-push event twice, spawning two
+# runs that race each other in the publish-crate job. Queue duplicates
+# instead; the already-published guard makes the second run a no-op.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     strategy:
