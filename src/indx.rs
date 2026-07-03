@@ -18,6 +18,71 @@ const MAX_INDX_DATA_SIZE: usize = 64000;
 /// Embedded as static data (3906 bytes).
 const ORDT_GREEK: &[u8] = include_bytes!("ordt_greek.bin");
 
+/// Extract the firmware's single-character fold map from the SPL1 spelling
+/// table inside `ORDT_GREEK` (Amazon's own collation blob). SPL1 is a byte
+/// array indexed by input byte: `table[b]` is the base ASCII letter that byte
+/// folds to. The 0x80..=0x9F slots are indexed by the Windows-1252 byte, not
+/// the Unicode scalar, so they are remapped through `cp1252_to_unicode`; the
+/// 0xA0..=0xFF slots are Latin-1 (== Unicode). Returns `(source_char,
+/// fold_target)` pairs for every byte that folds to a distinct ASCII letter.
+///
+/// This is the ground truth `crate::ordt::fold_base` is checked against, so
+/// the hand-written fold logic provably tracks the firmware table rather than
+/// guessing. Coverage is Latin-1 + the cp1252 additions only, because the
+/// static blob spans no further; that is exactly the range the drift test
+/// asserts over.
+#[cfg(test)]
+pub(crate) fn amazon_fold_pairs() -> Vec<(char, char)> {
+    fn cp1252_to_unicode(b: u8) -> Option<char> {
+        // Only the 0x80..=0x9F positions differ from Latin-1; the ones that
+        // carry a letter fold in the SPL table are listed here.
+        let cp: u32 = match b {
+            0x83 => 0x0192, // ƒ
+            0x8A => 0x0160, // Š
+            0x8C => 0x0152, // Œ
+            0x8E => 0x017D, // Ž
+            0x9A => 0x0161, // š
+            0x9C => 0x0153, // œ
+            0x9E => 0x017E, // ž
+            0x9F => 0x0178, // Ÿ
+            0x80..=0x9F => return None, // undefined / non-letter cp1252 slot
+            other => other as u32,
+        };
+        char::from_u32(cp)
+    }
+
+    // Locate SPL1 by magic; its 256-byte body follows the 4-byte tag.
+    let Some(spl1) = ORDT_GREEK
+        .windows(4)
+        .position(|w| w == b"SPL1")
+        .map(|p| p + 4)
+    else {
+        return Vec::new();
+    };
+
+    let mut pairs = Vec::new();
+    for b in 0u8..=0xFF {
+        let idx = spl1 + b as usize;
+        let Some(&target) = ORDT_GREEK.get(idx) else {
+            break;
+        };
+        // Only ASCII-letter fold targets are meaningful.
+        if !target.is_ascii_lowercase() {
+            continue;
+        }
+        let Some(src) = cp1252_to_unicode(b) else {
+            continue;
+        };
+        // Skip SPL1's short non-letter header slots (0x01..0x05); only real
+        // letters carry a fold.
+        if !src.is_alphabetic() {
+            continue;
+        }
+        pairs.push((src, target as char));
+    }
+    pairs
+}
+
 /// A lookup term for the orth index.
 #[derive(Debug)]
 #[allow(dead_code)]

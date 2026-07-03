@@ -219,11 +219,28 @@ pub struct OrdtTables {
     two_byte: bool,
 }
 
-/// Fold a character to its base letter for accent-strict collation weights:
-/// lowercase it and strip Latin diacritics, so every accent/case variant of a
-/// letter (é/è/ê/ë/É → e, à/â/ä/À → a, ç/Ç → c, ...) collates to one weight.
-/// Used by [`OrdtTables::new_exact`]; characters with no Latin base (digits,
+/// Fold a character to its base letter for the Kindle firmware's dictionary
+/// lookup collation: lowercase it and strip Latin diacritics, so every
+/// accent/case variant of a letter (é/è/ê/ë/É → e, à/â/ä/À → a, ç/Ç → c, ...)
+/// collates to one weight. Used by BOTH [`OrdtTables::new_exact`] (the
+/// exact-accent default) and [`folded_sort_key`] (the `--fold-accents` path):
+/// the firmware collates a Latin dictionary this same folded way in both
+/// modes, so a single fold serves both. Characters with no Latin base (digits,
 /// punctuation, non-Latin scripts) fold only by case. See issue #8.
+///
+/// The firmware's lookup collation also decomposes eth (ð → d), slashed-o
+/// (ø → o), thorn (þ → t), the micro sign (µ → m), and the florin (ƒ → f), so
+/// those five fold to their base here too. That is confirmed end to end: real
+/// on-device lookups resolve an unaccented or decomposed query onto the
+/// accented/composed headword through this fold.
+///
+/// The Latin-1 / Windows-1252 folds are not hand-guessed: they are lifted from
+/// the firmware's own fold table (the SPL1 spelling table inside
+/// `indx::ORDT_GREEK`, Amazon's collation blob). `indx::amazon_fold_pairs`
+/// extracts that table and `fold_matches_amazon_spl1` asserts this function
+/// reproduces it, so the two cannot drift. The Latin Extended-A folds (ā, ł,
+/// ś, ...) are our own, device-validated via issue #8, since the blob only
+/// spans Latin-1.
 fn fold_base(c: char) -> char {
     let lower = c.to_lowercase().next().unwrap_or(c);
     match lower {
@@ -231,17 +248,19 @@ fn fold_base(c: char) -> char {
         'ç' | 'ć' | 'č' | 'ċ' | 'ĉ' => 'c',
         'ð' | 'ď' | 'đ' => 'd',
         'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' => 'e',
+        'ƒ' => 'f',
         'ĝ' | 'ğ' | 'ġ' | 'ģ' => 'g',
         'ĥ' | 'ħ' => 'h',
         'ì' | 'í' | 'î' | 'ï' | 'ĩ' | 'ī' | 'ĭ' | 'į' | 'ı' => 'i',
         'ĵ' => 'j',
         'ķ' => 'k',
         'ĺ' | 'ļ' | 'ľ' | 'ŀ' | 'ł' => 'l',
+        'µ' => 'm', // micro sign, per the firmware fold table
         'ñ' | 'ń' | 'ņ' | 'ň' => 'n',
         'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ŏ' | 'ő' => 'o',
         'ŕ' | 'ŗ' | 'ř' => 'r',
         'ś' | 'ŝ' | 'ş' | 'š' | 'ș' => 's',
-        'ţ' | 'ť' | 'ŧ' | 'ț' => 't',
+        'þ' | 'ţ' | 'ť' | 'ŧ' | 'ț' => 't',
         'ù' | 'ú' | 'û' | 'ü' | 'ũ' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' => 'u',
         'ŵ' => 'w',
         'ý' | 'ÿ' | 'ŷ' => 'y',
@@ -251,13 +270,13 @@ fn fold_base(c: char) -> char {
 }
 
 /// Folded collation key for a Latin headword label: each character mapped
-/// through `fold_base` (case + Latin diacritic folding). Latin dictionaries
+/// through [`fold_base`] (case + Latin diacritic folding). Latin dictionaries
 /// must be sorted in this order, not raw UTF-16BE byte order, so the
 /// firmware's folding collation can find accent-initial headwords. Under raw
 /// byte order `świat` (ś = U+015B) sorts after `z`, where the firmware's
 /// Polish search never looks, so the lookup misses (issue #8). This mirrors
-/// the folded weights `new_exact` assigns, so the exact and fold paths order
-/// labels the same way.
+/// the folded weights [`OrdtTables::new_exact`] assigns, so the exact and fold
+/// paths order labels the same way.
 pub(crate) fn folded_sort_key(label: &str) -> Vec<char> {
     label.chars().map(fold_base).collect()
 }
@@ -640,6 +659,37 @@ pub fn uses_generated_ordt(lang: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fold_matches_amazon_spl1() {
+        // fold_base's Latin-1/cp1252 folds must reproduce the firmware's own
+        // fold table (the SPL1 spelling table lifted into ORDT_GREEK). We do
+        // not embed that table as our logic; we derive the expected pairs from
+        // it here and assert fold_base agrees, so the hand-written match arms
+        // cannot silently drift from Amazon's collation. See issue #8 and the
+        // Tier 1 lookup simulator work.
+        let pairs = crate::indx::amazon_fold_pairs();
+        assert!(
+            pairs.len() >= 60,
+            "expected the full Latin-1 fold block, got {} pairs",
+            pairs.len()
+        );
+        for (src, want) in pairs {
+            assert_eq!(
+                fold_base(src),
+                want,
+                "fold_base({src:?}) disagrees with Amazon SPL1 (want {want:?})"
+            );
+        }
+        // The firmware's lookup collation decomposes these too; kindling folds
+        // them the same way (confirmed by real on-device lookups).
+        assert_eq!(fold_base('þ'), 't');
+        assert_eq!(fold_base('Þ'), 't');
+        assert_eq!(fold_base('µ'), 'm');
+        assert_eq!(fold_base('ƒ'), 'f');
+        assert_eq!(fold_base('ð'), 'd');
+        assert_eq!(fold_base('ø'), 'o');
+    }
 
     fn elems(o: &OrdtTables, bytes: &[u8]) -> Vec<u16> {
         if o.two_byte {

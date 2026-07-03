@@ -12,6 +12,7 @@ pub mod epub;
 pub mod epub_build;
 pub mod extracted;
 pub mod kdp_rules;
+pub mod lookup;
 pub mod mobi;
 pub mod mobi_check;
 pub mod mobi_dump;

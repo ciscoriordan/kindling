@@ -329,7 +329,21 @@ fn check_utf16(code: &str, _c: &Lang, parsed: &ParsedMobi, idx: usize, primary: 
         .iter()
         .map(|e| decode_utf16(&e.label))
         .collect();
-    let want: BTreeSet<String> = headwords(code).into_iter().collect();
+    // Cyrillic dictionaries also carry the generated stress-stripped and
+    // lowercased lookup aliases of every form (issue #17): Москва gets a
+    // москва label. Mirror the alias pass when building the expected set.
+    let mut want: BTreeSet<String> = headwords(code).into_iter().collect();
+    if is_cyrillic_dict(code) {
+        for h in headwords(code) {
+            let stripped: String = h
+                .chars()
+                .filter(|&c| c != '\u{0300}' && c != '\u{0301}')
+                .collect();
+            want.insert(h.to_lowercase());
+            want.insert(stripped.to_lowercase());
+            want.insert(stripped);
+        }
+    }
     assert_eq!(decoded, want, "{code}: decoded headword set");
     for pair in indx.entries.windows(2) {
         assert!(
@@ -337,6 +351,26 @@ fn check_utf16(code: &str, _c: &Lang, parsed: &ParsedMobi, idx: usize, primary: 
             "{code}: labels out of UTF-16BE order"
         );
     }
+}
+
+/// Mirrors `mobi::headwords_are_cyrillic`: gates the stress/case lookup-alias
+/// pass (issue #17). A pure-ASCII set is not Cyrillic.
+fn is_cyrillic_dict(code: &str) -> bool {
+    let mut cyrillic = 0usize;
+    let mut other = 0usize;
+    for h in headwords(code) {
+        for ch in h.chars() {
+            let cp = ch as u32;
+            if cp <= 0x7F || !ch.is_alphabetic() {
+                continue;
+            }
+            match cp {
+                0x0400..=0x052F | 0x2DE0..=0x2DFF | 0xA640..=0xA69F => cyrillic += 1,
+                _ => other += 1,
+            }
+        }
+    }
+    cyrillic > 0 && cyrillic >= other
 }
 
 /// Mirrors `mobi::headwords_are_latin`: a dictionary whose non-ASCII headword

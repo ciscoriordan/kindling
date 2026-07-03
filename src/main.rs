@@ -524,6 +524,19 @@ enum Commands {
         /// Input MOBI or AZW3 file.
         input: PathBuf,
     },
+
+    /// Simulate an on-device dictionary lookup against a built MOBI.
+    ///
+    /// Reproduces the firmware's orth-index search (accent/case folding for
+    /// Latin and Greek, literal matching for CJK/Arabic, query-side case
+    /// folding for Cyrillic) and reports which stored form resolves. This is a
+    /// build-side regression check, not a hardware oracle; see `src/lookup.rs`.
+    Lookup {
+        /// Built dictionary MOBI to search.
+        input: PathBuf,
+        /// Word to look up, as if tapped on-device.
+        word: String,
+    },
 }
 
 /// Check if the first argument looks like a file path (kindlegen compat mode)
@@ -1294,6 +1307,37 @@ fn main() {
             Commands::Dump { input } => {
                 do_dump(&input);
             }
+            Commands::Lookup { input, word } => {
+                do_lookup(&input, &word);
+            }
+        }
+    }
+}
+
+/// Simulate a dictionary lookup and print the result. Exits 1 on a miss so the
+/// subcommand is usable as a scriptable assertion.
+fn do_lookup(input: &PathBuf, word: &str) {
+    let data = match std::fs::read(input) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("error: cannot read {}: {e}", input.display());
+            std::process::exit(1);
+        }
+    };
+    match kindling::lookup::lookup(&data, word) {
+        Some(res) => {
+            if res.matched_label == word {
+                println!("{word:?} resolves (exact headword/alias) at text position {}", res.position);
+            } else {
+                println!(
+                    "{word:?} resolves via {:?} at text position {}",
+                    res.matched_label, res.position
+                );
+            }
+        }
+        None => {
+            println!("{word:?} does not resolve in {}", input.display());
+            std::process::exit(1);
         }
     }
 }

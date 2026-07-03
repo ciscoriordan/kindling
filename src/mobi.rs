@@ -3115,6 +3115,39 @@ fn headwords_are_latin(entries: &[DictionaryEntry]) -> bool {
     other == 0 || latin >= other
 }
 
+/// Whether a dictionary's headwords are predominantly Cyrillic-script.
+/// Mirrors `headwords_are_latin`, but a pure-ASCII set is NOT Cyrillic.
+/// Gates the stress/case lookup-alias pass (issue #17).
+fn headwords_are_cyrillic(entries: &[DictionaryEntry]) -> bool {
+    let mut cyrillic = 0usize;
+    let mut other = 0usize;
+    for entry in entries {
+        for ch in entry.headword.chars() {
+            let cp = ch as u32;
+            if cp <= 0x7F || !ch.is_alphabetic() {
+                continue;
+            }
+            match cp {
+                // Cyrillic, Cyrillic Supplement, Extended-A/B.
+                0x0400..=0x052F | 0x2DE0..=0x2DFF | 0xA640..=0xA69F => cyrillic += 1,
+                _ => other += 1,
+            }
+        }
+    }
+    cyrillic > 0 && cyrillic >= other
+}
+
+/// Strip the combining stress marks Wiktionary-derived Cyrillic sources
+/// place over vowels: acute (U+0301, Russian primary stress) and grave
+/// (U+0300, secondary stress). These are the only two that appear as
+/// combining marks in practice; real letters like й and ё are precomposed
+/// code points and pass through untouched.
+fn strip_stress_marks(form: &str) -> String {
+    form.chars()
+        .filter(|&c| c != '\u{0300}' && c != '\u{0301}')
+        .collect()
+}
+
 /// For languages on the generated-ORDT path (Japanese, Chinese, Korean,
 /// Arabic; see `crate::ordt::uses_generated_ordt`), labels are encoded
 /// as ORDT symbol sequences and sorted by their collation keys instead
@@ -3187,6 +3220,37 @@ fn build_lookup_terms(
                     );
                 }
             }
+        }
+    }
+
+    // Cyrillic lookup aliases (issue #17): books disagree about stress marks
+    // (пробормота́в vs пробормотав) and the firmware's case-folded search
+    // misses forms that only exist upper-cased (an all-caps ФСБ entry is
+    // never found until a lowercase фсб label exists; see
+    // reader-dict/monolingual#2623, where sources work around both by
+    // duplicating entries). Add stress-stripped and lowercased spellings of
+    // every indexed form as extra flat entries pointing at the same
+    // definition, so a source only needs to ship one spelling. Forms the
+    // source already provides dedupe. `--strict-accents` (the exact-match
+    // override) skips the pass.
+    if !strict_accents && headwords_are_cyrillic(entries) {
+        let mut added = 0usize;
+        let snapshot: Vec<String> = ordered_labels.clone();
+        for label in snapshot {
+            let target = terms[&label];
+            let stripped = strip_stress_marks(&label);
+            let lowered = label.to_lowercase();
+            let lowered_stripped = stripped.to_lowercase();
+            for alias in [stripped, lowered, lowered_stripped] {
+                if alias != label && !terms.contains_key(&alias) {
+                    ordered_labels.push(alias.clone());
+                    terms.insert(alias, target);
+                    added += 1;
+                }
+            }
+        }
+        if added > 0 {
+            eprintln!("  Added {added} Cyrillic stress/case lookup aliases");
         }
     }
 
@@ -3285,6 +3349,91 @@ fn build_lookup_terms(
         })
         .collect();
     (lookup_terms, gen_ordt)
+}
+
+#[cfg(test)]
+mod cyrillic_alias_tests {
+    use super::*;
+
+    fn entry(headword: &str, inflections: &[&str]) -> DictionaryEntry {
+        DictionaryEntry {
+            headword: headword.to_string(),
+            inflections: inflections.iter().map(|s| s.to_string()).collect(),
+            html_content: String::new(),
+        }
+    }
+
+    fn terms(entries: &[DictionaryEntry], strict_accents: bool) -> Vec<LookupTerm> {
+        let positions: Vec<(usize, usize)> = entries.iter().map(|_| (0, 0)).collect();
+        let (terms, _) =
+            build_lookup_terms(entries, &positions, b"", false, "ru", strict_accents, false);
+        terms
+    }
+
+    fn labels(terms: &[LookupTerm]) -> Vec<&str> {
+        terms.iter().map(|t| t.label.as_str()).collect()
+    }
+
+    #[test]
+    fn stressed_form_gets_bare_alias() {
+        // Issue #17: a source that ships only the stressed spelling must
+        // still resolve the bare spelling books without stress marks use.
+        // The alias points at the same entry (source_ordinal).
+        let e = [entry("пробормота́ть", &["пробормота́в"])];
+        let t = terms(&e, false);
+        let l = labels(&t);
+        for form in [
+            "пробормота́ть",
+            "пробормотать",
+            "пробормота́в",
+            "пробормотав",
+        ] {
+            assert!(l.contains(&form), "missing lookup form {form:?}");
+        }
+        for term in &t {
+            assert_eq!(term.source_ordinal, 0);
+        }
+    }
+
+    #[test]
+    fn all_caps_abbreviation_gets_lowercase_alias() {
+        // The reader-dict/monolingual#2623 workaround, now built in: an
+        // uppercase-only entry needs a lowercase label to be found.
+        let e = [entry("ФСБ", &[])];
+        let l: Vec<String> = terms(&e, false)
+            .into_iter()
+            .map(|t| t.label)
+            .collect();
+        assert!(l.contains(&"фсб".to_string()), "missing lowercase alias");
+    }
+
+    #[test]
+    fn existing_forms_dedupe_and_plain_forms_add_nothing() {
+        // A source that already ships both spellings must not get duplicate
+        // labels, and an already-bare lowercase form gets no alias at all
+        // (ё is a real letter, not a stress mark).
+        let e = [entry("мир", &[]), entry("МИР", &[]), entry("берёза", &[])];
+        let t = terms(&e, false);
+        let mut l = labels(&t);
+        assert_eq!(t.len(), 3, "unexpected labels: {l:?}");
+        l.sort_unstable();
+        l.dedup();
+        assert_eq!(l.len(), 3);
+    }
+
+    #[test]
+    fn strict_accents_skips_aliases() {
+        let e = [entry("ФСБ", &[]), entry("пробормота́в", &[])];
+        assert_eq!(terms(&e, true).len(), 2);
+    }
+
+    #[test]
+    fn latin_dictionaries_are_untouched() {
+        // The pass is gated on a Cyrillic headword majority; Latin keeps its
+        // exact-accent path with no generated aliases.
+        let e = [entry("café", &[]), entry("NASA", &[])];
+        assert_eq!(terms(&e, false).len(), 2);
+    }
 }
 
 /// Build record 0: PalmDOC header + MOBI header + EXTH header + full name.
