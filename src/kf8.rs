@@ -125,6 +125,7 @@ pub fn build_kf8_section(
     href_to_recindex: &std::collections::HashMap<String, usize>,
     spine_items: &[(String, String)],
     spine_hrefs: &[String],
+    spine_nav_points: &[Vec<crate::nav::NavPoint>],
     no_compress: bool,
     kindlegen_parity: bool,
     title: &str,
@@ -157,8 +158,19 @@ pub fn build_kf8_section(
     // This tiles the whole book so the device's reading-position / progress
     // map advances across every chapter instead of collapsing onto the
     // single front-matter record (issue #15). A genuine one-page comic has
-    // a single skeleton and therefore still gets a single node.
-    let ncx_nodes = build_ncx_nodes(&skeleton_entries, html_parts, html_length);
+    // a single skeleton and therefore still gets a single node. Labels come
+    // from the EPUB nav document where available, and nav entries that
+    // point at `file#anchor` targets get their own nodes at the anchor
+    // positions so multi-chapter spine files keep every TOC entry
+    // (issue #18).
+    let ncx_nodes = build_ncx_nodes(
+        &skeleton_entries,
+        &fragment_entries,
+        &combined_text[..html_length],
+        html_parts,
+        html_length,
+        spine_nav_points,
+    );
     let node_offsets: Vec<usize> = ncx_nodes.iter().map(|n| n.offset).collect();
 
     // Step 3: Compress text into records, stamping each record with a TBS
@@ -207,46 +219,173 @@ pub fn build_kf8_section(
 
 /// A single NCX (table-of-contents / reading-position) node.
 struct NcxNode {
-    /// Absolute byte offset of the section start in the HTML flow.
+    /// Absolute byte offset of the section start in the HTML flow
+    /// (spliced/rendered space, which equals the physical combined-text
+    /// offset at file boundaries; anchor nodes inside a file use
+    /// `fragment insert position + offset within the fragment`, matching
+    /// kindlegen's NCX).
     offset: usize,
     /// Byte length of the section (to the next node, or end of flow).
     length: usize,
-    /// Display label (chapter `<title>` if present, else a fallback).
+    /// Display label (nav document entry, chapter `<title>`, or fallback).
     label: String,
     /// Fragment id this node points at (== the spine/skeleton index,
     /// since kindling emits exactly one fragment per spine item).
     fid: usize,
+    /// Byte offset of the target anchor within the fragment payload
+    /// (second value of the pos_fid tag; 0 = start of the file). This is
+    /// what the "Go To" jump lands on, verified against kindlegen output.
+    frag_off: usize,
 }
 
-/// Derive one NCX node per skeleton, labelled by the spine file's
-/// `<title>` where available.
+/// Derive the NCX nodes: one base node per skeleton, labelled by the
+/// EPUB nav document (toc.ncx / nav.xhtml) entry for that spine file
+/// where one exists, falling back to the spine file's `<title>`, then to
+/// "Section N". The nav label comes first because per-file `<title>`
+/// tags are often a generic template string ("Chapter") while the real
+/// chapter names live only in the nav document (issue #18).
+///
+/// Nav entries beyond the first that point at a `file#anchor` target get
+/// their own node at the anchor's position, so a spine file holding
+/// several chapters keeps every TOC entry. The base node still starts at
+/// the skeleton so the nodes tile the whole book (issue #15); kindlegen
+/// instead starts at the first anchor and leaves any front matter
+/// uncovered.
 fn build_ncx_nodes(
     skeleton_entries: &[SkeletonEntry],
+    fragment_entries: &[FragmentEntry],
+    kf8_html: &[u8],
     html_parts: &[String],
     html_length: usize,
+    spine_nav_points: &[Vec<crate::nav::NavPoint>],
 ) -> Vec<NcxNode> {
     let title_re = Regex::new(r"(?is)<title[^>]*>(.*?)</title>").unwrap();
-    let mut nodes = Vec::with_capacity(skeleton_entries.len());
+    let mut nodes: Vec<NcxNode> = Vec::with_capacity(skeleton_entries.len());
     for (i, skel) in skeleton_entries.iter().enumerate() {
         let end = skeleton_entries
             .get(i + 1)
             .map(|s| s.start_pos)
             .unwrap_or(html_length);
-        let length = end.saturating_sub(skel.start_pos);
-        let label = html_parts
-            .get(i)
-            .and_then(|p| title_re.captures(p))
-            .map(|c| c.get(1).unwrap().as_str().trim().to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| format!("Section {}", i + 1));
+        let nav_points = spine_nav_points.get(i).map(Vec::as_slice).unwrap_or(&[]);
+        let nav_label = nav_points
+            .first()
+            .map(|p| p.label.clone())
+            .filter(|s| !s.is_empty());
+        let label = nav_label.unwrap_or_else(|| {
+            html_parts
+                .get(i)
+                .and_then(|p| title_re.captures(p))
+                .map(|c| c.get(1).unwrap().as_str().trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| format!("Section {}", i + 1))
+        });
+
+        // Resolve the anchors of this skeleton's nav entries within its
+        // fragment payload. The payload physically follows the skeleton
+        // shell in the combined text; the spliced (rendered) offset of an
+        // anchor is `fragment insert position + offset within payload`,
+        // which is the offset space kindlegen's NCX uses.
+        let frag_phys_start = (skel.start_pos + skel.length).min(end);
+        let insert_pos = fragment_entries
+            .iter()
+            .find(|f| f.file_number == i)
+            .map(|f| f.insert_pos)
+            .unwrap_or(frag_phys_start);
+        let payload = &kf8_html[frag_phys_start..end];
+
+        // The base node's jump target: the first entry's anchor when it
+        // has one that resolves (tag 1 stays at the skeleton start so the
+        // nodes keep tiling the book).
+        let base_frag_off = nav_points
+            .first()
+            .and_then(|p| p.fragment.as_deref())
+            .and_then(|frag| find_anchor_offset(payload, frag))
+            .unwrap_or(0);
+
+        let base_index = nodes.len();
         nodes.push(NcxNode {
             offset: skel.start_pos,
-            length,
+            length: 0, // tiled below
             label,
             fid: i,
+            frag_off: base_frag_off,
         });
+
+        // Extra nodes for the remaining anchored entries of this file.
+        let mut extras: Vec<NcxNode> = nav_points
+            .iter()
+            .skip(1)
+            .filter(|p| !p.label.is_empty())
+            .filter_map(|p| {
+                let frag = p.fragment.as_deref()?;
+                let off = find_anchor_offset(payload, frag)?;
+                Some(NcxNode {
+                    offset: insert_pos + off,
+                    length: 0,
+                    label: p.label.clone(),
+                    fid: i,
+                    frag_off: off,
+                })
+            })
+            .collect();
+        extras.sort_by_key(|n| n.offset);
+        // Keep offsets strictly increasing so the nodes tile.
+        let mut last_offset = skel.start_pos;
+        for extra in extras {
+            if extra.offset > last_offset && extra.offset < end {
+                last_offset = extra.offset;
+                nodes.push(extra);
+            }
+        }
+
+        // Tile this file's nodes: each runs to the next, last to file end.
+        for k in base_index..nodes.len() {
+            let next_offset = nodes.get(k + 1).map(|n| n.offset).unwrap_or(end);
+            nodes[k].length = next_offset.saturating_sub(nodes[k].offset);
+        }
     }
     nodes
+}
+
+/// Find the byte offset of the tag carrying `id="anchor"` (or
+/// `name="anchor"`) inside a fragment payload, or `None` when the anchor
+/// does not appear. Returns the position of the tag's opening `<`.
+fn find_anchor_offset(payload: &[u8], anchor: &str) -> Option<usize> {
+    let mut best: Option<usize> = None;
+    for pattern in [
+        format!("id=\"{}\"", anchor),
+        format!("id='{}'", anchor),
+        format!("name=\"{}\"", anchor),
+        format!("name='{}'", anchor),
+    ] {
+        let needle = pattern.as_bytes();
+        let mut start = 0;
+        while let Some(pos) = find_bytes(&payload[start..], needle).map(|p| p + start) {
+            // Require a tag-internal match (preceded by whitespace) so a
+            // literal `id="x"` in text content is not mistaken for markup.
+            if pos > 0 && payload[pos - 1].is_ascii_whitespace() {
+                let tag_start = payload[..pos]
+                    .iter()
+                    .rposition(|&b| b == b'<')
+                    .unwrap_or(pos);
+                best = Some(best.map_or(tag_start, |b| b.min(tag_start)));
+                break;
+            }
+            start = pos + 1;
+            if start >= payload.len() {
+                break;
+            }
+        }
+    }
+    best
+}
+
+/// Plain byte-slice search (first occurrence).
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 /// Build KF8 HTML with aid attributes, kindle:embed image URLs, and the
@@ -1530,7 +1669,9 @@ fn build_ncx_indx(title: &str, nodes: &[NcxNode]) -> (Vec<Vec<u8>>, Vec<Vec<u8>>
             vec![node.length as u32],
             vec![label_offset],
             vec![0], // flat depth
-            vec![node.fid as u32, 0],
+            // pos_fid: (fragment id, byte offset of the target anchor
+            // within that fragment) - the Go To jump target.
+            vec![node.fid as u32, node.frag_off as u32],
         ];
         entries.push(encode_indx_entry(&label, &tag_defs, &values));
         last_label = label;
@@ -1922,6 +2063,7 @@ mod tests {
             &href_to_recindex,
             &spine_items,
             &[],
+            &[],
             true,  // no_compress for deterministic byte counts
             false, // kindlegen_parity
             "Test Book",
@@ -1996,6 +2138,7 @@ mod tests {
             length: 500,
             label: "Test".to_string(),
             fid: 0,
+            frag_off: 0,
         }];
         let (ncx_recs, ncx_cncx) = build_ncx_indx("Test", &nodes);
 
@@ -2042,6 +2185,7 @@ mod tests {
             length: 500,
             label: "My Comic Title".to_string(),
             fid: 0,
+            frag_off: 0,
         }];
         let (_, ncx_cncx) = build_ncx_indx("My Comic Title", &nodes);
         assert_eq!(ncx_cncx.len(), 1);
@@ -2080,6 +2224,7 @@ mod tests {
             &std::collections::HashMap::new(),
             &Vec::new(),
             &[],
+            &[],
             true,
             false,
             "Test",
@@ -2110,6 +2255,7 @@ mod tests {
             &std::collections::HashSet::new(),
             &href_to_recindex,
             &spine_items,
+            &[],
             &[],
             true,  // no_compress for readable output
             false, // kindlegen_parity off (test normal mode)

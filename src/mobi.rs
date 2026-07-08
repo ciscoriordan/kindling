@@ -519,6 +519,25 @@ fn build_book_mobi(
     self_check: bool,
     kindlegen_parity: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // The device keys font selection (and hyphenation) on the book's
+    // language, so a missing or unrecognized dc:language silently lands the
+    // book in the en-US locale; on CJK books that leaves only Latin fonts
+    // in the Aa menu and font switching appears broken (issue #18).
+    if !opf.language_specified {
+        eprintln!(
+            "Warning: OPF has no <dc:language>; defaulting to en. Kindle picks \
+             fonts by book language, so tag the real language (e.g. zh, ja) \
+             or font switching may not work on device."
+        );
+    } else if !locale_is_recognized(&opf.language) {
+        eprintln!(
+            "Warning: unrecognized dc:language '{}'; falling back to the en-US \
+             locale. Kindle picks fonts by book language, so use an ISO 639 \
+             tag (e.g. zh, ja) or font switching may not work on device.",
+            opf.language
+        );
+    }
+
     // Collect images from the OPF manifest, plus any images referenced from
     // spine HTML that are present on disk but missing from the manifest
     // (same PyGlossary / OEB-1.x fallback the dictionary path uses — see
@@ -648,6 +667,31 @@ fn build_book_mobi(
         format!("kindle:embed:{}", encode_kindle_embed_base32(recindex))
     });
 
+    // Collect manifest fonts as KF8 FONT resource records (issue #18).
+    // They are appended directly after the image records (thumbnail
+    // included), so font i's kindle:embed recindex is image_count + i + 1;
+    // `font_embeds` carries that mapping into the CSS @font-face rewrite.
+    let embedded_fonts = crate::fonts::collect_fonts(opf);
+    let font_embeds: std::collections::HashMap<String, (usize, String)> = embedded_fonts
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            (
+                f.href.clone(),
+                (image_records.len() + i + 1, f.media_type.clone()),
+            )
+        })
+        .collect();
+    let font_records: Vec<Vec<u8>> = embedded_fonts.into_iter().map(|f| f.record).collect();
+    let num_font_records = font_records.len();
+    if num_font_records > 0 {
+        eprintln!(
+            "Embedding {} font(s) ({} bytes total)",
+            num_font_records,
+            font_records.iter().map(|r| r.len()).sum::<usize>()
+        );
+    }
+
     // Build KF8 section (used by both dual and KF8-only modes)
     eprintln!("Building KF8 section...");
     let mut html_parts = build_html_parts(opf);
@@ -692,12 +736,16 @@ fn build_book_mobi(
         }
     }
 
-    let (css_content, css_basenames) = extract_css_content(opf, &html_parts);
+    let (css_content, css_basenames) = extract_css_content(opf, &html_parts, &font_embeds);
     let kf8_title = if opf.title.is_empty() {
         "Book"
     } else {
         &opf.title
     };
+    // TOC labels from the EPUB nav document (toc.ncx / nav.xhtml), grouped
+    // onto spine positions so the NCX shows real chapter names (issue #18).
+    let nav_points = crate::nav::parse_nav_points(opf);
+    let spine_nav_points = crate::nav::group_by_spine(&nav_points, &spine_hrefs);
     let kf8_section = crate::kf8::build_kf8_section(
         &html_parts,
         &css_content,
@@ -705,6 +753,7 @@ fn build_book_mobi(
         &href_to_recindex,
         &opf.spine_items,
         &spine_hrefs,
+        &spine_nav_points,
         no_compress,
         kindlegen_parity,
         kf8_title,
@@ -771,7 +820,8 @@ fn build_book_mobi(
         // [1..T]       KF8 text records
         // [T+1]        NULL padding
         // [T+2..T+I+1] Image records
-        // [T+I+2..]   Fragment INDX
+        // [...]        FONT records (embedded fonts, issue #18)
+        // [...]        Fragment INDX
         // [...]        Skeleton INDX
         // [...]        NCX INDX
         // [...]        FDST
@@ -784,12 +834,16 @@ fn build_book_mobi(
         // [HD container if enabled]
         let kf8_text_count = kf8_section.text_records.len();
         let kf8_null_pad = kf8_text_count + 1;
-        let kf8_first_image = if num_image_records > 0 {
+        // First-resource pointer: the firmware resolves kindle:embed
+        // indices relative to this record, so it must point at the start
+        // of the resource block (images first, then fonts) whenever either
+        // exists.
+        let kf8_first_image = if num_image_records + num_font_records > 0 {
             kf8_null_pad + 1
         } else {
             0xFFFFFFFF
         };
-        let kf8_fragment_start = kf8_null_pad + 1 + num_image_records;
+        let kf8_fragment_start = kf8_null_pad + 1 + num_image_records + num_font_records;
         // CNCX records sit between fragment INDX and skeleton INDX so Kindle
         // firmware can resolve the fragment selectors referenced by the
         // fragment index header (num_of_cncx + walk via PDB record table).
@@ -823,7 +877,7 @@ fn build_book_mobi(
         let hd_geometry_string: Option<String> =
             hd_container.as_ref().map(|hd| hd.geometry_string());
 
-        let total_records = 1 + kf8_text_count + 1 + num_image_records
+        let total_records = 1 + kf8_text_count + 1 + num_image_records + num_font_records
             + kf8_section.fragment_indx.len()
             + kf8_section.cncx_records.len()
             + kf8_section.skeleton_indx.len()
@@ -877,6 +931,7 @@ fn build_book_mobi(
         all_records.extend(kf8_section.text_records);
         all_records.push(null_pad_rec);
         all_records.extend(image_records);
+        all_records.extend(font_records);
         all_records.extend(kf8_section.fragment_indx);
         all_records.extend(kf8_section.cncx_records);
         all_records.extend(kf8_section.skeleton_indx);
@@ -946,12 +1001,14 @@ fn build_book_mobi(
 
         // --- KF7 Section record layout ---
         let kf7_first_non_book = text_records.len() + 1;
-        let kf7_first_image = if num_image_records > 0 {
+        // Points at the resource block (images, then fonts) so kindle:embed
+        // indices resolve; see the KF8-only comment above.
+        let kf7_first_image = if num_image_records + num_font_records > 0 {
             text_records.len() + 1
         } else {
             0xFFFFFFFF
         };
-        let kf7_flis = text_records.len() + 1 + num_image_records;
+        let kf7_flis = text_records.len() + 1 + num_image_records + num_font_records;
         let kf7_fcis = kf7_flis + 1;
         let kf7_srcs_idx = if srcs_record.is_some() {
             Some(kf7_fcis + 1)
@@ -959,9 +1016,11 @@ fn build_book_mobi(
             None
         };
 
-        let boundary_idx = 1 + text_records.len() + num_image_records + 2 + num_optional;
+        let boundary_idx =
+            1 + text_records.len() + num_image_records + num_font_records + 2 + num_optional;
         let kf8_record0_global = boundary_idx + 1;
-        let kf7_total = 1 + text_records.len() + num_image_records + 2 + num_optional;
+        let kf7_total =
+            1 + text_records.len() + num_image_records + num_font_records + 2 + num_optional;
 
         // --- KF8 Section record layout (KF8-relative indices) ---
         let kf8_text_count = kf8_section.text_records.len();
@@ -1081,6 +1140,7 @@ fn build_book_mobi(
         all_records.push(kf7_record0);
         all_records.extend(text_records);
         all_records.extend(image_records);
+        all_records.extend(font_records);
         all_records.push(kf7_flis_rec);
         all_records.push(kf7_fcis_rec);
         if let Some(srcs) = srcs_record {
@@ -1605,6 +1665,7 @@ fn build_html_parts(opf: &OPFData) -> Vec<String> {
 fn extract_css_content(
     opf: &OPFData,
     html_parts: &[String],
+    font_embeds: &std::collections::HashMap<String, (usize, String)>,
 ) -> (String, std::collections::HashSet<String>) {
     let mut css_parts: Vec<String> = Vec::new();
     let mut extracted_basenames: std::collections::HashSet<String> =
@@ -1625,7 +1686,18 @@ fn extract_css_content(
             return;
         }
         if let Ok(content) = std::fs::read_to_string(&css_path) {
-            css_parts.push(content);
+            // Rewrite @font-face src urls (relative to this stylesheet's
+            // directory) to the kindle:embed index of the embedded font
+            // resource (issue #18).
+            let css_dir = match decoded.rfind('/') {
+                Some(i) => &decoded[..i],
+                None => "",
+            };
+            css_parts.push(crate::fonts::rewrite_css_font_urls(
+                &content,
+                css_dir,
+                font_embeds,
+            ));
             if let Some(fname) = decoded.rsplit('/').next() {
                 extracted.insert(fname.to_string());
             }
@@ -4035,8 +4107,19 @@ fn mobi_locale_code(lang: &str) -> u32 {
 /// falling through to the en-US default (the bug behind issue #15's
 /// `locale = 9` on a `zh-cn` book).
 fn locale_code(lang: &str) -> u32 {
+    locale_code_opt(lang).unwrap_or(0x0409) // default to en-US
+}
+
+/// True when `lang` maps to a known LCID rather than the en-US fallback.
+/// Used to warn book builds about language tags the device will treat as
+/// English, which degrades font selection for CJK content (issue #18).
+pub(crate) fn locale_is_recognized(lang: &str) -> bool {
+    locale_code_opt(lang).is_some()
+}
+
+fn locale_code_opt(lang: &str) -> Option<u32> {
     let norm = lang.replace('_', "-").to_ascii_lowercase();
-    match norm.as_str() {
+    Some(match norm.as_str() {
         "en-gb" => 0x0809,
         "pt-pt" => 0x0816,
         "zh-tw" | "zh-hk" | "zh-hant" => 0x0404,
@@ -4119,9 +4202,9 @@ fn locale_code(lang: &str) -> u32 {
             "ug" => 0x0480,
             "sd" => 0x0859,
             "ckb" => 0x0492,
-            _ => 0x0409, // default to en-US
+            _ => return None,
         },
-    }
+    })
 }
 
 /// Get current time as a Palm OS timestamp (seconds since 1904-01-01).

@@ -24,7 +24,7 @@ Pre-built binaries for Mac (Apple Silicon, Intel), Linux (x86_64), and Windows (
 ## Features
 
 - **Dictionaries**: Full orth index with headword + inflection lookup, ORDT/SPL sort tables, generated CJK and Arabic collation tables, fontsignature
-- **Books**: EPUB or OPF input, embedded images, KF8-only (.azw3) by default with legacy dual-format (MOBI7+KF8) available via `--legacy-mobi`, HD image container, fixed-layout support
+- **Books**: EPUB or OPF input, embedded images, embedded fonts (with IDPF/Adobe deobfuscation), on-device TOC from the EPUB nav document (toc.ncx / nav.xhtml, including `file#anchor` entries), KF8-only (.azw3) by default with legacy dual-format (MOBI7+KF8) available via `--legacy-mobi`, HD image container, fixed-layout support
 - **Comics**: Image folder, CBZ, CBR, or EPUB input, device-specific resizing, spread splitting, margin cropping, auto-contrast, moire correction for color e-ink, manga RTL, webtoon with overlap fallback, Panel View, KF8-only (.azw3) by default, metadata overrides
 - **StarDict export**: `kindling stardict` builds a four-file StarDict bundle (`.ifo` / `.idx` / `.dict` / `.syn`) from the same OPF or EPUB dictionary input as `kindling build`, for use with GoldenDict, GoldenDict-ng, KOReader, sdcv, and other non-Kindle dictionary readers (see [StarDict export](#stardict-export))
 - **EPUB export**: `kindling epub2` and `kindling epub3` build a reflowable EPUB from the same OPF or EPUB input, conformant to EPUB 2.0.1 and EPUB 3.3 respectively (epubcheck-clean). EPUB2 is always a plain book; EPUB3 is a plain book by default and emits an EPUB Dictionaries and Glossaries layer (Search Key Map, `dc:type=dictionary`, `epub:type` semantics) when the input is a dictionary (see [EPUB export](#epub-export))
@@ -79,7 +79,7 @@ Add the crate to your `Cargo.toml` (published as `kindling-mobi`; the library na
 
 ```toml
 [dependencies]
-kindling-mobi = "0.20"
+kindling-mobi = "0.26"
 ```
 
 Then `use kindling::...`. Public API is defined in `src/lib.rs`.
@@ -153,6 +153,10 @@ kindling-cli build input.epub --no-validate            # skip KDP pre-flight val
 ```
 
 Auto-detects dictionary vs book from the OPF's `DictionaryInLanguage` metadata. Book MOBIs include embedded images and an HD image container (for high-DPI Kindle screens). The original EPUB is embedded by default for Kindle Previewer compatibility (`--no-embed-source` to skip).
+
+The on-device "Go To" table of contents is built from the EPUB navigation document, preferring the EPUB3 nav (`properties="nav"`) and falling back to the EPUB2 `toc.ncx`, so chapter names survive even when every chapter file carries the same generic `<title>` (issue #18). Entries that point at `file#anchor` targets inside a shared spine file each get their own TOC node at the anchor position, matching kindlegen's NCX. Files without a nav document fall back to per-file `<title>` labels.
+
+Fonts declared in the manifest (TTF/OTF) are embedded as KF8 FONT resource records, with `@font-face` `src: url(...)` in the stylesheets rewritten to the matching `kindle:embed` resource, so publisher fonts survive conversion. EPUB font obfuscation (both the IDPF and Adobe schemes declared in `META-INF/encryption.xml`) is undone at build time; the embedded output is zlib-deflated and unobfuscated, matching kindlegen's own FONT records. WOFF/WOFF2 fonts are skipped with a warning since Kindle cannot render them. Note that the Kindle language also matters for on-device font choice: a book without a `<dc:language>` (or with an unrecognized tag) is treated as English, which hides the CJK font menu on Chinese/Japanese books, so kindling warns when that happens.
 
 Non-dictionary builds default to KF8-only `.azw3`, because Amazon deprecated MOBI for Send-to-Kindle in August 2022 and modern Kindles prefer KF8-only. Dictionaries continue to build as dual-format MOBI7+KF8 `.mobi`, because Kindle's lookup popup requires the MOBI7 INDX structure and KF8 has no equivalent. Pass `--legacy-mobi` on a book build to opt back into the old dual-format `.mobi` output for pre-2012 Kindles; the flag is a no-op on dictionary builds. If you pass `-o foo.mobi` or `-o foo.azw3` explicitly, kindling respects whatever extension you chose.
 

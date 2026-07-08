@@ -1,6 +1,6 @@
 [package]
 name = "kindling-mobi"
-version = "0.25.0"
+version = "0.26.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Kindle MOBI/AZW3 builder for dictionaries, books, and comics. Drop-in kindlegen replacement."
@@ -25,6 +25,9 @@ clap = { version = "4", features = ["derive"] }
 # entry-body XHTML serializer can walk `NodeRef<Node>` nodes by name. Pinned to
 # the version scraper already resolves so no extra crate is pulled in.
 ego-tree = "0.11"
+# zlib for KF8 FONT resource records (already in the tree via zip's deflate
+# feature, so this adds no new crates).
+flate2 = "1"
 image = "0.25"
 memchr = "2"
 quick-xml = "0.36"

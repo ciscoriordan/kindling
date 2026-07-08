@@ -11,6 +11,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use crate::mobi;
+    use crate::opf;
     use crate::palmdoc;
 
     // -----------------------------------------------------------------------
@@ -7473,6 +7474,229 @@ mod tests {
         );
         let title = std::str::from_utf8(&exth.get(&503).unwrap()[0]).unwrap();
         assert_eq!(title, "Test Book", "EXTH 503 should contain the book title");
+    }
+
+    #[test]
+    fn test_ncx_labels_come_from_nav_document() {
+        // Issue #18: books whose chapter files all share a generic
+        // <title> ("Chapter") must still get real TOC labels, taken from
+        // the EPUB nav document (here an EPUB2 toc.ncx).
+        let dir = TempDir::new("ncx_nav_labels");
+        for i in 1..=3 {
+            fs::write(
+                dir.path().join(format!("ch{}.html", i)),
+                format!(
+                    "<html><head><title>Chapter</title></head>\
+                     <body><h1>Body {i}</h1><p>text {i}</p></body></html>"
+                ),
+            )
+            .unwrap();
+        }
+        fs::write(
+            dir.path().join("toc.ncx"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+<head/><docTitle><text>Test Book</text></docTitle>
+<navMap>
+<navPoint id="n1"><navLabel><text>NavLabelOne</text></navLabel><content src="ch1.html"/></navPoint>
+<navPoint id="n2"><navLabel><text>NavLabelTwo</text></navLabel><content src="ch2.html"/></navPoint>
+<navPoint id="n3"><navLabel><text>NavLabelThree</text></navLabel><content src="ch3.html"/></navPoint>
+</navMap>
+</ncx>"#,
+        )
+        .unwrap();
+        let opf = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf">
+  <metadata>
+    <dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">Test Book</dc:title>
+    <dc:language xmlns:dc="http://purl.org/dc/elements/1.1/">en</dc:language>
+  </metadata>
+  <manifest>
+    <item id="c1" href="ch1.html" media-type="application/xhtml+xml"/>
+    <item id="c2" href="ch2.html" media-type="application/xhtml+xml"/>
+    <item id="c3" href="ch3.html" media-type="application/xhtml+xml"/>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="c1"/>
+    <itemref idref="c2"/>
+    <itemref idref="c3"/>
+  </spine>
+</package>"#;
+        let opf_path = dir.path().join("content.opf");
+        fs::write(&opf_path, opf).unwrap();
+
+        let data = build_mobi_bytes(&opf_path, dir.path(), true, false, None);
+        for label in ["NavLabelOne", "NavLabelTwo", "NavLabelThree"] {
+            assert!(
+                data.windows(label.len()).any(|w| w == label.as_bytes()),
+                "NCX label {} from toc.ncx missing from output",
+                label
+            );
+        }
+        println!("  \u{2713} NCX TOC labels taken from the nav document");
+    }
+
+    #[test]
+    fn test_language_recognition_and_specified_flag() {
+        // Book builds warn when the OPF language is missing or would fall
+        // back to the en-US locale (issue #18: wrong locale hides CJK fonts
+        // in the device's Aa menu).
+        for lang in ["zh", "zh-CN", "ZH_TW", "ja", "en", "en-GB", "grc"] {
+            assert!(
+                mobi::locale_is_recognized(lang),
+                "{} should map to a known locale",
+                lang
+            );
+        }
+        for lang in ["xx", "zho", "chi", "klingon"] {
+            assert!(
+                !mobi::locale_is_recognized(lang),
+                "{} should be unrecognized",
+                lang
+            );
+        }
+
+        let dir = TempDir::new("lang_specified");
+        let with_lang = create_book_fixture(dir.path(), None);
+        let opf = opf::OPFData::parse(&with_lang).unwrap();
+        assert!(opf.language_specified, "fixture declares dc:language");
+
+        let no_lang = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf">
+  <metadata>
+    <dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">T</dc:title>
+  </metadata>
+  <manifest>
+    <item id="content" href="content.html" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine><itemref idref="content"/></spine>
+</package>"#;
+        let no_lang_path = dir.path().join("nolang.opf");
+        fs::write(&no_lang_path, no_lang).unwrap();
+        let opf = opf::OPFData::parse(&no_lang_path).unwrap();
+        assert!(!opf.language_specified, "no dc:language declared");
+        assert_eq!(opf.language, "en", "language still defaults to en");
+        println!("  \u{2713} language recognition + specified flag behave");
+    }
+
+    #[test]
+    fn test_ncx_splits_nodes_at_fragment_anchors() {
+        // Issue #18: several chapters can share one spine file, with the
+        // nav document pointing at file#anchor targets. Each anchored
+        // entry must keep its own TOC label instead of collapsing into
+        // one node per file.
+        let dir = TempDir::new("ncx_anchor_split");
+        fs::write(
+            dir.path().join("book.html"),
+            r#"<html><head><title>Generic</title></head><body>
+<p>Front matter text.</p>
+<h1 id="c1">One</h1><p>First chapter body text with some length.</p>
+<h1 id="c2">Two</h1><p>Second chapter body text with some length.</p>
+<h1 id="c3">Three</h1><p>Third chapter body text with some length.</p>
+</body></html>"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("toc.ncx"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+<head/><docTitle><text>T</text></docTitle>
+<navMap>
+<navPoint id="n1"><navLabel><text>NavAnchorOne</text></navLabel><content src="book.html#c1"/></navPoint>
+<navPoint id="n2"><navLabel><text>NavAnchorTwo</text></navLabel><content src="book.html#c2"/></navPoint>
+<navPoint id="n3"><navLabel><text>NavAnchorThree</text></navLabel><content src="book.html#c3"/></navPoint>
+</navMap>
+</ncx>"#,
+        )
+        .unwrap();
+        let opf = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf">
+  <metadata>
+    <dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">T</dc:title>
+    <dc:language xmlns:dc="http://purl.org/dc/elements/1.1/">en</dc:language>
+  </metadata>
+  <manifest>
+    <item id="content" href="book.html" media-type="application/xhtml+xml"/>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+  </manifest>
+  <spine toc="ncx"><itemref idref="content"/></spine>
+</package>"#;
+        let opf_path = dir.path().join("content.opf");
+        fs::write(&opf_path, opf).unwrap();
+
+        let data = build_mobi_bytes(&opf_path, dir.path(), true, false, None);
+        // All three anchored labels must survive into the NCX CNCX (they
+        // are deliberately absent from the body text).
+        for label in ["NavAnchorOne", "NavAnchorTwo", "NavAnchorThree"] {
+            assert!(
+                data.windows(label.len()).any(|w| w == label.as_bytes()),
+                "anchored TOC label {} missing from output",
+                label
+            );
+        }
+        println!("  \u{2713} anchored nav entries keep their own NCX nodes");
+    }
+
+    #[test]
+    fn test_book_embeds_manifest_fonts() {
+        // Issue #18: manifest fonts become KF8 FONT resource records and
+        // the CSS flow's @font-face urls are rewritten to kindle:embed.
+        let dir = TempDir::new("font_embed");
+        let mut font_data = vec![0x00u8, 0x01, 0x00, 0x00]; // TTF magic
+        font_data.extend((0..3000u32).flat_map(|i| i.to_be_bytes()));
+        fs::write(dir.path().join("Custom.ttf"), &font_data).unwrap();
+        fs::write(
+            dir.path().join("style.css"),
+            "@font-face { font-family: C; src: url(\"Custom.ttf\"); }\nbody { font-family: C; }",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("content.html"),
+            r#"<html><head><title>T</title><link rel="stylesheet" type="text/css" href="style.css"/></head><body><p>x</p></body></html>"#,
+        )
+        .unwrap();
+        let opf = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf">
+  <metadata>
+    <dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">T</dc:title>
+    <dc:language xmlns:dc="http://purl.org/dc/elements/1.1/">en</dc:language>
+  </metadata>
+  <manifest>
+    <item id="content" href="content.html" media-type="application/xhtml+xml"/>
+    <item id="css" href="style.css" media-type="text/css"/>
+    <item id="f1" href="Custom.ttf" media-type="application/x-font-ttf"/>
+  </manifest>
+  <spine><itemref idref="content"/></spine>
+</package>"#;
+        let opf_path = dir.path().join("content.opf");
+        fs::write(&opf_path, opf).unwrap();
+
+        // no_compress so the CSS flow is greppable in the raw bytes.
+        let data = build_mobi_bytes(&opf_path, dir.path(), true, false, None);
+
+        // FONT record present, zlib payload round-trips to the source font.
+        let font_pos = data
+            .windows(4)
+            .position(|w| w == b"FONT")
+            .expect("FONT record missing from output");
+        let usize =
+            u32::from_be_bytes(data[font_pos + 4..font_pos + 8].try_into().unwrap()) as usize;
+        assert_eq!(usize, font_data.len(), "FONT usize must match source");
+        let flags = u32::from_be_bytes(data[font_pos + 8..font_pos + 12].try_into().unwrap());
+        assert_eq!(flags, 1, "FONT flags must be zlib-only like kindlegen");
+        let mut decoder = flate2::read::ZlibDecoder::new(&data[font_pos + 24..]);
+        let mut out = Vec::new();
+        std::io::Read::read_to_end(&mut decoder, &mut out).unwrap();
+        assert_eq!(out, font_data, "FONT payload must round-trip");
+
+        // CSS flow rewritten to the font's kindle:embed index.
+        let needle = b"url(kindle:embed:0001?mime=application/x-font-ttf)";
+        assert!(
+            data.windows(needle.len()).any(|w| w == needle),
+            "@font-face url must be rewritten to kindle:embed"
+        );
+        println!("  \u{2713} manifest font embedded as FONT record + CSS rewrite");
     }
 
     #[test]

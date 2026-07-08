@@ -34,7 +34,15 @@ pub struct OPFData {
     pub title: String,
     pub author: String,
     pub language: String,
+    /// True when the OPF actually declared a `<dc:language>`; false when
+    /// `language` is just the "en" default. Book builds warn on false,
+    /// since the device picks fonts by book language (issue #18).
+    pub language_specified: bool,
     pub identifier: String,
+    /// Every `<dc:identifier>` value in document order. Used as candidate
+    /// keys for EPUB font deobfuscation (IDPF/Adobe algorithms key on the
+    /// package's unique identifier).
+    pub dc_identifiers: Vec<String>,
     pub date: String,
     pub dict_in_language: String,
     pub dict_out_language: String,
@@ -75,7 +83,9 @@ impl OPFData {
             title: String::new(),
             author: String::new(),
             language: String::from("en"),
+            language_specified: false,
             identifier: String::new(),
+            dc_identifiers: Vec::new(),
             date: String::new(),
             dict_in_language: String::new(),
             dict_out_language: String::new(),
@@ -283,8 +293,14 @@ impl OPFData {
                         match current_tag.as_str() {
                             "title" => self.title = text,
                             "creator" => self.author = text,
-                            "language" => self.language = text,
-                            "identifier" => self.identifier = text,
+                            "language" => {
+                                self.language = text;
+                                self.language_specified = true;
+                            }
+                            "identifier" => {
+                                self.identifier = text.clone();
+                                self.dc_identifiers.push(text);
+                            }
                             "date" => self.date = text,
                             "type" => self.dc_types.push(text),
                             "DictionaryInLanguage" => self.dict_in_language = text,
