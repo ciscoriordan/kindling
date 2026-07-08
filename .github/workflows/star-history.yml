@@ -1,0 +1,39 @@
+name: Star history
+
+on:
+  schedule:
+    - cron: "17 5 * * *" # daily, 05:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: star-history
+  cancel-in-progress: true
+
+jobs:
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Generate star history SVGs
+        env:
+          # GITHUB_TOKEN has implicit metadata:read on this repo, which is the
+          # only permission the stargazers endpoint requires. If GitHub ever
+          # tightens this further, create a fine-grained PAT (Repository
+          # access: this repo; Permissions: Metadata read-only), store it as
+          # the STAR_HISTORY_TOKEN secret, and it takes precedence here.
+          GITHUB_TOKEN: ${{ secrets.STAR_HISTORY_TOKEN || github.token }}
+        run: python3 .github/scripts/star_history.py out
+
+      - name: Publish to star-history branch
+        run: |
+          cd out
+          git init -b star-history
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add star-history-light.svg star-history-dark.svg
+          git commit -m "Update star history chart"
+          git push --force "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" star-history
