@@ -232,9 +232,19 @@ pub fn rewrite_css_font_urls(
 pub fn strip_font_locking_css(css: &str) -> String {
     let font_face_re = regex::Regex::new(r"(?is)@font-face\s*\{[^}]*\}").unwrap();
     let css = font_face_re.replace_all(css, "");
+    strip_font_family_declarations(&css)
+}
+
+/// Remove `font-family` declarations from a run of CSS declarations,
+/// keeping the same monospace exception as [`strip_font_locking_css`]. The
+/// input has no `@font-face` handling and may be either a full stylesheet
+/// body (`{...}` blocks) or a bare inline `style="..."` declaration list —
+/// the `[^;}]` terminator stops at a `;`, a closing `}`, or the end of the
+/// string, so both forms are handled.
+fn strip_font_family_declarations(decls: &str) -> String {
     let family_re = regex::Regex::new(r"(?is)font-family\s*:\s*([^;}]*)(;?)").unwrap();
     family_re
-        .replace_all(&css, |caps: &regex::Captures| {
+        .replace_all(decls, |caps: &regex::Captures| {
             let families = caps.get(1).unwrap().as_str();
             let keeps_monospace = families.split(',').any(|f| {
                 f.trim()
@@ -262,6 +272,33 @@ pub fn strip_font_locking_style_blocks(html: &str) -> String {
                 caps.get(1).unwrap().as_str(),
                 strip_font_locking_css(caps.get(2).unwrap().as_str()),
                 caps.get(3).unwrap().as_str()
+            )
+        })
+        .to_string()
+}
+
+/// Strip `font-family` from inline `style="..."` attributes throughout an
+/// HTML document (issue #19). A per-element `style="font-family: '宋体'"`
+/// locks the face just like a stylesheet rule, so when the book embeds no
+/// usable fonts these declarations only fight the reader's Aa choice.
+/// Handles both quote styles and keeps the monospace exception. Attributes
+/// left empty after stripping (e.g. `style=""`) are harmless and kept.
+pub fn strip_font_locking_inline_styles(html: &str) -> String {
+    let attr_re = regex::Regex::new(r#"(?is)(\bstyle\s*=\s*)("([^"]*)"|'([^']*)')"#).unwrap();
+    attr_re
+        .replace_all(html, |caps: &regex::Captures| {
+            let prefix = caps.get(1).unwrap().as_str();
+            // Quote character is whichever branch matched (index 3 = "…", 4 = '…').
+            let (quote, value) = match caps.get(3) {
+                Some(v) => ('"', v.as_str()),
+                None => ('\'', caps.get(4).unwrap().as_str()),
+            };
+            format!(
+                "{}{}{}{}",
+                prefix,
+                quote,
+                strip_font_family_declarations(value),
+                quote
             )
         })
         .to_string()
@@ -733,6 +770,41 @@ body { font-family: "SimSun", serif; color: black; }
             "body text mentioning font-family is untouched"
         );
         println!("  \u{2713} inline <style> blocks stripped");
+    }
+
+    #[test]
+    fn inline_style_attributes_stripped() {
+        let html = concat!(
+            "<p style=\"font-family: '宋体', serif; color: red\">hi</p>",
+            "<span style='color:blue;font-family:\"SimHei\"'>x</span>",
+            "<code style=\"font-family: Courier, monospace\">c</code>",
+            "<em style=\"font-weight: bold\">keep</em>"
+        );
+        let out = strip_font_locking_inline_styles(html);
+        assert!(
+            !out.contains("宋体") && !out.contains("SimHei"),
+            "named families in style attrs must be stripped: {}",
+            out
+        );
+        assert!(
+            out.contains("color: red") && out.contains("color:blue"),
+            "sibling declarations survive: {}",
+            out
+        );
+        assert!(
+            out.contains("font-family: monospace"),
+            "monospace exception applies in style attrs: {}",
+            out
+        );
+        assert!(
+            out.contains("font-weight: bold"),
+            "unrelated style attrs untouched: {}",
+            out
+        );
+        // Body text that merely mentions font-family is not an attribute.
+        let prose = strip_font_locking_inline_styles("<p>use font-family: SimSun here</p>");
+        assert!(prose.contains("font-family: SimSun here"), "prose untouched");
+        println!("  \u{2713} inline style=\"...\" font-family stripped");
     }
 
     #[test]

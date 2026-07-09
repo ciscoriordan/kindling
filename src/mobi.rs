@@ -751,13 +751,15 @@ fn build_book_mobi(
 
     // When no fonts are embedded, the stylesheets' font-family
     // declarations can only fight the reader's Aa font choice, so strip
-    // them (and dead @font-face rules) from the CSS flow and from inline
-    // <style> blocks (issue #19). Skipped in kindlegen-parity mode, which
-    // passes CSS through byte-for-byte like kindlegen.
+    // them (and dead @font-face rules) from the CSS flow, from inline
+    // <style> blocks, and from per-element style="..." attributes
+    // (issue #19). Skipped in kindlegen-parity mode, which passes CSS
+    // through byte-for-byte like kindlegen.
     let strip_font_css = font_embeds.is_empty() && !kindlegen_parity;
     if strip_font_css {
         for part in &mut html_parts {
             let stripped = crate::fonts::strip_font_locking_style_blocks(part);
+            let stripped = crate::fonts::strip_font_locking_inline_styles(&stripped);
             if stripped != *part {
                 *part = stripped;
             }
