@@ -48,6 +48,7 @@ pub fn build_mobi(
     kindlegen_parity: bool,
     strict_accents: bool,
     fold_accents: bool,
+    force_user_fonts: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let extracted = ExtractedEpub::from_opf_path(opf_path)?;
     build_mobi_from_extracted(
@@ -66,6 +67,7 @@ pub fn build_mobi(
         kindlegen_parity,
         strict_accents,
         fold_accents,
+        force_user_fonts,
     )
 }
 
@@ -92,6 +94,7 @@ pub fn build_mobi_from_extracted(
     kindlegen_parity: bool,
     strict_accents: bool,
     fold_accents: bool,
+    force_user_fonts: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let opf = &extracted.opf;
 
@@ -142,6 +145,7 @@ pub fn build_mobi_from_extracted(
             kindle_limits,
             self_check,
             kindlegen_parity,
+            force_user_fonts,
         )
     }
 }
@@ -518,6 +522,7 @@ fn build_book_mobi(
     kindle_limits: bool,
     self_check: bool,
     kindlegen_parity: bool,
+    force_user_fonts: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // The device keys font selection (and hyphenation) on the book's
     // language, so a missing or unrecognized dc:language silently lands the
@@ -671,7 +676,15 @@ fn build_book_mobi(
     // They are appended directly after the image records (thumbnail
     // included), so font i's kindle:embed recindex is image_count + i + 1;
     // `font_embeds` carries that mapping into the CSS @font-face rewrite.
-    let embedded_fonts = crate::fonts::collect_fonts(opf);
+    // With --force-user-fonts, embedding is skipped entirely so the
+    // font-family strip below applies and the reader's Aa font choice
+    // always wins (issue #19).
+    let embedded_fonts = if force_user_fonts {
+        eprintln!("--force-user-fonts: skipping font embedding; the Aa menu font applies");
+        Vec::new()
+    } else {
+        crate::fonts::collect_fonts(opf)
+    };
     let font_embeds: std::collections::HashMap<String, (usize, String)> = embedded_fonts
         .iter()
         .enumerate()
@@ -736,7 +749,34 @@ fn build_book_mobi(
         }
     }
 
+    // When no fonts are embedded, the stylesheets' font-family
+    // declarations can only fight the reader's Aa font choice, so strip
+    // them (and dead @font-face rules) from the CSS flow and from inline
+    // <style> blocks (issue #19). Skipped in kindlegen-parity mode, which
+    // passes CSS through byte-for-byte like kindlegen.
+    let strip_font_css = font_embeds.is_empty() && !kindlegen_parity;
+    if strip_font_css {
+        for part in &mut html_parts {
+            let stripped = crate::fonts::strip_font_locking_style_blocks(part);
+            if stripped != *part {
+                *part = stripped;
+            }
+        }
+    }
+
     let (css_content, css_basenames) = extract_css_content(opf, &html_parts, &font_embeds);
+    let css_content = if strip_font_css {
+        let stripped = crate::fonts::strip_font_locking_css(&css_content);
+        if stripped != css_content {
+            eprintln!(
+                "No embedded fonts: stripped font-family CSS so the device \
+                 Aa font menu controls the text face (issue #19)"
+            );
+        }
+        stripped
+    } else {
+        css_content
+    };
     let kf8_title = if opf.title.is_empty() {
         "Book"
     } else {
@@ -3454,12 +3494,8 @@ mod cyrillic_alias_tests {
         let e = [entry("пробормота́ть", &["пробормота́в"])];
         let t = terms(&e, false);
         let l = labels(&t);
-        for form in [
-            "пробормота́ть",
-            "пробормотать",
-            "пробормота́в",
-            "пробормотав",
-        ] {
+        for form in ["пробормота́ть", "пробормотать", "пробормота́в", "пробормотав"]
+        {
             assert!(l.contains(&form), "missing lookup form {form:?}");
         }
         for term in &t {
@@ -3472,10 +3508,7 @@ mod cyrillic_alias_tests {
         // The reader-dict/monolingual#2623 workaround, now built in: an
         // uppercase-only entry needs a lowercase label to be found.
         let e = [entry("ФСБ", &[])];
-        let l: Vec<String> = terms(&e, false)
-            .into_iter()
-            .map(|t| t.label)
-            .collect();
+        let l: Vec<String> = terms(&e, false).into_iter().map(|t| t.label).collect();
         assert!(l.contains(&"фсб".to_string()), "missing lowercase alias");
     }
 

@@ -123,6 +123,14 @@ enum Commands {
         /// builds. Also settable via KINDLING_FOLD_ACCENTS=1.
         #[arg(long, conflicts_with = "strict_accents")]
         fold_accents: bool,
+
+        /// Skip font embedding and strip all font-family CSS so the
+        /// reader's Aa font choice always applies, even for books that
+        /// ship embedded fonts (mirrors KOReader's behavior). Books with
+        /// no usable embedded fonts already get the font-family strip
+        /// automatically; this flag extends it to books with fonts.
+        #[arg(long)]
+        force_user_fonts: bool,
     },
 
     /// Convert comic images/CBZ/CBR/EPUB to Kindle-optimized MOBI
@@ -717,6 +725,7 @@ fn do_build(
     self_check: bool,
     strict_accents: bool,
     fold_accents: bool,
+    force_user_fonts: bool,
 ) {
     let is_epub = input
         .extension()
@@ -828,6 +837,7 @@ fn do_build(
             false, // kindlegen_parity: only meaningful for the comic path
             strict_accents,
             fold_accents,
+            force_user_fonts,
         ),
         None => mobi::build_mobi(
             &opf_path,
@@ -845,6 +855,7 @@ fn do_build(
             false, // kindlegen_parity: only meaningful for the comic path
             strict_accents,
             fold_accents,
+            force_user_fonts,
         ),
     };
 
@@ -932,6 +943,7 @@ fn main() {
             !no_self_check,
             strict_accents,
             fold_accents,
+            false, // force_user_fonts: not part of the kindlegen interface
         );
     } else {
         let cli = Cli::parse();
@@ -954,6 +966,7 @@ fn main() {
                 no_self_check,
                 strict_accents,
                 fold_accents,
+                force_user_fonts,
             } => {
                 // Default: ON for dictionaries, OFF for books.
                 // Since we don't know the content type yet at parse time, we pass
@@ -1027,6 +1040,7 @@ fn main() {
                     !no_self_check,
                     strict_accents || strict_accents_from_env(),
                     fold_accents || fold_accents_from_env(),
+                    force_user_fonts,
                 );
             }
             Commands::Comic {
@@ -1327,7 +1341,10 @@ fn do_lookup(input: &PathBuf, word: &str) {
     match kindling::lookup::lookup(&data, word) {
         Some(res) => {
             if res.matched_label == word {
-                println!("{word:?} resolves (exact headword/alias) at text position {}", res.position);
+                println!(
+                    "{word:?} resolves (exact headword/alias) at text position {}",
+                    res.position
+                );
             } else {
                 println!(
                     "{word:?} resolves via {:?} at text position {}",

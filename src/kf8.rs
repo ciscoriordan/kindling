@@ -172,13 +172,37 @@ pub fn build_kf8_section(
         spine_nav_points,
     );
     let node_offsets: Vec<usize> = ncx_nodes.iter().map(|n| n.offset).collect();
+    // Resolve the nav-document nesting into kindlegen's breadth-first
+    // hierarchical NCX entries (flat books resolve to the same flat
+    // layout as before); the TBS references the same entry numbers and
+    // subtree ranges (issue #19).
+    let ncx_entries = resolve_ncx_hierarchy(&ncx_nodes, html_length);
+    let tbs_type = if ncx_entries.iter().any(|e| e.depth > 0) {
+        KF8_TBS_TYPE_NESTED
+    } else {
+        KF8_TBS_TYPE_FLAT
+    };
+    let mut tbs_entries: Vec<TbsEntry> = ncx_entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| TbsEntry {
+            index: i,
+            start: e.offset,
+            length: e.length,
+            depth: e.depth,
+            parent: e.parent,
+        })
+        .collect();
+    // Document order for the record walk: by start, parents before their
+    // first child.
+    tbs_entries.sort_by_key(|e| (e.start, e.depth));
 
     // Step 3: Compress text into records, stamping each record with a TBS
     // that reflects which NCX nodes begin in or span it.
     let (text_records, text_length) = if no_compress {
-        split_text_uncompressed_kf8(&combined_text, &node_offsets, html_length)
+        split_text_uncompressed_kf8(&combined_text, &tbs_entries, html_length, tbs_type)
     } else {
-        compress_text_kf8(&combined_text, &node_offsets, html_length)
+        compress_text_kf8(&combined_text, &tbs_entries, html_length, tbs_type)
     };
 
     // Step 4: FDST record. flow[1] carries the CSS flow when present and
@@ -194,9 +218,9 @@ pub fn build_kf8_section(
     // the selector strings referenced by tag 2 of each fragment entry.
     let (fragment_indx, cncx_records) = build_fragment_indx_with_cncx(&fragment_entries);
 
-    // Step 7: NCX INDX with proper 5-tag structure + CNCX label records,
-    // one entry per section node.
-    let (ncx_indx, ncx_cncx_records) = build_ncx_indx(title, &ncx_nodes);
+    // Step 7: NCX INDX (5-tag flat or 8-tag hierarchical structure) +
+    // CNCX label records, one entry per section node.
+    let (ncx_indx, ncx_cncx_records) = build_ncx_indx(title, &ncx_entries);
 
     // Step 8: DATP record describing the NCX-node / text-record layout.
     let datp = build_datp(&node_offsets, text_records.len());
@@ -217,7 +241,10 @@ pub fn build_kf8_section(
     }
 }
 
-/// A single NCX (table-of-contents / reading-position) node.
+/// A single NCX (table-of-contents / reading-position) node, in document
+/// order. Hierarchy (depth clamping, parent/child links, subtree lengths,
+/// breadth-first entry numbering) is resolved by
+/// [`resolve_ncx_hierarchy`].
 struct NcxNode {
     /// Absolute byte offset of the section start in the HTML flow
     /// (spliced/rendered space, which equals the physical combined-text
@@ -225,8 +252,6 @@ struct NcxNode {
     /// `fragment insert position + offset within the fragment`, matching
     /// kindlegen's NCX).
     offset: usize,
-    /// Byte length of the section (to the next node, or end of flow).
-    length: usize,
     /// Display label (nav document entry, chapter `<title>`, or fallback).
     label: String,
     /// Fragment id this node points at (== the spine/skeleton index,
@@ -236,6 +261,42 @@ struct NcxNode {
     /// (second value of the pos_fid tag; 0 = start of the file). This is
     /// what the "Go To" jump lands on, verified against kindlegen output.
     frag_off: usize,
+    /// Nesting depth from the EPUB nav document (issue #19). `None` for
+    /// fallback nodes (spine files with no nav entry), which inherit the
+    /// depth of the preceding node so an unnamed continuation file does
+    /// not break up a volume's chapter run.
+    depth: Option<usize>,
+}
+
+/// One fully-resolved NCX index entry, produced by
+/// [`resolve_ncx_hierarchy`] in breadth-first (kindlegen) order: all
+/// depth-0 entries in document order, then all depth-1 entries, and so
+/// on. `parent` / `first_child` / `last_child` are entry numbers in that
+/// same breadth-first order, matching kindlegen's tag 21/22/23 values.
+struct NcxIndexEntry {
+    /// Absolute byte offset of the entry start in the HTML flow.
+    offset: usize,
+    /// Byte length of the entry's whole subtree: it runs to the next
+    /// entry at the same or a shallower depth (kindlegen semantics — a
+    /// volume's length covers all its chapters), the last entry running
+    /// to the end of the HTML flow.
+    length: usize,
+    /// Display label.
+    label: String,
+    /// Fragment id (spine/skeleton index) of the pos_fid jump target.
+    fid: usize,
+    /// Anchor byte offset within the fragment payload (pos_fid value 2).
+    frag_off: usize,
+    /// Resolved depth (0 = top level), clamped so it never jumps by more
+    /// than one level from the previous document-order entry.
+    depth: usize,
+    /// Breadth-first entry number of the parent (tag 21); `None` at
+    /// depth 0.
+    parent: Option<usize>,
+    /// Breadth-first entry numbers of the first/last child (tags 22/23);
+    /// `None` for childless entries.
+    first_child: Option<usize>,
+    last_child: Option<usize>,
 }
 
 /// Derive the NCX nodes: one base node per skeleton, labelled by the
@@ -271,6 +332,13 @@ fn build_ncx_nodes(
             .first()
             .map(|p| p.label.clone())
             .filter(|s| !s.is_empty());
+        // Fallback nodes (no nav entry for this file) get depth None and
+        // later inherit the previous node's depth in resolve_ncx_hierarchy.
+        let base_depth = if nav_label.is_some() {
+            nav_points.first().map(|p| p.depth)
+        } else {
+            None
+        };
         let label = nav_label.unwrap_or_else(|| {
             html_parts
                 .get(i)
@@ -302,13 +370,12 @@ fn build_ncx_nodes(
             .and_then(|frag| find_anchor_offset(payload, frag))
             .unwrap_or(0);
 
-        let base_index = nodes.len();
         nodes.push(NcxNode {
             offset: skel.start_pos,
-            length: 0, // tiled below
             label,
             fid: i,
             frag_off: base_frag_off,
+            depth: base_depth,
         });
 
         // Extra nodes for the remaining anchored entries of this file.
@@ -321,10 +388,10 @@ fn build_ncx_nodes(
                 let off = find_anchor_offset(payload, frag)?;
                 Some(NcxNode {
                     offset: insert_pos + off,
-                    length: 0,
                     label: p.label.clone(),
                     fid: i,
                     frag_off: off,
+                    depth: Some(p.depth),
                 })
             })
             .collect();
@@ -337,14 +404,88 @@ fn build_ncx_nodes(
                 nodes.push(extra);
             }
         }
-
-        // Tile this file's nodes: each runs to the next, last to file end.
-        for k in base_index..nodes.len() {
-            let next_offset = nodes.get(k + 1).map(|n| n.offset).unwrap_or(end);
-            nodes[k].length = next_offset.saturating_sub(nodes[k].offset);
-        }
     }
     nodes
+}
+
+/// Resolve the document-order NCX nodes into hierarchical index entries in
+/// breadth-first (kindlegen) order.
+///
+/// Depths are clamped so the sequence starts at 0 and never deepens by
+/// more than one level per step; fallback nodes (depth `None`) inherit the
+/// previous node's depth. Each node's parent is the nearest preceding node
+/// one level shallower (the clamping guarantees that node is a real
+/// ancestor). Entries are then numbered breadth-first — all depth-0
+/// entries in document order, then all depth-1, ... — which is the
+/// numbering kindlegen uses for the NCX labels and the parent/child tags
+/// (verified against kindlegen output for 2- and 3-level books).
+///
+/// Lengths follow kindlegen's subtree semantics: an entry runs to the next
+/// document-order entry at the same or a shallower depth (so a volume
+/// spans all its chapters), the last run of entries all ending at
+/// `html_length`. For a flat book this degenerates to the previous
+/// behavior — each node runs to the next, the last to the end of the HTML
+/// flow — so flat output is unchanged.
+fn resolve_ncx_hierarchy(nodes: &[NcxNode], html_length: usize) -> Vec<NcxIndexEntry> {
+    let n = nodes.len();
+
+    // Depth resolution (document order).
+    let mut depths: Vec<usize> = Vec::with_capacity(n);
+    for (i, node) in nodes.iter().enumerate() {
+        let prev = if i == 0 { 0 } else { depths[i - 1] };
+        let d = match node.depth {
+            Some(d) => d,
+            None => prev,
+        };
+        let d = if i == 0 { 0 } else { d.min(prev + 1) };
+        depths.push(d);
+    }
+
+    // Parent (document order): nearest preceding node one level shallower.
+    let mut parent_doc: Vec<Option<usize>> = vec![None; n];
+    for i in 0..n {
+        if depths[i] == 0 {
+            continue;
+        }
+        parent_doc[i] = (0..i).rev().find(|&j| depths[j] == depths[i] - 1);
+    }
+
+    // Breadth-first numbering: sort document positions by (depth, position).
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by_key(|&i| (depths[i], i));
+    let mut bfs_of_doc: Vec<usize> = vec![0; n];
+    for (bfs, &doc) in order.iter().enumerate() {
+        bfs_of_doc[doc] = bfs;
+    }
+
+    // Subtree length: to the next same-or-shallower node, last to flow end.
+    let end_of = |i: usize| -> usize {
+        (i + 1..n)
+            .find(|&j| depths[j] <= depths[i])
+            .map(|j| nodes[j].offset)
+            .unwrap_or(html_length)
+    };
+
+    order
+        .iter()
+        .map(|&doc| {
+            let children: Vec<usize> = (0..n)
+                .filter(|&j| parent_doc[j] == Some(doc))
+                .map(|j| bfs_of_doc[j])
+                .collect();
+            NcxIndexEntry {
+                offset: nodes[doc].offset,
+                length: end_of(doc).saturating_sub(nodes[doc].offset),
+                label: nodes[doc].label.clone(),
+                fid: nodes[doc].fid,
+                frag_off: nodes[doc].frag_off,
+                depth: depths[doc],
+                parent: parent_doc[doc].map(|p| bfs_of_doc[p]),
+                first_child: children.iter().min().copied(),
+                last_child: children.iter().max().copied(),
+            }
+        })
+        .collect()
 }
 
 /// Find the byte offset of the tag carrying `id="anchor"` (or
@@ -958,14 +1099,16 @@ fn append_kf8_tbs(
     record: &mut Vec<u8>,
     rec_start: usize,
     rec_end: usize,
-    node_offsets: &[usize],
+    entries: &[TbsEntry],
     html_length: usize,
+    tbs_type: u32,
 ) {
     record.extend_from_slice(&build_tbs_entry(
         rec_start,
         rec_end,
-        node_offsets,
+        entries,
         html_length,
+        tbs_type,
     ));
 }
 
@@ -1024,23 +1167,116 @@ fn encode_trailing_data(mut raw: Vec<u8>) -> Vec<u8> {
     }
 }
 
-/// TBS type for a KF8 book NCX. This is `8` — the value Calibre's KF8
-/// writer (mobi/writer8/tbs.py) always emits, and the value kindlegen emits
-/// for reflowable books. Verified: this algorithm with tbs_type=8
-/// reproduces kindlegen's output for the issue #15 book byte-for-byte
-/// across all 220 text records. (kindlegen's *comic* output uses 5, which
-/// KindleUnpack's own reference calculator flags as a mismatch against the
-/// canonical 8; the firmware decodes either, and following the Calibre
-/// reference is the principled choice for both books and comics.)
-const KF8_TBS_TYPE: u32 = 8;
+/// TBS type for a flat (single-level NCX) KF8 book. This is `8` — the
+/// value Calibre's KF8 writer (mobi/writer8/tbs.py) emits by default, and
+/// the value kindlegen emits for flat reflowable books. Verified: this
+/// algorithm with tbs_type=8 reproduces kindlegen's output for the issue
+/// #15 book byte-for-byte across all 220 text records. (kindlegen's
+/// *comic* output uses 5, which KindleUnpack's own reference calculator
+/// flags as a mismatch against the canonical 8; the firmware decodes
+/// either, and following the Calibre reference is the principled choice
+/// for both books and comics.)
+const KF8_TBS_TYPE_FLAT: u32 = 8;
 
-/// Build the TBS (Trailing Byte Sequence) bytes for one text record, given
-/// the NCX node offsets (each node covers `[offset_i, offset_{i+1})`, the
-/// last running to `html_length`).
+/// TBS type for a book with a hierarchical (multi-level) NCX. kindlegen
+/// emits `5` for these — verified byte-for-byte on 2- and 3-level nested
+/// probe books (issue #19). Type 5 also changes how a negative
+/// inter-strand index is encoded (absolute value, no 0b1000 flag), per
+/// Calibre's tbs.py.
+const KF8_TBS_TYPE_NESTED: u32 = 5;
+
+/// One NCX entry as seen by the TBS calculator.
 ///
-/// Reverse-engineered from kindlegen and validated byte-for-byte against
-/// crafted multi-section samples. For a flat (depth-1) book each record
-/// emits exactly one sequence:
+/// `index` / `parent` are breadth-first NCX entry numbers (what the TBS
+/// sequences reference); `start`/`length` are the entry's subtree range in
+/// the HTML flow. The slice handed to [`build_tbs_entry`] must be sorted
+/// by `(start, depth)` so parents precede their first child.
+#[derive(Clone, Copy)]
+struct TbsEntry {
+    index: usize,
+    start: usize,
+    length: usize,
+    depth: usize,
+    parent: Option<usize>,
+}
+
+/// How an NCX entry interacts with one text record (Calibre tbs.py
+/// `fill_entry`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TbsAction {
+    /// Starts before the record and ends after it.
+    Spans,
+    /// Starts before the record and ends inside it.
+    Ends,
+    /// Starts inside the record and ends after it.
+    Starts,
+    /// Starts and ends inside the record.
+    Completes,
+}
+
+/// An entry touching the current record, with its resolved action.
+#[derive(Clone, Copy)]
+struct TbsLocalEntry {
+    index: usize,
+    depth: usize,
+    parent: Option<usize>,
+    action: TbsAction,
+}
+
+/// Build one hierarchical 'strand' starting at `parent` (Calibre tbs.py
+/// `populate_strand`): descend to the first child present in this record,
+/// or absorb a contiguous run of same-parent siblings.
+fn populate_strand(parent: TbsLocalEntry, entries: &mut Vec<TbsLocalEntry>) -> Vec<TbsLocalEntry> {
+    let mut ans = vec![parent];
+    if let Some(pos) = entries.iter().position(|c| c.parent == Some(parent.index)) {
+        // Add the first child to this strand, and recurse downwards.
+        let child = entries.remove(pos);
+        ans.extend(populate_strand(child, entries));
+    } else {
+        // Add any entries at the same depth that form a contiguous set of
+        // indices and belong to the same parent (these can all be
+        // represented as a single sequence with the 0b100 count flag).
+        let mut current_index = parent.index;
+        while let Some(pos) = entries.iter().position(|e| {
+            e.depth == parent.depth && e.parent == parent.parent && e.index == current_index + 1
+        }) {
+            current_index += 1;
+            let entry = entries.remove(pos);
+            if entries.iter().any(|c| c.parent == Some(entry.index)) {
+                ans.extend(populate_strand(entry, entries));
+                break; // Cannot add more siblings, as we have added children
+            } else {
+                ans.push(entry);
+            }
+        }
+    }
+    ans
+}
+
+/// One TBS sequence awaiting byte encoding: the fvwi value plus its
+/// optional flagged fields (Calibre `encode_tbs`).
+struct TbsSeq {
+    val: u32,
+    /// 0b010: tbs_type, present on the very first sequence of the record.
+    type_val: Option<u32>,
+    /// 0b100: count byte for a multi-entry (contiguous siblings) sequence.
+    count: Option<u8>,
+    /// 0b001: emitted (as encint 0) when the sequence's last entry spans
+    /// past the record.
+    spans_end: Option<u32>,
+    /// 0b1000: marks a positive inter-strand index delta.
+    offset_flag: bool,
+}
+
+/// Build the TBS (Trailing Byte Sequence) bytes for one text record.
+///
+/// This is Calibre's writer8/tbs.py pipeline (collect touching entries →
+/// separate into hierarchical strands → encode strands as flagged fvwi
+/// sequences), which reproduces kindlegen's output byte-for-byte on flat
+/// books (tbs_type 8, verified across the 220 records of the issue #15
+/// book) and on nested books (tbs_type 5, verified across the 35 records
+/// of a 3-level probe book, issue #19). For a flat book every record
+/// yields exactly one sequence:
 ///   - a single node spanning the whole record  -> flags 0b011 (+ tbs_type, +0)
 ///   - a single node that only ends/starts here -> flags 0b010 (+ tbs_type)
 ///   - two or more nodes touch the record       -> flags 0b110 (+ tbs_type, + count)
@@ -1048,62 +1284,153 @@ const KF8_TBS_TYPE: u32 = 8;
 fn build_tbs_entry(
     rec_start: usize,
     rec_end: usize,
-    node_offsets: &[usize],
+    entries: &[TbsEntry],
     html_length: usize,
+    tbs_type: u32,
 ) -> Vec<u8> {
-    let lo = rec_start;
-    let hi = rec_end;
-
-    if node_offsets.is_empty() || lo >= html_length {
+    if entries.is_empty() || rec_start >= html_length {
         // No navigable content in this record (e.g. the CSS flow tail).
         return encode_trailing_data(Vec::new());
     }
+    let rec_len = (rec_end - rec_start) as isize;
 
-    let n = node_offsets.len();
-    let node_end = |i: usize| -> usize {
-        if i + 1 < n {
-            node_offsets[i + 1]
+    // Entries touching this record, with their actions (entries are
+    // sorted by start, so the collected list is in document order).
+    let mut local: Vec<TbsLocalEntry> = Vec::new();
+    for e in entries {
+        if e.start >= rec_end {
+            break;
+        }
+        if e.start + e.length <= rec_start {
+            continue;
+        }
+        let start_offset = e.start as isize - rec_start as isize;
+        let length_offset = start_offset + e.length as isize;
+        let action = if start_offset < 0 {
+            if length_offset > rec_len {
+                TbsAction::Spans
+            } else {
+                TbsAction::Ends
+            }
+        } else if length_offset > rec_len {
+            TbsAction::Starts
         } else {
-            html_length
-        }
-    };
-
-    // Nodes whose [offset, end) overlaps this record.
-    let mut touching: Vec<usize> = Vec::new();
-    for i in 0..n {
-        let off = node_offsets[i];
-        let end = node_end(i);
-        if off < hi && end > lo {
-            touching.push(i);
-        }
+            TbsAction::Completes
+        };
+        local.push(TbsLocalEntry {
+            index: e.index,
+            depth: e.depth,
+            parent: e.parent,
+            action,
+        });
     }
-
-    if touching.is_empty() {
+    if local.is_empty() {
         return encode_trailing_data(Vec::new());
     }
 
-    let first = touching[0];
-    let mut content: Vec<u8>;
-    if touching.len() == 1 {
-        let off = node_offsets[first];
-        let end = node_end(first);
-        if off < lo && end > hi {
-            // Spans the entire record (starts strictly before and ends
-            // strictly after — a node filling the record exactly is a
-            // 'completes', handled by the single-node branch below).
-            content = encode_fvwi(first as u32, 0b011, 3);
-            content.extend_from_slice(&encint_forward(KF8_TBS_TYPE));
-            content.extend_from_slice(&encint_forward(0));
-        } else {
-            // Single node starting and/or ending in this record.
-            content = encode_fvwi(first as u32, 0b010, 3);
-            content.extend_from_slice(&encint_forward(KF8_TBS_TYPE));
+    // Separate into strands, each grouped into per-depth layers (depths
+    // appear in increasing order along a strand chain).
+    let mut strands: Vec<Vec<(usize, Vec<TbsLocalEntry>)>> = Vec::new();
+    while !local.is_empty() {
+        let top = local.remove(0);
+        let chain = populate_strand(top, &mut local);
+        let mut layers: Vec<(usize, Vec<TbsLocalEntry>)> = Vec::new();
+        for e in chain {
+            match layers.iter_mut().find(|(d, _)| *d == e.depth) {
+                Some((_, v)) => v.push(e),
+                None => layers.push((e.depth, vec![e])),
+            }
         }
-    } else {
-        // Two or more nodes have a boundary in this record.
-        content = encode_fvwi(first as u32, 0b110, 3);
-        content.extend_from_slice(&encint_forward(KF8_TBS_TYPE));
-        content.push(touching.len() as u8);
+        strands.push(layers);
+    }
+
+    // Encode the strands as sequences.
+    let mut seqs: Vec<TbsSeq> = Vec::new();
+    let mut last_index: i64 = 0;
+    let mut is_first_entry = true;
+    for strand in &strands {
+        let first_of_strand = seqs.len();
+        for (_, layer) in strand {
+            let last = layer.last().unwrap();
+            let spans_end = if last.action == TbsAction::Spans {
+                Some(0)
+            } else {
+                None
+            };
+            let type_val = if is_first_entry {
+                is_first_entry = false;
+                Some(tbs_type)
+            } else {
+                None
+            };
+            let count = if layer.len() > 1 {
+                Some(layer.len() as u8)
+            } else {
+                None
+            };
+            let mut offset_flag = false;
+            let mut index = layer[0].index as i64 - layer[0].parent.unwrap_or(0) as i64;
+            if !seqs.is_empty() && seqs.len() == first_of_strand {
+                // Second or later strand: the index is the delta from the
+                // previous strand's last entry. A positive delta gets the
+                // 0b1000 flag; a negative one is stored as its absolute
+                // value with no flag (tbs_type 5 semantics — type 8 books
+                // are flat and always single-strand, so they never hit
+                // this branch).
+                index = last_index - layer[0].index as i64;
+                if index < 0 {
+                    index = -index;
+                } else {
+                    offset_flag = true;
+                }
+            }
+            last_index = last.index as i64;
+            seqs.push(TbsSeq {
+                val: index as u32,
+                type_val,
+                count,
+                spans_end,
+                offset_flag,
+            });
+        }
+        // Consecutive spans within a strand: only the last of the run
+        // keeps its 0b1 end marker.
+        for i in first_of_strand..seqs.len().saturating_sub(1) {
+            if seqs[i].spans_end.is_some() && seqs[i + 1].spans_end.is_some() {
+                seqs[i].spans_end = None;
+            }
+        }
+    }
+
+    // Sequences to bytes: the first sequence has flag size 3; all later
+    // ones use 4 because they may need the 0b1000 flag.
+    let mut content = Vec::new();
+    let mut flag_size = 3;
+    for s in &seqs {
+        let mut flags: u32 = 0;
+        if s.spans_end.is_some() {
+            flags |= 0b1;
+        }
+        if s.type_val.is_some() {
+            flags |= 0b10;
+        }
+        if s.count.is_some() {
+            flags |= 0b100;
+        }
+        if s.offset_flag {
+            flags |= 0b1000;
+        }
+        content.extend_from_slice(&encode_fvwi(s.val, flags, flag_size));
+        if let Some(t) = s.type_val {
+            content.extend_from_slice(&encint_forward(t));
+        }
+        if let Some(c) = s.count {
+            content.push(c);
+        }
+        if let Some(v) = s.spans_end {
+            content.extend_from_slice(&encint_forward(v));
+        }
+        flag_size = 4;
     }
 
     encode_trailing_data(content)
@@ -1138,8 +1465,9 @@ fn multibyte_overlap_entry(text: &[u8], boundary: usize) -> Vec<u8> {
 /// multibyte-then-TBS, and stripped from the end TBS-first then multibyte.
 fn compress_text_kf8(
     text_bytes: &[u8],
-    node_offsets: &[usize],
+    tbs_entries: &[TbsEntry],
     html_length: usize,
+    tbs_type: u32,
 ) -> (Vec<Vec<u8>>, usize) {
     let total_length = text_bytes.len();
     let mut records: Vec<Vec<u8>> = Vec::new();
@@ -1153,8 +1481,9 @@ fn compress_text_kf8(
             &mut compressed,
             start,
             start + RECORD_SIZE,
-            node_offsets,
+            tbs_entries,
             html_length,
+            tbs_type,
         );
         records.push(compressed);
         start = end;
@@ -1166,8 +1495,9 @@ fn compress_text_kf8(
 /// boundary + multibyte overlap + TBS layout as the compressed path.
 fn split_text_uncompressed_kf8(
     text_bytes: &[u8],
-    node_offsets: &[usize],
+    tbs_entries: &[TbsEntry],
     html_length: usize,
+    tbs_type: u32,
 ) -> (Vec<Vec<u8>>, usize) {
     let total_length = text_bytes.len();
     let mut records: Vec<Vec<u8>> = Vec::new();
@@ -1180,8 +1510,9 @@ fn split_text_uncompressed_kf8(
             &mut rec,
             start,
             start + RECORD_SIZE,
-            node_offsets,
+            tbs_entries,
             html_length,
+            tbs_type,
         );
         records.push(rec);
         start = end;
@@ -1591,25 +1922,25 @@ fn build_fragment_indx_with_cncx(frags: &[FragmentEntry]) -> (Vec<Vec<u8>>, Vec<
     (vec![primary, data_record], cncx_records)
 }
 
-/// Build the NCX INDX: one navigation / reading-position node per section.
+/// Build the NCX INDX from the resolved (breadth-first ordered) entries.
 ///
-/// Tags: 1 (offset), 2 (length), 3 (CNCX label), 4 (depth), 6 (pos_fid).
-/// Emitting one node per spine item tiles the whole book so the device's
-/// reading-position / progress bar advances across every chapter, and the
-/// node labels populate the device table-of-contents. A single-section
-/// input (e.g. a one-page comic, or a dictionary's lone content file) still
-/// gets exactly one node, matching the prior behavior. The fragment id in
-/// tag 6 is the node's spine index (one fragment per spine item).
-fn build_ncx_indx(title: &str, nodes: &[NcxNode]) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+/// Flat books use kindlegen's 5-tag layout — 1 (offset), 2 (length),
+/// 3 (CNCX label), 4 (depth), 6 (pos_fid) — byte-identical to the previous
+/// output. Books with a nested TOC (any entry at depth > 0) use
+/// kindlegen's 8-tag hierarchical layout, adding 21 (parent), 22 (first
+/// child), 23 (last child) between tags 4 and 6 (issue #19); childless
+/// entries omit tags 22/23 and top-level entries omit tag 21, exactly as
+/// kindlegen does (the control byte marks them absent). Emitting one node
+/// per spine item tiles the whole book so the device's reading-position /
+/// progress bar advances across every chapter, and the node labels
+/// populate the device table-of-contents. The fragment id in tag 6 is the
+/// node's spine index (one fragment per spine item).
+fn build_ncx_indx(title: &str, entries: &[NcxIndexEntry]) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
     let mut ncx_cncx = CncxBuilder::new();
 
-    // 5 tags matching kindlegen's NCX layout:
-    //   tag 1: offset (1 val, mask 0x01)
-    //   tag 2: length (1 val, mask 0x02)
-    //   tag 3: CNCX label offset (1 val, mask 0x04)
-    //   tag 4: depth (1 val, mask 0x08)
-    //   tag 6: pos_fid (2 vals, mask 0x10)
-    let tag_defs = [
+    let hierarchical = entries.iter().any(|e| e.depth > 0);
+
+    let flat_tag_defs = [
         TagMeta {
             number: 1,
             values_per_entry: 1,
@@ -1636,20 +1967,75 @@ fn build_ncx_indx(title: &str, nodes: &[NcxNode]) -> (Vec<Vec<u8>>, Vec<Vec<u8>>
             mask: 0x10,
         },
     ];
-    let tagx = build_tagx(&[
-        (1, 1, 0x01),
-        (2, 1, 0x02),
-        (3, 1, 0x04),
-        (4, 1, 0x08),
-        (6, 2, 0x10),
-    ]);
+    let deep_tag_defs = [
+        TagMeta {
+            number: 1,
+            values_per_entry: 1,
+            mask: 0x01,
+        },
+        TagMeta {
+            number: 2,
+            values_per_entry: 1,
+            mask: 0x02,
+        },
+        TagMeta {
+            number: 3,
+            values_per_entry: 1,
+            mask: 0x04,
+        },
+        TagMeta {
+            number: 4,
+            values_per_entry: 1,
+            mask: 0x08,
+        },
+        TagMeta {
+            number: 21,
+            values_per_entry: 1,
+            mask: 0x10,
+        },
+        TagMeta {
+            number: 22,
+            values_per_entry: 1,
+            mask: 0x20,
+        },
+        TagMeta {
+            number: 23,
+            values_per_entry: 1,
+            mask: 0x40,
+        },
+        TagMeta {
+            number: 6,
+            values_per_entry: 2,
+            mask: 0x80,
+        },
+    ];
+    let tagx = if hierarchical {
+        build_tagx(&[
+            (1, 1, 0x01),
+            (2, 1, 0x02),
+            (3, 1, 0x04),
+            (4, 1, 0x08),
+            (21, 1, 0x10),
+            (22, 1, 0x20),
+            (23, 1, 0x40),
+            (6, 2, 0x80),
+        ])
+    } else {
+        build_tagx(&[
+            (1, 1, 0x01),
+            (2, 1, 0x02),
+            (3, 1, 0x04),
+            (4, 1, 0x08),
+            (6, 2, 0x10),
+        ])
+    };
 
     // Fall back to a single whole-book node if there are no sections.
-    if nodes.is_empty() {
+    if entries.is_empty() {
         let label_offset = ncx_cncx.add(title);
         let label = b"0";
         let values: [Vec<u32>; 5] = [vec![0], vec![0], vec![label_offset], vec![0], vec![0, 0]];
-        let entry = encode_indx_entry(label, &tag_defs, &values);
+        let entry = encode_indx_entry(label, &flat_tag_defs, &values);
         let data_record = build_indx_data_record(&[entry]);
         let ncx_cncx_count = ncx_cncx.record_count();
         let primary = build_indx_primary(&tagx, 1, 1, ncx_cncx_count, &[(label.to_vec(), 1u32)]);
@@ -1658,33 +2044,49 @@ fn build_ncx_indx(title: &str, nodes: &[NcxNode]) -> (Vec<Vec<u8>>, Vec<Vec<u8>>
 
     // Entry labels are fixed-width zero-padded decimal indices so they
     // sort correctly for the primary record's binary search.
-    let label_width = (nodes.len() - 1).to_string().len();
-    let mut entries: Vec<Vec<u8>> = Vec::with_capacity(nodes.len());
+    let label_width = (entries.len() - 1).to_string().len();
+    let mut encoded: Vec<Vec<u8>> = Vec::with_capacity(entries.len());
     let mut last_label: Vec<u8> = Vec::new();
-    for (i, node) in nodes.iter().enumerate() {
-        let label_offset = ncx_cncx.add(&node.label);
+    for (i, e) in entries.iter().enumerate() {
+        let label_offset = ncx_cncx.add(&e.label);
         let label = format!("{:0width$}", i, width = label_width).into_bytes();
-        let values: [Vec<u32>; 5] = [
-            vec![node.offset as u32],
-            vec![node.length as u32],
-            vec![label_offset],
-            vec![0], // flat depth
-            // pos_fid: (fragment id, byte offset of the target anchor
-            // within that fragment) - the Go To jump target.
-            vec![node.fid as u32, node.frag_off as u32],
-        ];
-        entries.push(encode_indx_entry(&label, &tag_defs, &values));
+        let opt = |v: Option<usize>| -> Vec<u32> { v.map(|x| vec![x as u32]).unwrap_or_default() };
+        // pos_fid: (fragment id, byte offset of the target anchor within
+        // that fragment) - the Go To jump target.
+        let pos_fid = vec![e.fid as u32, e.frag_off as u32];
+        if hierarchical {
+            let values: [Vec<u32>; 8] = [
+                vec![e.offset as u32],
+                vec![e.length as u32],
+                vec![label_offset],
+                vec![e.depth as u32],
+                opt(e.parent),
+                opt(e.first_child),
+                opt(e.last_child),
+                pos_fid,
+            ];
+            encoded.push(encode_indx_entry(&label, &deep_tag_defs, &values));
+        } else {
+            let values: [Vec<u32>; 5] = [
+                vec![e.offset as u32],
+                vec![e.length as u32],
+                vec![label_offset],
+                vec![0], // flat depth
+                pos_fid,
+            ];
+            encoded.push(encode_indx_entry(&label, &flat_tag_defs, &values));
+        }
         last_label = label;
     }
 
-    let data_record = build_indx_data_record(&entries);
+    let data_record = build_indx_data_record(&encoded);
     let ncx_cncx_count = ncx_cncx.record_count();
     let primary = build_indx_primary(
         &tagx,
         1,
-        nodes.len(),
+        entries.len(),
         ncx_cncx_count,
-        &[(last_label, nodes.len() as u32)],
+        &[(last_label, entries.len() as u32)],
     );
 
     (vec![primary, data_record], ncx_cncx.into_records())
@@ -1987,11 +2389,28 @@ mod tests {
         assert_eq!(u32::from_be_bytes(recs[0][52..56].try_into().unwrap()), 1);
     }
 
+    /// Flat entry table for TBS tests: node i covers
+    /// `[offsets[i], offsets[i+1])`, the last running to `html_length`.
+    fn flat_tbs_entries(offsets: &[usize], html_length: usize) -> Vec<TbsEntry> {
+        offsets
+            .iter()
+            .enumerate()
+            .map(|(i, &start)| TbsEntry {
+                index: i,
+                start,
+                length: offsets.get(i + 1).copied().unwrap_or(html_length) - start,
+                depth: 0,
+                parent: None,
+            })
+            .collect()
+    }
+
     #[test]
     fn kf8_trailer_has_tbs() {
         let text = b"<html><body>hello</body></html>";
         let html_len = text.len();
-        let (records, _) = compress_text_kf8(text, &[0], html_len);
+        let entries = flat_tbs_entries(&[0], html_len);
+        let (records, _) = compress_text_kf8(text, &entries, html_len, KF8_TBS_TYPE_FLAT);
         assert_eq!(records.len(), 1);
         // Trailing bytes: multibyte(0x00) then TBS. With one NCX node that
         // ends inside this (only) record, the TBS is the single-node form
@@ -2028,6 +2447,7 @@ mod tests {
         // explicitly (rec_start, rec_end) since the real build now uses
         // codepoint-aligned boundaries instead.
         const RS: usize = 4096;
+        let entries = flat_tbs_entries(&nodes, html_length);
         let expected: [(usize, &[u8]); 5] = [
             (0, &[0x86, 0x88, 0x02, 0x84]), // node0 completes + node1 starts (count 2)
             (1, &[0x8e, 0x88, 0x02, 0x84]), // node1 ends + node2 starts (count 2)
@@ -2036,12 +2456,117 @@ mod tests {
             (219, &[0xfa, 0x88, 0x83]),     // last node completes (single)
         ];
         for (rec, want) in expected {
-            let got = build_tbs_entry(rec * RS, (rec + 1) * RS, &nodes, html_length);
+            let got = build_tbs_entry(
+                rec * RS,
+                (rec + 1) * RS,
+                &entries,
+                html_length,
+                KF8_TBS_TYPE_FLAT,
+            );
             assert_eq!(
                 got, want,
                 "record {rec} TBS mismatch: got {got:02x?}, want {want:02x?}"
             );
         }
+    }
+
+    #[test]
+    fn tbs_reproduces_kindlegen_nested_book() {
+        // Authoritative ground truth for the hierarchical TBS (issue #19):
+        // kindlegen's KF8 output for a 3-level probe book (Preface /
+        // Volume One [Chapter One [Section 1.1, Section 1.2], Chapter Two]
+        // / Interlude / Volume Two [Chapter Three]). Entry table and all
+        // 35 per-record TBS byte strings decoded from the kindlegen MOBI;
+        // this algorithm must reproduce every record byte-for-byte.
+        // Entries are breadth-first numbered exactly as kindlegen's NCX:
+        //   (index, start, subtree length, depth, parent)
+        let table: [(usize, usize, usize, usize, Option<usize>); 9] = [
+            (0, 116, 15492, 0, None),       // Preface
+            (1, 15608, 78990, 0, None),     // Volume One
+            (2, 94598, 15732, 0, None),     // Interlude
+            (3, 110330, 31553, 0, None),    // Volume Two
+            (4, 31340, 47445, 1, Some(1)),  // Chapter One
+            (5, 78785, 15813, 1, Some(1)),  // Chapter Two
+            (6, 126106, 15777, 1, Some(3)), // Chapter Three
+            (7, 47155, 15815, 2, Some(4)),  // Section 1.1
+            (8, 62970, 15815, 2, Some(4)),  // Section 1.2
+        ];
+        let mut entries: Vec<TbsEntry> = table
+            .iter()
+            .map(|&(index, start, length, depth, parent)| TbsEntry {
+                index,
+                start,
+                length,
+                depth,
+                parent,
+            })
+            .collect();
+        entries.sort_by_key(|e| (e.start, e.depth));
+        let html_length = 141883;
+        const RS: usize = 4096;
+
+        // kindlegen's TBS content (before the backward-VWI length suffix)
+        // for text records 1..=35, hex-encoded.
+        let expected: [&str; 35] = [
+            "8285",
+            "838580",
+            "838580",
+            "868502",
+            "8b8580",
+            "8b8580",
+            "8b8580",
+            "8b8580b0",
+            "8a85b180",
+            "8a85b180",
+            "8a85b180",
+            "8a85b180b0",
+            "8a85b0b180",
+            "8a85b0b180",
+            "8a85b0b180",
+            "8a85b180b402",
+            "8a85b0c180",
+            "8a85b0c180",
+            "8a85b0c180",
+            "8b8580b0c0b8",
+            "8a85c180",
+            "8a85c180",
+            "8a85c180",
+            "8a85c0b8",
+            "938580",
+            "938580",
+            "968502",
+            "9b8580",
+            "9b8580",
+            "9b8580",
+            "9b8580b0",
+            "9a85b180",
+            "9a85b180",
+            "9a85b180",
+            "9a85b0",
+        ];
+        for (i, hex) in expected.iter().enumerate() {
+            let content: Vec<u8> = (0..hex.len())
+                .step_by(2)
+                .map(|k| u8::from_str_radix(&hex[k..k + 2], 16).unwrap())
+                .collect();
+            let want = encode_trailing_data(content);
+            let got = build_tbs_entry(
+                i * RS,
+                (i + 1) * RS,
+                &entries,
+                html_length,
+                KF8_TBS_TYPE_NESTED,
+            );
+            assert_eq!(
+                got,
+                want,
+                "text record {} TBS mismatch: got {:02x?}, want {:02x?}",
+                i + 1,
+                got,
+                want
+            );
+        }
+        println!("  \u{2713} nested TBS matches kindlegen across all 35 records");
     }
 
     #[test]
@@ -2129,18 +2654,32 @@ mod tests {
         );
     }
 
+    /// Resolve doc-order (offset, label, raw depth) triples into NCX
+    /// index entries, with fid/frag_off zeroed (irrelevant to these tests).
+    fn entries_for(
+        nodes: &[(usize, &str, Option<usize>)],
+        html_length: usize,
+    ) -> Vec<NcxIndexEntry> {
+        let nodes: Vec<NcxNode> = nodes
+            .iter()
+            .map(|&(offset, label, depth)| NcxNode {
+                offset,
+                label: label.to_string(),
+                fid: 0,
+                frag_off: 0,
+                depth,
+            })
+            .collect();
+        resolve_ncx_hierarchy(&nodes, html_length)
+    }
+
     #[test]
     fn ncx_indx_has_five_tags() {
         // NCX INDX must have 5 tags (offset, length, label, depth, pos_fid)
         // for Kindle firmware to render content. A 1-tag stub crashes the renderer.
-        let nodes = vec![NcxNode {
-            offset: 0,
-            length: 500,
-            label: "Test".to_string(),
-            fid: 0,
-            frag_off: 0,
-        }];
-        let (ncx_recs, ncx_cncx) = build_ncx_indx("Test", &nodes);
+        let entries = entries_for(&[(0, "Test", None)], 500);
+        assert_eq!(entries[0].length, 500, "single node spans the flow");
+        let (ncx_recs, ncx_cncx) = build_ncx_indx("Test", &entries);
 
         // Should produce primary + data records
         assert_eq!(ncx_recs.len(), 2, "NCX should have primary + data");
@@ -2180,14 +2719,8 @@ mod tests {
 
     #[test]
     fn ncx_cncx_contains_title() {
-        let nodes = vec![NcxNode {
-            offset: 0,
-            length: 500,
-            label: "My Comic Title".to_string(),
-            fid: 0,
-            frag_off: 0,
-        }];
-        let (_, ncx_cncx) = build_ncx_indx("My Comic Title", &nodes);
+        let entries = entries_for(&[(0, "My Comic Title", None)], 500);
+        let (_, ncx_cncx) = build_ncx_indx("My Comic Title", &entries);
         assert_eq!(ncx_cncx.len(), 1);
         // CNCX should contain the title with inverted VWI length prefix
         let cncx = &ncx_cncx[0];
@@ -2199,6 +2732,172 @@ mod tests {
             cncx[0]
         );
         assert_eq!(&cncx[1..1 + title.len()], title);
+    }
+
+    #[test]
+    fn hierarchy_resolves_bfs_numbering_and_subtree_lengths() {
+        // Doc order: Preface(0), Vol1(0), Ch1(1), S1(2), S2(2), Ch2(1),
+        // unnamed continuation file (None -> inherits depth 1), Vol2(0),
+        // Ch3(1). Mirrors the kindlegen 3-level probe plus a fallback node.
+        let entries = entries_for(
+            &[
+                (0, "Preface", Some(0)),
+                (100, "Vol1", Some(0)),
+                (200, "Ch1", Some(1)),
+                (300, "S1", Some(2)),
+                (400, "S2", Some(2)),
+                (500, "Ch2", Some(1)),
+                (600, "Section 7", None),
+                (700, "Vol2", Some(0)),
+                (800, "Ch3", Some(1)),
+            ],
+            1000,
+        );
+        // Breadth-first order: depth 0 (Preface, Vol1, Vol2), depth 1
+        // (Ch1, Ch2, Section 7, Ch3), depth 2 (S1, S2).
+        let got: Vec<(
+            &str,
+            usize,
+            Option<usize>,
+            Option<usize>,
+            Option<usize>,
+            usize,
+        )> = entries
+            .iter()
+            .map(|e| {
+                (
+                    e.label.as_str(),
+                    e.depth,
+                    e.parent,
+                    e.first_child,
+                    e.last_child,
+                    e.length,
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                // label, depth, parent, first_child, last_child, length
+                ("Preface", 0, None, None, None, 100),
+                ("Vol1", 0, None, Some(3), Some(5), 600), // spans Ch1..Section 7
+                ("Vol2", 0, None, Some(6), Some(6), 300),
+                ("Ch1", 1, Some(1), Some(7), Some(8), 300), // spans S1+S2
+                ("Ch2", 1, Some(1), None, None, 100),
+                ("Section 7", 1, Some(1), None, None, 100), // inherited depth
+                ("Ch3", 1, Some(2), None, None, 200),
+                ("S1", 2, Some(3), None, None, 100),
+                ("S2", 2, Some(3), None, None, 100),
+            ]
+        );
+        println!("  \u{2713} hierarchy resolved to kindlegen BFS numbering");
+    }
+
+    #[test]
+    fn hierarchy_clamps_depth_jumps() {
+        // A malformed nav that jumps 0 -> 2 gets clamped to 0 -> 1, and a
+        // leading deep entry is forced to depth 0.
+        let entries = entries_for(
+            &[(0, "A", Some(2)), (100, "B", Some(2)), (200, "C", Some(0))],
+            300,
+        );
+        let by_label = |l: &str| entries.iter().find(|e| e.label == l).unwrap();
+        assert_eq!(by_label("A").depth, 0);
+        assert_eq!(by_label("B").depth, 1);
+        // BFS order is A, C (depth 0) then B (depth 1); B's parent is A.
+        assert_eq!(entries[0].label, "A");
+        assert_eq!(by_label("B").parent, Some(0));
+        assert_eq!(by_label("C").depth, 0);
+        println!("  \u{2713} depth jumps clamped");
+    }
+
+    #[test]
+    fn nested_ncx_indx_matches_kindlegen_layout() {
+        // Two volumes with two chapters each (the issue #19 shape). The
+        // NCX INDX must switch to kindlegen's 8-tag hierarchical TAGX and
+        // omit tag 21 on top-level entries / tags 22-23 on leaves.
+        let entries = entries_for(
+            &[
+                (0, "Volume One", Some(0)),
+                (100, "Chapter One", Some(1)),
+                (200, "Chapter Two", Some(1)),
+                (300, "Volume Two", Some(0)),
+                (400, "Chapter Three", Some(1)),
+                (500, "Chapter Four", Some(1)),
+            ],
+            600,
+        );
+        let (recs, _cncx) = build_ncx_indx("Test", &entries);
+
+        // TAGX: 8 tags in kindlegen's order with one control byte.
+        let primary = &recs[0];
+        let tagx_off = u32::from_be_bytes(primary[180..184].try_into().unwrap()) as usize;
+        assert_eq!(&primary[tagx_off..tagx_off + 4], b"TAGX");
+        let want_tags: [(u8, u8, u8); 8] = [
+            (1, 1, 0x01),
+            (2, 1, 0x02),
+            (3, 1, 0x04),
+            (4, 1, 0x08),
+            (21, 1, 0x10),
+            (22, 1, 0x20),
+            (23, 1, 0x40),
+            (6, 2, 0x80),
+        ];
+        for (i, &(num, vpe, mask)) in want_tags.iter().enumerate() {
+            let p = tagx_off + 12 + i * 4;
+            assert_eq!(
+                &primary[p..p + 4],
+                &[num, vpe, mask, 0],
+                "TAGX tag {} mismatch",
+                i
+            );
+        }
+
+        // Entries (BFS order: Vol1, Vol2, Ch1..Ch4). Walk the data record
+        // via its IDXT offsets and check each entry's control byte:
+        //   parents: tags 1,2,3,4 + 22,23 + 6      = 0xEF
+        //   leaves:  tags 1,2,3,4 + 21 + 6         = 0x9F
+        let data = &recs[1];
+        let idxt_off = u32::from_be_bytes(data[20..24].try_into().unwrap()) as usize;
+        let count = u32::from_be_bytes(data[24..28].try_into().unwrap()) as usize;
+        assert_eq!(count, 6);
+        let want_ctrl = [0xEFu8, 0xEF, 0x9F, 0x9F, 0x9F, 0x9F];
+        for i in 0..count {
+            let off = u16::from_be_bytes(
+                data[idxt_off + 4 + 2 * i..idxt_off + 6 + 2 * i]
+                    .try_into()
+                    .unwrap(),
+            ) as usize;
+            let label_len = data[off] as usize;
+            let ctrl = data[off + 1 + label_len];
+            assert_eq!(
+                ctrl, want_ctrl[i],
+                "entry {} control byte: got {:#04x}, want {:#04x}",
+                i, ctrl, want_ctrl[i]
+            );
+        }
+        println!("  \u{2713} nested NCX INDX uses kindlegen's 8-tag layout");
+    }
+
+    #[test]
+    fn flat_ncx_indx_layout_unchanged() {
+        // A flat book must keep the exact 5-tag TAGX (byte compatibility
+        // with every previously shipped kindling book).
+        let entries = entries_for(&[(0, "One", Some(0)), (100, "Two", Some(0))], 200);
+        let (recs, _) = build_ncx_indx("Test", &entries);
+        let primary = &recs[0];
+        let tagx_off = u32::from_be_bytes(primary[180..184].try_into().unwrap()) as usize;
+        let tagx_len =
+            u32::from_be_bytes(primary[tagx_off + 4..tagx_off + 8].try_into().unwrap()) as usize;
+        // 12-byte header + 5 tags + sentinel = 12 + 24
+        assert_eq!(
+            tagx_len,
+            12 + 6 * 4,
+            "flat TAGX must stay 5 tags + sentinel"
+        );
+        assert_eq!(&primary[tagx_off + 12..tagx_off + 16], &[1, 1, 0x01, 0]);
+        assert_eq!(&primary[tagx_off + 28..tagx_off + 32], &[6, 2, 0x10, 0]);
+        println!("  \u{2713} flat NCX INDX layout unchanged");
     }
 
     #[test]

@@ -985,6 +985,7 @@ mod tests {
         crate::mobi::build_mobi(
             &opf, &out, true, false, None, false, true, false, false, None, false, false, false,
             false, false, // fold_accents
+            false, // force_user_fonts
         )
         .expect("build should succeed");
 
@@ -1018,6 +1019,7 @@ mod tests {
         crate::mobi::build_mobi(
             &opf, &out, true, false, None, false, true, false, false, None, false, false, false,
             false, false, // fold_accents
+            false, // force_user_fonts
         )
         .unwrap();
 
@@ -1070,6 +1072,7 @@ mod tests {
         crate::mobi::build_mobi(
             &opf, &out, true, false, None, false, true, false, false, None, false, false, false,
             false, false, // fold_accents
+            false, // force_user_fonts
         )
         .unwrap();
 

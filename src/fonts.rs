@@ -210,6 +210,63 @@ pub fn rewrite_css_font_urls(
         .to_string()
 }
 
+/// Strip the CSS that locks Kindle's user font switching (issue #19).
+///
+/// The Kindle renderer treats any `font-family` the book CSS applies to
+/// its text as author intent and keeps it over the reader's Aa menu font
+/// choice — so a book whose stylesheet names fonts that are not even
+/// embedded (common in Chinese EPUBs: `font-family: "SimSun", "宋体",
+/// sans-serif`) redraws on a font switch but never changes face. When a
+/// book embeds no usable fonts there is nothing for those declarations to
+/// select, so dropping them costs nothing and returns font control to the
+/// reader (KOReader does the equivalent at render time).
+///
+/// Two transforms:
+///  1. `@font-face` rules are removed entirely — with no embedded font
+///     records their `src` URLs resolve to nothing on device.
+///  2. `font-family` declarations are removed, except that a declaration
+///     whose family list includes the generic `monospace` is rewritten to
+///     plain `font-family: monospace` so code blocks keep their fixed
+///     pitch (the generic resolves on device and carries real meaning;
+///     named families do not).
+pub fn strip_font_locking_css(css: &str) -> String {
+    let font_face_re = regex::Regex::new(r"(?is)@font-face\s*\{[^}]*\}").unwrap();
+    let css = font_face_re.replace_all(css, "");
+    let family_re = regex::Regex::new(r"(?is)font-family\s*:\s*([^;}]*)(;?)").unwrap();
+    family_re
+        .replace_all(&css, |caps: &regex::Captures| {
+            let families = caps.get(1).unwrap().as_str();
+            let keeps_monospace = families.split(',').any(|f| {
+                f.trim()
+                    .trim_matches(|c| c == '"' || c == '\'')
+                    .trim()
+                    .eq_ignore_ascii_case("monospace")
+            });
+            if keeps_monospace {
+                format!("font-family: monospace{}", caps.get(2).unwrap().as_str())
+            } else {
+                String::new()
+            }
+        })
+        .to_string()
+}
+
+/// Apply [`strip_font_locking_css`] to the contents of every inline
+/// `<style>` block in an HTML document, leaving everything else untouched.
+pub fn strip_font_locking_style_blocks(html: &str) -> String {
+    let style_re = regex::Regex::new(r"(?is)(<style\b[^>]*>)(.*?)(</style>)").unwrap();
+    style_re
+        .replace_all(html, |caps: &regex::Captures| {
+            format!(
+                "{}{}{}",
+                caps.get(1).unwrap().as_str(),
+                strip_font_locking_css(caps.get(2).unwrap().as_str()),
+                caps.get(3).unwrap().as_str()
+            )
+        })
+        .to_string()
+}
+
 /// 4-char base32 (0-9, A-V) encoding used by `kindle:embed` indices,
 /// mirroring the cover URI encoding in `mobi.rs`.
 fn encode_kindle_embed_base32(mut value: usize) -> String {
@@ -470,8 +527,7 @@ fn percent_decode_str(s: &str) -> String {
             let h1 = bytes.next();
             let h2 = bytes.next();
             if let (Some(h1), Some(h2)) = (h1, h2) {
-                if let Ok(byte) = u8::from_str_radix(&format!("{}{}", h1 as char, h2 as char), 16)
-                {
+                if let Ok(byte) = u8::from_str_radix(&format!("{}{}", h1 as char, h2 as char), 16) {
                     out.push(byte);
                     continue;
                 }
@@ -504,15 +560,15 @@ mod font_tests {
         assert_eq!(
             sha1(b"abc"),
             [
-                0xa9, 0x99, 0x3e, 0x36, 0x47, 0x06, 0x81, 0x6a, 0xba, 0x3e, 0x25, 0x71, 0x78,
-                0x50, 0xc2, 0x6c, 0x9c, 0xd0, 0xd8, 0x9d
+                0xa9, 0x99, 0x3e, 0x36, 0x47, 0x06, 0x81, 0x6a, 0xba, 0x3e, 0x25, 0x71, 0x78, 0x50,
+                0xc2, 0x6c, 0x9c, 0xd0, 0xd8, 0x9d
             ]
         );
         assert_eq!(
             sha1(b""),
             [
-                0xda, 0x39, 0xa3, 0xee, 0x5e, 0x6b, 0x4b, 0x0d, 0x32, 0x55, 0xbf, 0xef, 0x95,
-                0x60, 0x18, 0x90, 0xaf, 0xd8, 0x07, 0x09
+                0xda, 0x39, 0xa3, 0xee, 0x5e, 0x6b, 0x4b, 0x0d, 0x32, 0x55, 0xbf, 0xef, 0x95, 0x60,
+                0x18, 0x90, 0xaf, 0xd8, 0x07, 0x09
             ]
         );
         println!("  \u{2713} SHA-1 matches RFC 3174 test vectors");
@@ -611,6 +667,72 @@ mod font_tests {
             out
         );
         println!("  \u{2713} @font-face urls rewritten to kindle:embed");
+    }
+
+    #[test]
+    fn font_family_stripped_when_no_fonts_embedded() {
+        let css = r#"body {
+    font-family: "SimSun", "STSong", "Arial", sans-serif;
+    line-height: 1.5;
+}
+.chapter-title { font-family: "SimHei", "黑体", "Arial", sans-serif }
+pre, code { font-family: "Courier New", Courier, monospace; }
+@font-face {
+  font-family: "Dead";
+  src: url("../fonts/missing.ttf");
+}
+p { margin: 0 }"#;
+        let out = strip_font_locking_css(css);
+        assert!(
+            !out.contains("SimSun") && !out.contains("SimHei") && !out.contains("黑体"),
+            "named families must be stripped: {}",
+            out
+        );
+        assert!(
+            !out.contains("sans-serif"),
+            "generic fallbacks of named stacks must go too: {}",
+            out
+        );
+        assert!(
+            out.contains("font-family: monospace;"),
+            "monospace stacks keep their generic: {}",
+            out
+        );
+        assert!(
+            !out.contains("@font-face") && !out.contains("missing.ttf"),
+            "dead @font-face rules must be removed: {}",
+            out
+        );
+        assert!(
+            out.contains("line-height: 1.5") && out.contains("p { margin: 0 }"),
+            "unrelated CSS must survive: {}",
+            out
+        );
+        // Declaration closed by `}` instead of `;` is also stripped.
+        let out2 = strip_font_locking_css(".t{font-family:STKaiti}");
+        assert_eq!(out2, ".t{}");
+        println!("  \u{2713} font-family stripped from unembedded-font CSS");
+    }
+
+    #[test]
+    fn style_blocks_stripped_in_html() {
+        let html = r#"<html><head>
+<style type="text/css">
+body { font-family: "SimSun", serif; color: black; }
+</style></head>
+<body><p style="x">font-family: not-css-here</p></body></html>"#;
+        let out = strip_font_locking_style_blocks(html);
+        assert!(
+            !out.contains("SimSun"),
+            "style block font-family must be stripped: {}",
+            out
+        );
+        assert!(out.contains("color: black"), "other declarations survive");
+        assert!(
+            out.contains("font-family: not-css-here"),
+            "body text mentioning font-family is untouched"
+        );
+        println!("  \u{2713} inline <style> blocks stripped");
     }
 
     #[test]

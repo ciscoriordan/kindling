@@ -37,14 +37,14 @@ pub(crate) fn amazon_fold_pairs() -> Vec<(char, char)> {
         // Only the 0x80..=0x9F positions differ from Latin-1; the ones that
         // carry a letter fold in the SPL table are listed here.
         let cp: u32 = match b {
-            0x83 => 0x0192, // ƒ
-            0x8A => 0x0160, // Š
-            0x8C => 0x0152, // Œ
-            0x8E => 0x017D, // Ž
-            0x9A => 0x0161, // š
-            0x9C => 0x0153, // œ
-            0x9E => 0x017E, // ž
-            0x9F => 0x0178, // Ÿ
+            0x83 => 0x0192,             // ƒ
+            0x8A => 0x0160,             // Š
+            0x8C => 0x0152,             // Œ
+            0x8E => 0x017D,             // Ž
+            0x9A => 0x0161,             // š
+            0x9C => 0x0153,             // œ
+            0x9E => 0x017E,             // ž
+            0x9F => 0x0178,             // Ÿ
             0x80..=0x9F => return None, // undefined / non-letter cp1252 slot
             other => other as u32,
         };

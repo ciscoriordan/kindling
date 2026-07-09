@@ -521,6 +521,7 @@ pub fn build_comic_with_options(
         options.kindlegen_parity,
         false, // strict_accents (dictionary-only flag, no effect on comics)
         false, // fold_accents (dictionary-only flag, no effect on comics)
+        false, // force_user_fonts (comic pages carry no body text CSS)
     );
 
     // Step 6: Clean up temp dirs

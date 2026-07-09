@@ -19,6 +19,11 @@ pub struct NavPoint {
     pub fragment: Option<String>,
     /// Display label.
     pub label: String,
+    /// Nesting depth in the nav document (0 = top level). Comes from
+    /// nested `<ol>` levels in the EPUB 3 nav document or nested
+    /// `<navPoint>` elements in the NCX, and drives the hierarchical
+    /// (volume/chapter) on-device TOC (issue #19).
+    pub depth: usize,
 }
 
 /// Parse the EPUB navigation document declared in the OPF manifest and
@@ -82,8 +87,11 @@ fn parse_nav_xhtml(content: &str, nav_dir: &str) -> Vec<NavPoint> {
     // Depth inside the matched <nav> element (0 = outside).
     let mut nav_depth: usize = 0;
     let mut in_toc_nav = false;
+    // Nesting level of <ol> elements inside the TOC nav; an <a> inside the
+    // first <ol> is a top-level (depth 0) entry.
+    let mut ol_depth: usize = 0;
     // Set while collecting the text of an <a> inside the TOC nav.
-    let mut current: Option<(String, Option<String>, String)> = None;
+    let mut current: Option<(String, Option<String>, String, usize)> = None;
     let mut saw_marked_toc = false;
     let mut buf = Vec::new();
 
@@ -107,10 +115,14 @@ fn parse_nav_xhtml(content: &str, nav_dir: &str) -> Vec<NavPoint> {
                         points.clear();
                         in_toc_nav = true;
                         nav_depth = 1;
+                        ol_depth = 0;
                     } else if !saw_marked_toc {
                         in_toc_nav = true;
                         nav_depth = 1;
+                        ol_depth = 0;
                     }
+                } else if name == "ol" && in_toc_nav {
+                    ol_depth += 1;
                 } else if name == "a" && in_toc_nav && current.is_none() {
                     let href = e
                         .attributes()
@@ -120,12 +132,12 @@ fn parse_nav_xhtml(content: &str, nav_dir: &str) -> Vec<NavPoint> {
                         .unwrap_or_default();
                     if !href.is_empty() && !is_external_href(&href) {
                         let (file, frag) = resolve_href(nav_dir, &href);
-                        current = Some((file, frag, String::new()));
+                        current = Some((file, frag, String::new(), ol_depth.saturating_sub(1)));
                     }
                 }
             }
             Ok(Event::Text(ref e)) => {
-                if let Some((_, _, label)) = current.as_mut() {
+                if let Some((_, _, label, _)) = current.as_mut() {
                     let text = e
                         .unescape()
                         .map(|t| t.to_string())
@@ -136,16 +148,19 @@ fn parse_nav_xhtml(content: &str, nav_dir: &str) -> Vec<NavPoint> {
             Ok(Event::End(ref e)) => {
                 let name = local_name_lower(e.name().as_ref());
                 if name == "a" {
-                    if let Some((file, frag, label)) = current.take() {
+                    if let Some((file, frag, label, depth)) = current.take() {
                         let label = collapse_whitespace(&label);
                         if !label.is_empty() && !file.is_empty() {
                             points.push(NavPoint {
                                 file_href: file,
                                 fragment: frag,
                                 label,
+                                depth,
                             });
                         }
                     }
+                } else if name == "ol" && in_toc_nav {
+                    ol_depth = ol_depth.saturating_sub(1);
                 } else if name == "nav" && nav_depth > 0 {
                     nav_depth -= 1;
                     if nav_depth == 0 {
@@ -171,6 +186,8 @@ fn parse_toc_ncx(content: &str, ncx_dir: &str) -> Vec<NavPoint> {
 
     let mut points = Vec::new();
     let mut in_nav_map = false;
+    // Nesting level of open <navPoint> elements (1 = top level).
+    let mut navpoint_depth: usize = 0;
     // Pending label text awaiting its <content src>; navLabel precedes
     // content inside a navPoint per the NCX spec.
     let mut pending_label: Option<String> = None;
@@ -179,11 +196,17 @@ fn parse_toc_ncx(content: &str, ncx_dir: &str) -> Vec<NavPoint> {
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+            Ok(ref ev @ Event::Start(ref e)) | Ok(ref ev @ Event::Empty(ref e)) => {
                 let name = local_name_lower(e.name().as_ref());
                 match name.as_str() {
                     "navmap" => in_nav_map = true,
                     "navpoint" if in_nav_map => {
+                        // Only a real start tag opens a nesting level; a
+                        // self-closing <navPoint/> has no matching end tag
+                        // (and cannot carry a label/content anyway).
+                        if matches!(ev, Event::Start(_)) {
+                            navpoint_depth += 1;
+                        }
                         pending_label = None;
                     }
                     "text" if in_nav_map => {
@@ -208,6 +231,7 @@ fn parse_toc_ncx(content: &str, ncx_dir: &str) -> Vec<NavPoint> {
                                         file_href: file,
                                         fragment: frag,
                                         label,
+                                        depth: navpoint_depth.saturating_sub(1),
                                     });
                                 }
                             }
@@ -231,6 +255,9 @@ fn parse_toc_ncx(content: &str, ncx_dir: &str) -> Vec<NavPoint> {
                 let name = local_name_lower(e.name().as_ref());
                 match name.as_str() {
                     "navmap" => in_nav_map = false,
+                    "navpoint" if in_nav_map => {
+                        navpoint_depth = navpoint_depth.saturating_sub(1);
+                    }
                     "text" => in_text = false,
                     _ => {}
                 }
@@ -342,8 +369,7 @@ fn percent_decode_str(s: &str) -> String {
             let h1 = bytes.next();
             let h2 = bytes.next();
             if let (Some(h1), Some(h2)) = (h1, h2) {
-                if let Ok(byte) = u8::from_str_radix(&format!("{}{}", h1 as char, h2 as char), 16)
-                {
+                if let Ok(byte) = u8::from_str_radix(&format!("{}{}", h1 as char, h2 as char), 16) {
                     out.push(byte);
                     continue;
                 }
@@ -385,12 +411,45 @@ mod nav_tests {
         assert_eq!(points[0].file_href, "OEBPS/ch1.xhtml");
         assert_eq!(points[0].fragment, None);
         assert_eq!(points[0].label, "第一章 起风了");
+        assert_eq!(points[0].depth, 0);
         assert_eq!(points[1].file_href, "OEBPS/ch2.xhtml");
         assert_eq!(points[1].fragment.as_deref(), Some("part2"));
         assert_eq!(points[1].label, "Chapter Two");
         assert_eq!(points[2].file_href, "text/ch3.xhtml");
         assert_eq!(points[2].label, "Chapter & Three");
         println!("  \u{2713} EPUB3 nav TOC parsed: {} entries", points.len());
+    }
+
+    #[test]
+    fn parses_nested_epub3_nav_depths() {
+        let nav = r#"<html xmlns:epub="http://www.idpf.org/2007/ops"><body>
+<nav epub:type="toc">
+<ol>
+  <li><a href="vol1.xhtml">第一卷</a>
+    <ol>
+      <li><a href="ch01.xhtml">第一章 序章</a>
+        <ol><li><a href="s1.xhtml">一节</a></li></ol>
+      </li>
+      <li><a href="ch02.xhtml">第二章 启程</a></li>
+    </ol>
+  </li>
+  <li><a href="vol2.xhtml">第二卷</a></li>
+</ol>
+</nav>
+</body></html>"#;
+        let points = parse_nav_xhtml(nav, "");
+        let got: Vec<(&str, usize)> = points.iter().map(|p| (p.label.as_str(), p.depth)).collect();
+        assert_eq!(
+            got,
+            vec![
+                ("第一卷", 0),
+                ("第一章 序章", 1),
+                ("一节", 2),
+                ("第二章 启程", 1),
+                ("第二卷", 0),
+            ]
+        );
+        println!("  \u{2713} nested EPUB3 nav depths parsed");
     }
 
     #[test]
@@ -410,11 +469,17 @@ mod nav_tests {
         assert_eq!(points.len(), 3);
         assert_eq!(points[0].label, "One");
         assert_eq!(points[0].file_href, "ch1.xhtml");
+        assert_eq!(points[0].depth, 0);
         assert_eq!(points[1].label, "One A");
         assert_eq!(points[1].fragment.as_deref(), Some("a"));
+        assert_eq!(points[1].depth, 1);
         assert_eq!(points[2].label, "Two & more");
         assert_eq!(points[2].file_href, "sub/ch2.xhtml");
-        println!("  \u{2713} EPUB2 NCX navMap parsed: {} entries", points.len());
+        assert_eq!(points[2].depth, 0);
+        println!(
+            "  \u{2713} EPUB2 NCX navMap parsed: {} entries",
+            points.len()
+        );
     }
 
     #[test]
@@ -424,11 +489,13 @@ mod nav_tests {
                 file_href: "text/第一章.xhtml".to_string(),
                 fragment: None,
                 label: "第一章".to_string(),
+                depth: 0,
             },
             NavPoint {
                 file_href: "text/ch2.xhtml".to_string(),
                 fragment: Some("x".to_string()),
                 label: "Two".to_string(),
+                depth: 0,
             },
         ];
         let spine = vec![

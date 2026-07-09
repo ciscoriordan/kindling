@@ -254,6 +254,7 @@ mod tests {
             false, // kindlegen_parity
             false, // strict_accents
             false, // fold_accents
+            false, // force_user_fonts
         )
         .expect("build_mobi failed");
         fs::read(&output_path).expect("could not read output MOBI")
@@ -590,7 +591,7 @@ mod tests {
             let output = dir.join("output.mobi");
             mobi::build_mobi(
                 &opf, &output, true, false, None, false, false, false, false, None, false, false,
-                false, strict, fold,
+                false, strict, fold, false,
             )
             .expect("build_mobi failed");
             fs::read(&output).unwrap()
@@ -685,7 +686,8 @@ mod tests {
             let output = dir.join("output.mobi");
             mobi::build_mobi(
                 &opf, &output, true, false, None, false, false, false, false, None, false, false,
-                false, false, true, // fold_accents (so the blob would embed for Latin)
+                false, false, true,  // fold_accents (so the blob would embed for Latin)
+                false, // force_user_fonts
             )
             .expect("build_mobi failed");
             fs::read(&output).unwrap()
@@ -887,6 +889,7 @@ mod tests {
             false, // kindlegen_parity
             false, // strict_accents
             false, // fold_accents
+            false, // force_user_fonts
         )
         .expect("build_mobi (kf8_only) failed");
         fs::read(&output_path).expect("could not read output AZW3")
@@ -5274,6 +5277,7 @@ mod tests {
             false, // kindlegen_parity
             false, // strict_accents
             false, // fold_accents
+            false, // force_user_fonts
         )
         .expect("build_mobi with kindle_limits should succeed");
 
@@ -5332,6 +5336,7 @@ mod tests {
             false, // kindlegen_parity
             false, // strict_accents
             false, // fold_accents
+            false, // force_user_fonts
         )
         .expect("build_mobi with kindle_limits for book should succeed");
 
@@ -5364,6 +5369,7 @@ mod tests {
             false, // kindlegen_parity
             false, // strict_accents
             false, // fold_accents
+            false, // force_user_fonts
         )
         .expect("build_mobi without kindle_limits should succeed");
 
@@ -5500,6 +5506,7 @@ mod tests {
             false, // kindlegen_parity
             false, // strict_accents
             false, // fold_accents
+            false, // force_user_fonts
         )
         .expect("build_mobi with kindle_limits should succeed");
 
@@ -5617,6 +5624,7 @@ mod tests {
             false, // kindlegen_parity
             false, // strict_accents
             false, // fold_accents
+            false, // force_user_fonts
         )
         .expect("build_mobi with kindle_limits failed");
         fs::read(&output_path).expect("could not read output MOBI")
@@ -6238,6 +6246,7 @@ mod tests {
             false, // kindlegen_parity
             false, // strict_accents
             false, // fold_accents
+            false, // force_user_fonts
         )
         .expect("compressed build_mobi failed");
         let data_comp = fs::read(&output_comp).expect("could not read compressed MOBI");
@@ -8307,6 +8316,7 @@ mod tests {
         mobi::build_mobi(
             &opf_c, &output_c, false, false, None, false, false, false, false, None, false, false,
             false, false, false, // fold_accents
+            false, // force_user_fonts
         )
         .expect("compressed build failed");
         let data_c = fs::read(&output_c).unwrap();
@@ -9790,6 +9800,7 @@ mod tests {
         mobi::build_mobi(
             &opf, &output, true, false, None, false, false, false, false, None, false, false,
             false, false, false, // fold_accents
+            false, // force_user_fonts
         )
         .expect("build should succeed for clean OPF");
         assert!(output.exists(), "MOBI output file must exist");
@@ -10309,6 +10320,7 @@ mod tests {
             false, // kindlegen_parity
             false, // strict_accents
             false, // fold_accents
+            false, // force_user_fonts
         )
         .expect("build with self_check enabled should succeed");
 

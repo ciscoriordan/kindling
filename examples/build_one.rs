@@ -29,6 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         false, // kindlegen_parity (byte-for-byte kindlegen shape; only the comic path uses it)
         false, // strict_accents (dictionary-only; suppresses ORDT/SPL collation blob)
         false, // fold_accents
+        false, // force_user_fonts
     )?;
 
     kindling::epub::cleanup_temp_dir(&temp_dir);

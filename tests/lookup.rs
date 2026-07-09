@@ -109,5 +109,8 @@ fn japanese_literal_match() {
     build("ja", &out);
     let data = std::fs::read(&out).unwrap();
     assert!(lookup(&data, "水").is_some(), "kanji headword resolves");
-    assert!(lookup(&data, "存在しない語").is_none(), "non-headword misses");
+    assert!(
+        lookup(&data, "存在しない語").is_none(),
+        "non-headword misses"
+    );
 }
