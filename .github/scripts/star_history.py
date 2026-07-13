@@ -6,12 +6,14 @@ media type carries per-user starred_at timestamps) and renders a cumulative
 step chart as two self-contained SVGs (light and dark) with no external
 dependencies. Transient failures (secondary-rate-limit 403s, 429s, 5xx, and
 network stalls) are retried with capped backoff behind a per-request timeout.
-GitHub also intermittently 403s the Actions bot token on the stargazers list
-endpoint (github-actions[bot] is not treated as a repo admin/collaborator);
-when the fetch is ultimately unavailable the script exits 0 without writing
-SVGs, so the daily job stays green and the publish step keeps the last-good
-chart. Set STAR_HISTORY_TOKEN to a PAT with metadata:read for reliable
-updates.
+GitHub restricts the stargazers list endpoint to repo admins/collaborators (as
+of July 2026), which the Actions bot token (github-actions[bot]) is not, so it
+gets a permission 403; when the fetch is ultimately unavailable the script
+exits 0 without writing SVGs, so the daily job stays green and the publish step
+keeps the last-good chart. For reliable updates set STAR_HISTORY_TOKEN to a
+classic PAT with the public_repo scope; fine-grained PATs cannot list
+stargazers (GitHub exposes no fine-grained permission for it), and the token
+owner must be a repo admin/collaborator.
 
 Env vars: GITHUB_REPOSITORY (owner/repo), GITHUB_TOKEN.
 Usage: python3 star_history.py [output_dir]
@@ -355,12 +357,13 @@ def main():
     try:
         times = fetch_star_times(repo, token)
     except (urllib.error.URLError, OSError, RuntimeError) as e:
-        # GitHub intermittently 403s the Actions bot token on the stargazers
-        # list endpoint (github-actions[bot] is not treated as a repo
-        # admin/collaborator). Don't fail the daily job over a cosmetic chart:
+        # GitHub restricts the stargazers list endpoint to repo admins/
+        # collaborators (July 2026), which the Actions bot token is not, so it
+        # gets a permission 403. Don't fail the daily job over a cosmetic chart:
         # emit no SVGs and exit 0 so the publish step keeps the last-good chart
         # on the star-history branch. For reliable updates set STAR_HISTORY_TOKEN
-        # to a PAT with metadata:read (the workflow already prefers it).
+        # to a classic PAT with public_repo scope (the workflow already prefers
+        # it); fine-grained PATs cannot list stargazers.
         print(
             f"star-history: could not fetch stargazers ({e}); keeping the "
             f"last-good chart and exiting 0.",
