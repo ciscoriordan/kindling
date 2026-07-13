@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Generate light/dark star-history SVG charts for a GitHub repository.
 
-Fetches the full stargazer timeline via the GitHub REST API (requires a token
-with access to the repo; since June 2026 the stargazers list endpoint is
-limited to admins/collaborators, which the Actions GITHUB_TOKEN satisfies for
-the repository the workflow runs in) and renders a cumulative step chart as
-two self-contained SVGs (light and dark) with no external dependencies.
+Fetches the full stargazer timeline via the GitHub REST API (the star+json
+media type carries per-user starred_at timestamps) and renders a cumulative
+step chart as two self-contained SVGs (light and dark) with no external
+dependencies. The Actions GITHUB_TOKEN can read this for the repo it runs in;
+transient secondary-rate-limit 403s, 429s, 5xx, and network stalls are retried
+with capped backoff behind a per-request timeout, so an occasional hiccup no
+longer fails the daily job (the 2026-07-13 run 403'd instantly and the
+2026-07-09 run hung ~15 min before dying, both from a single unguarded call).
 
 Env vars: GITHUB_REPOSITORY (owner/repo), GITHUB_TOKEN.
 Usage: python3 star_history.py [output_dir]
@@ -14,11 +17,34 @@ Usage: python3 star_history.py [output_dir]
 import json
 import math
 import os
+import socket
 import sys
+import time
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
 API = "https://api.github.com"
+
+# Retry transient GitHub failures; fail fast on genuine 4xx (401/404/...).
+MAX_ATTEMPTS = 6
+REQUEST_TIMEOUT = 30  # seconds per HTTP request; caps any single stalled call
+MAX_BACKOFF = 120  # cap on any single wait; the daily cron retries anyway
+RETRYABLE_STATUS = {403, 429, 500, 502, 503, 504}
+
+
+def retry_delay(attempt, headers):
+    """Backoff seconds before a retry: honor Retry-After / X-RateLimit-Reset
+    when present, else exponential (2, 4, 8, ...), always capped at MAX_BACKOFF."""
+    if headers is not None:
+        retry_after = headers.get("Retry-After")
+        if retry_after and retry_after.isdigit():
+            return min(int(retry_after), MAX_BACKOFF)
+        if headers.get("X-RateLimit-Remaining") == "0":
+            reset = headers.get("X-RateLimit-Reset")
+            if reset and reset.isdigit():
+                return max(1, min(int(reset) - int(time.time()), MAX_BACKOFF))
+    return min(2 ** (attempt + 1), MAX_BACKOFF)
 
 
 def api_get(path, token):
@@ -31,8 +57,26 @@ def api_get(path, token):
             "User-Agent": "star-history-action",
         },
     )
-    with urllib.request.urlopen(req) as resp:
-        return json.load(resp)
+    for attempt in range(MAX_ATTEMPTS):
+        try:
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+                return json.load(resp)
+        except urllib.error.HTTPError as e:
+            if e.code not in RETRYABLE_STATUS or attempt == MAX_ATTEMPTS - 1:
+                raise
+            delay = retry_delay(attempt, e.headers)
+            reason = f"HTTP {e.code}"
+        except (urllib.error.URLError, TimeoutError, socket.timeout) as e:
+            if attempt == MAX_ATTEMPTS - 1:
+                raise
+            delay = retry_delay(attempt, None)
+            reason = f"network error ({e})"
+        print(
+            f"{reason} on {path}; retry {attempt + 1}/{MAX_ATTEMPTS - 1} in {delay}s",
+            file=sys.stderr,
+        )
+        time.sleep(delay)
+    raise RuntimeError(f"exhausted retries for {path}")  # unreachable
 
 
 def fetch_star_times(repo, token):
