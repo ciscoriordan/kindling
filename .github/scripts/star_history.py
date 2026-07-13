@@ -50,6 +50,19 @@ def retry_delay(attempt, headers):
     return min(2 ** (attempt + 1), MAX_BACKOFF)
 
 
+def is_rate_limited(headers):
+    """True if a 403/429 carries a rate-limit signal (Retry-After, or a spent
+    X-RateLimit budget), so retrying can help. False for a plain permission
+    denial (full budget, no Retry-After) - e.g. the Actions bot token being
+    refused on the stargazers endpoint - where retrying is pointless."""
+    if headers is None:
+        return False
+    return (
+        headers.get("Retry-After") is not None
+        or headers.get("X-RateLimit-Remaining") == "0"
+    )
+
+
 def describe_github_error(e):
     """Format a GitHub 403/429 for diagnosis: the rate-limit headers, request
     id, and response body, plus a best-guess classification. A rate-limit
@@ -78,6 +91,8 @@ def describe_github_error(e):
     elif (
         "not accessible by integration" in b
         or "resource not accessible" in b
+        or "do not have permission" in b
+        or "permission to view" in b
         or "must have" in b
     ):
         likely = "permission/policy (bot identity not allowed)"
@@ -109,7 +124,14 @@ def api_get(path, token):
                     f"GitHub {e.code} on {path}: {describe_github_error(e)}",
                     file=sys.stderr,
                 )
-            if e.code not in RETRYABLE_STATUS or attempt == MAX_ATTEMPTS - 1:
+            retryable = e.code in RETRYABLE_STATUS
+            # A 403 with a full budget and no Retry-After is a permission denial
+            # (the Actions bot token is refused on the stargazers endpoint);
+            # retrying can't help, so fail fast. Rate-limit 403s, 429s, and 5xx
+            # still retry.
+            if e.code == 403 and not is_rate_limited(e.headers):
+                retryable = False
+            if not retryable or attempt == MAX_ATTEMPTS - 1:
                 raise
             delay = retry_delay(attempt, e.headers)
             reason = f"HTTP {e.code}"
