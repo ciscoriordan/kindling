@@ -715,6 +715,54 @@ mod validate {
     }
 
     #[test]
+    fn build_non_dict_mobi_ext_flag_produces_kf8_only_mobi() {
+        // issue #20: `--mobi-ext` writes the modern KF8-only bytes under a
+        // `.mobi` filename (NOT the dual MOBI7+KF8 that `--legacy-mobi`
+        // produces), so USB-sideloaded library covers show. Assert we get a
+        // `.mobi` and no `.azw3`, and that it is smaller than the dual-format
+        // `--legacy-mobi` build, which carries the extra MOBI7/KF7 layer.
+        let (tmp, opf) = stage_fixture("clean_book", "clean_book.opf");
+
+        let out = run_build(&["--mobi-ext", opf.to_str().unwrap()]);
+        assert!(
+            out.status.success(),
+            "build clean_book --mobi-ext should succeed\n{}",
+            dump(&out)
+        );
+        let mobi = tmp.path().join("clean_book.mobi");
+        let azw3 = tmp.path().join("clean_book.azw3");
+        assert!(
+            mobi.exists(),
+            "expected .mobi output with --mobi-ext at {:?}\n{}",
+            mobi,
+            dump(&out)
+        );
+        assert!(
+            !azw3.exists(),
+            "did not expect .azw3 with --mobi-ext at {:?}",
+            azw3
+        );
+        let kf8_only_len = std::fs::metadata(&mobi).unwrap().len();
+        std::fs::remove_file(&mobi).unwrap();
+
+        // Same fixture, dual-format: must be larger (it also carries KF7).
+        let legacy = run_build(&["--legacy-mobi", opf.to_str().unwrap()]);
+        assert!(
+            legacy.status.success(),
+            "build clean_book --legacy-mobi should succeed\n{}",
+            dump(&legacy)
+        );
+        let dual_len = std::fs::metadata(&mobi).unwrap().len();
+        assert!(
+            kf8_only_len < dual_len,
+            "--mobi-ext KF8-only ({} bytes) should be smaller than --legacy-mobi \
+             dual-format ({} bytes); --mobi-ext must not add the MOBI7/KF7 layer",
+            kf8_only_len,
+            dual_len
+        );
+    }
+
+    #[test]
     fn comic_defaults_to_azw3_from_cbr_fixture() {
         // The repo ships a small CBR fixture at tests/fixtures/test_comic.cbr.
         // Copy it into a temp dir and build with no -o to assert the default

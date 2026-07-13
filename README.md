@@ -24,8 +24,8 @@ Pre-built binaries for Mac (Apple Silicon, Intel), Linux (x86_64), and Windows (
 ## Features
 
 - **Dictionaries**: Full orth index with headword + inflection lookup, ORDT/SPL sort tables, generated CJK and Arabic collation tables, fontsignature
-- **Books**: EPUB or OPF input, embedded images, embedded fonts (with IDPF/Adobe deobfuscation), hierarchical on-device TOC from the EPUB nav document (toc.ncx / nav.xhtml, including `file#anchor` entries and nested volume/chapter levels), user font switching kept working by stripping font-family from stylesheets, `<style>` blocks, and inline `style="..."` attributes when no fonts are embedded (`--force-user-fonts` to strip always), KF8-only (.azw3) by default with legacy dual-format (MOBI7+KF8) available via `--legacy-mobi`, HD image container, fixed-layout support
-- **Comics**: Image folder, CBZ, CBR, or EPUB input, device-specific resizing, spread splitting, margin cropping, auto-contrast, moire correction for color e-ink, manga RTL, webtoon with overlap fallback, Panel View, KF8-only (.azw3) by default, metadata overrides
+- **Books**: EPUB or OPF input, embedded images, embedded fonts (with IDPF/Adobe deobfuscation), hierarchical on-device TOC from the EPUB nav document (toc.ncx / nav.xhtml, including `file#anchor` entries and nested volume/chapter levels), user font switching kept working by stripping font-family from stylesheets, `<style>` blocks, and inline `style="..."` attributes when no fonts are embedded (`--force-user-fonts` to strip always), KF8-only (.azw3) by default with legacy dual-format (MOBI7+KF8) available via `--legacy-mobi` (or `--mobi-ext` to write the KF8-only bytes under a `.mobi` name so sideloaded library covers show, issue #20), HD image container, fixed-layout support
+- **Comics**: Image folder, CBZ, CBR, or EPUB input, device-specific resizing, spread splitting, margin cropping, auto-contrast, moire correction for color e-ink, manga RTL, webtoon with overlap fallback, Panel View, KF8-only (.azw3) by default (`--mobi-ext` for a `.mobi` name so sideloaded library covers show), metadata overrides
 - **StarDict export**: `kindling stardict` builds a four-file StarDict bundle (`.ifo` / `.idx` / `.dict` / `.syn`) from the same OPF or EPUB dictionary input as `kindling build`, for use with GoldenDict, GoldenDict-ng, KOReader, sdcv, and other non-Kindle dictionary readers (see [StarDict export](#stardict-export))
 - **EPUB export**: `kindling epub2` and `kindling epub3` build a reflowable EPUB from the same OPF or EPUB input, conformant to EPUB 2.0.1 and EPUB 3.3 respectively (epubcheck-clean). EPUB2 is always a plain book; EPUB3 is a plain book by default and emits an EPUB Dictionaries and Glossaries layer (Search Key Map, `dc:type=dictionary`, `epub:type` semantics) when the input is a dictionary (see [EPUB export](#epub-export))
 - **EPUB repair**: `kindling repair` applies a small, byte-stable, idempotent set of structural fixes to an EPUB for cleaner Send-to-Kindle ingest (see [Repair](#repair))
@@ -146,6 +146,7 @@ Every `build` also runs the Kindle Publishing Guidelines validator as an automat
 kindling-cli build input.epub                          # output next to input as input.azw3 (KF8-only)
 kindling-cli build input.epub -o output.azw3           # explicit output path
 kindling-cli build input.epub --legacy-mobi            # opt into legacy dual MOBI7+KF8 (.mobi)
+kindling-cli build input.epub --mobi-ext               # KF8-only bytes as .mobi so sideloaded covers show (issue #20)
 kindling-cli build input.epub --no-hd-images           # skip HD image container
 kindling-cli build input.epub --no-embed-source        # smaller file, but breaks Kindle Previewer
 kindling-cli build input.epub --kindle-limits          # warn about HTML files exceeding 30 MB
@@ -163,7 +164,7 @@ Kindle's renderer keeps any `font-family` the book CSS names over the reader's A
 
 Fonts declared in the manifest (TTF/OTF) are embedded as KF8 FONT resource records, with `@font-face` `src: url(...)` in the stylesheets rewritten to the matching `kindle:embed` resource, so publisher fonts survive conversion. EPUB font obfuscation (both the IDPF and Adobe schemes declared in `META-INF/encryption.xml`) is undone at build time; the embedded output is zlib-deflated and unobfuscated, matching kindlegen's own FONT records. WOFF/WOFF2 fonts are skipped with a warning since Kindle cannot render them. Note that the Kindle language also matters for on-device font choice: a book without a `<dc:language>` (or with an unrecognized tag) is treated as English, which hides the CJK font menu on Chinese/Japanese books, so kindling warns when that happens.
 
-Non-dictionary builds default to KF8-only `.azw3`, because Amazon deprecated MOBI for Send-to-Kindle in August 2022 and modern Kindles prefer KF8-only. Dictionaries continue to build as dual-format MOBI7+KF8 `.mobi`, because Kindle's lookup popup requires the MOBI7 INDX structure and KF8 has no equivalent. Pass `--legacy-mobi` on a book build to opt back into the old dual-format `.mobi` output for pre-2012 Kindles; the flag is a no-op on dictionary builds. If you pass `-o foo.mobi` or `-o foo.azw3` explicitly, kindling respects whatever extension you chose.
+Non-dictionary builds default to KF8-only `.azw3`, because Amazon deprecated MOBI for Send-to-Kindle in August 2022 and modern Kindles prefer KF8-only. Dictionaries continue to build as dual-format MOBI7+KF8 `.mobi`, because Kindle's lookup popup requires the MOBI7 INDX structure and KF8 has no equivalent. Pass `--legacy-mobi` on a book build to opt back into the old dual-format `.mobi` output for pre-2012 Kindles; the flag is a no-op on dictionary builds. If you pass `-o foo.mobi` or `-o foo.azw3` explicitly, kindling respects whatever extension you chose. One caveat if you sideload over USB: a `.azw3` shows no home-screen library cover on current firmware, because the tile is cached only via the legacy `.mobi` ingest path (issue #20). Pass `--mobi-ext` to write the same KF8-only bytes under a `.mobi` name and the cover shows; see [Known Kindle firmware issues](#known-kindle-firmware-issues).
 
 Every `build` runs the Kindle Publishing Guidelines validator automatically before writing the MOBI. Findings are printed with severity, rule id, and file:line; the build is aborted on any error (warnings are advisory). Pass `--no-validate` to skip pre-flight entirely.
 
@@ -180,10 +181,11 @@ kindling-cli comic input.cbz --title "My Comic" --language ja   # metadata overr
 kindling-cli comic input.cbz --doc-type ebok                    # appear under Books on Kindle
 kindling-cli comic input.cbz --cover 3                          # use page 3 as cover
 kindling-cli comic input.cbz --legacy-mobi                      # opt into legacy dual MOBI7+KF8 (.mobi)
+kindling-cli comic input.cbz --mobi-ext                         # KF8-only bytes as .mobi so sideloaded covers show (issue #20)
 kindling-cli comic input.cbz --embed-source                     # embed EPUB source (off by default, see note below)
 ```
 
-Comics default to KF8-only `.azw3` for the same reason books do: Amazon deprecated MOBI for Send-to-Kindle in August 2022, and the legacy MOBI7 section in dual-format files is at best wasted bytes on modern Kindles. `--legacy-mobi` is the escape hatch for pre-2012 devices. If you pass `-o foo.mobi` explicitly, kindling respects your extension choice.
+Comics default to KF8-only `.azw3` for the same reason books do: Amazon deprecated MOBI for Send-to-Kindle in August 2022, and the legacy MOBI7 section in dual-format files is at best wasted bytes on modern Kindles. `--legacy-mobi` is the escape hatch for pre-2012 devices. If you pass `-o foo.mobi` explicitly, kindling respects your extension choice. Like books, a sideloaded `.azw3` shows no home-screen library cover on current firmware; pass `--mobi-ext` to emit the KF8-only bytes under a `.mobi` name so the cover shows (issue #20).
 
 Comic builds do not embed the intermediate EPUB as a SRCS record by default (this changed in v0.7.7). Embedding duplicates every page image as a zipped EPUB inside the MOBI, which for a large comic produces a single PalmDB record over 100 MB. Kindle devices index the resulting file but then fail to open it with "Unable to Open Item". Pass `--embed-source` only when you need to round-trip through Kindle Previewer.
 
@@ -630,6 +632,14 @@ Parity fixture contents:
 ## Known Kindle firmware issues
 
 These are Amazon firmware bugs, not kindling bugs, but they affect sideloaded MOBI/AZW3 files and users should be aware of them.
+
+### Sideloaded `.azw3` files show no library cover
+
+When you copy a book to a Kindle over USB, the home-screen tile is drawn from a per-book thumbnail the firmware caches during indexing, not live from the file's cover. On current firmware (verified on Paperwhite 3 / 5.16 and Paperwhite 5 / 5.18, issue #20) that cache is populated from the embedded cover only for files with a `.mobi` extension; a KF8-only `.azw3` shows a gray placeholder even though its EXTH cover records (129/201/202) are correct and the cover renders fine inside the book. Byte-identical content shows the cover as `.mobi` and not as `.azw3`, so the firmware keys on the extension, not on anything in the records.
+
+- Build with `--mobi-ext` to emit the same KF8-only bytes under a `.mobi` name (or pass `-o book.mobi`). Either restores the library cover on every KF8-capable Kindle; nothing is lost, since a KF8-only payload in a `.mobi` container reads normally on those devices.
+- `--legacy-mobi` also yields a `.mobi` (a true dual MOBI7+KF8) if you additionally want pre-2012 devices.
+- Stamping an ASIN plus `EBOK` does not help: with no matching Amazon purchase the cloud cover lookup fails (still gray), and the device may auto-delete the sideload on WiFi sync. Tagging `PDOC` can make an `.azw3` render its own cover, but any EXTH 501 value breaks reflowable-book home navigation (issue #15), so kindling does not do this.
 
 ### Blank pages on Kindle Scribe and Colorsoft
 

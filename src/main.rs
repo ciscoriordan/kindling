@@ -72,6 +72,17 @@ enum Commands {
         #[arg(long)]
         legacy_mobi: bool,
 
+        /// Emit KF8-only output with a .mobi extension instead of .azw3. The
+        /// bytes are identical modern KF8; only the filename changes. When a
+        /// file is sideloaded over USB, Kindle firmware populates the
+        /// home-screen library thumbnail from the embedded cover only via the
+        /// legacy .mobi ingest path, so a KF8-only .azw3 shows a gray tile
+        /// while the same bytes named .mobi show the cover (issue #20). Unlike
+        /// --legacy-mobi this adds no MOBI7/KF7 layer. Affects only the derived
+        /// output name; an explicit -o always wins.
+        #[arg(long)]
+        mobi_ext: bool,
+
         /// Deprecated no-op. KF8-only (.azw3) is now the default for
         /// non-dictionary builds; pass `--legacy-mobi` to opt back into the
         /// old dual MOBI7+KF8 behavior. Kept so existing scripts that pass
@@ -250,6 +261,15 @@ enum Commands {
         /// devices prefer KF8-only output.
         #[arg(long)]
         legacy_mobi: bool,
+
+        /// Emit KF8-only output with a .mobi extension instead of .azw3
+        /// (identical KF8 bytes, filename only). Restores the home-screen
+        /// library cover for USB-sideloaded files, which Kindle firmware
+        /// populates only via the legacy .mobi ingest path (issue #20). Unlike
+        /// --legacy-mobi this adds no MOBI7/KF7 layer; an explicit -o always
+        /// wins.
+        #[arg(long)]
+        mobi_ext: bool,
 
         /// Deprecated no-op. KF8-only (.azw3) is now the default for comics;
         /// pass `--legacy-mobi` to opt back into the old dual MOBI7+KF8
@@ -667,11 +687,18 @@ fn parse_kindlegen_args() -> (PathBuf, Option<String>, bool, bool, bool, bool) {
 /// format). If no output is specified, derive a default filename by
 /// replacing the input extension with `.azw3` for KF8-only builds or
 /// `.mobi` for dual-format (legacy MOBI7+KF8 and dictionary) builds.
-fn resolve_output_path(input: &PathBuf, output: Option<PathBuf>, kf8_only: bool) -> PathBuf {
+/// `mobi_ext` forces the `.mobi` extension for KF8-only builds too (same KF8
+/// bytes, filename only) so USB-sideloaded library covers show (issue #20).
+fn resolve_output_path(
+    input: &PathBuf,
+    output: Option<PathBuf>,
+    kf8_only: bool,
+    mobi_ext: bool,
+) -> PathBuf {
     match output {
         Some(p) => p,
         None => {
-            let ext = if kf8_only { "azw3" } else { "mobi" };
+            let ext = if kf8_only && !mobi_ext { "azw3" } else { "mobi" };
             input.with_extension(ext)
         }
     }
@@ -959,6 +986,7 @@ fn main() {
                 no_hd_images,
                 creator_tag,
                 legacy_mobi,
+                mobi_ext,
                 kf8_only,
                 kindle_limits,
                 no_kindle_limits,
@@ -1024,7 +1052,15 @@ fn main() {
                     true
                 };
 
-                let output_path = resolve_output_path(&input, output, effective_kf8_only);
+                let mobi_ext_applies = mobi_ext && effective_kf8_only && output.is_none();
+                let output_path =
+                    resolve_output_path(&input, output, effective_kf8_only, mobi_ext);
+                if mobi_ext_applies {
+                    eprintln!(
+                        "--mobi-ext: writing KF8-only output as .mobi so the \
+                         sideloaded library cover shows (issue #20)."
+                    );
+                }
                 do_build(
                     &input,
                     &output_path,
@@ -1067,6 +1103,7 @@ fn main() {
                 cover_fill,
                 panel_reading_order,
                 legacy_mobi,
+                mobi_ext,
                 kf8_only,
                 kindle_limits,
                 no_kindle_limits,
@@ -1109,13 +1146,24 @@ fn main() {
                     true
                 };
 
+                let mobi_ext_applies = mobi_ext && effective_kf8_only && output.is_none();
                 let output_path = match output {
                     Some(p) => p,
                     None => {
-                        let ext = if effective_kf8_only { "azw3" } else { "mobi" };
+                        let ext = if effective_kf8_only && !mobi_ext {
+                            "azw3"
+                        } else {
+                            "mobi"
+                        };
                         input.with_extension(ext)
                     }
                 };
+                if mobi_ext_applies {
+                    eprintln!(
+                        "--mobi-ext: writing KF8-only output as .mobi so the \
+                         sideloaded library cover shows (issue #20)."
+                    );
+                }
 
                 // Parse doc_type flag. Comics carry an explicit
                 // cde_content_type (they are fixed-layout and need a shelf
