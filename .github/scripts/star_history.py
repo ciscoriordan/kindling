@@ -50,6 +50,42 @@ def retry_delay(attempt, headers):
     return min(2 ** (attempt + 1), MAX_BACKOFF)
 
 
+def describe_github_error(e):
+    """Format a GitHub 403/429 for diagnosis: the rate-limit headers, request
+    id, and response body, plus a best-guess classification. A rate-limit
+    response carries X-RateLimit-*/Retry-After and a body that mentions a rate
+    limit; a policy/permission 403 for the Actions bot token carries no
+    rate-limit signal and a body like "Resource not accessible by
+    integration"."""
+    h = e.headers or {}
+    keys = [
+        "X-RateLimit-Remaining", "X-RateLimit-Limit", "X-RateLimit-Used",
+        "X-RateLimit-Resource", "X-RateLimit-Reset", "Retry-After",
+        "X-GitHub-Request-Id",
+    ]
+    hdr = " ".join(f"{k}={h.get(k)}" for k in keys if h.get(k) is not None)
+    try:
+        body = e.read().decode("utf-8", "replace").strip().replace("\n", " ")
+    except Exception:
+        body = ""
+    b = body.lower()
+    if (
+        "rate limit" in b
+        or h.get("Retry-After") is not None
+        or h.get("X-RateLimit-Remaining") == "0"
+    ):
+        likely = "rate limit"
+    elif (
+        "not accessible by integration" in b
+        or "resource not accessible" in b
+        or "must have" in b
+    ):
+        likely = "permission/policy (bot identity not allowed)"
+    else:
+        likely = "unclassified"
+    return f"[{hdr or 'no rate-limit headers'}] body={body[:200]!r} likely={likely}"
+
+
 def api_get(path, token):
     req = urllib.request.Request(
         API + path,
@@ -65,6 +101,14 @@ def api_get(path, token):
             with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
                 return json.load(resp)
         except urllib.error.HTTPError as e:
+            # Log the rate-limit headers + body so a rate-limit 403 can be told
+            # apart from a policy/permission 403. Do it for the terminal 403
+            # too (the raise below), since that is the one worth diagnosing.
+            if e.code in (403, 429):
+                print(
+                    f"GitHub {e.code} on {path}: {describe_github_error(e)}",
+                    file=sys.stderr,
+                )
             if e.code not in RETRYABLE_STATUS or attempt == MAX_ATTEMPTS - 1:
                 raise
             delay = retry_delay(attempt, e.headers)
