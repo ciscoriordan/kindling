@@ -4,11 +4,14 @@
 Fetches the full stargazer timeline via the GitHub REST API (the star+json
 media type carries per-user starred_at timestamps) and renders a cumulative
 step chart as two self-contained SVGs (light and dark) with no external
-dependencies. The Actions GITHUB_TOKEN can read this for the repo it runs in;
-transient secondary-rate-limit 403s, 429s, 5xx, and network stalls are retried
-with capped backoff behind a per-request timeout, so an occasional hiccup no
-longer fails the daily job (the 2026-07-13 run 403'd instantly and the
-2026-07-09 run hung ~15 min before dying, both from a single unguarded call).
+dependencies. Transient failures (secondary-rate-limit 403s, 429s, 5xx, and
+network stalls) are retried with capped backoff behind a per-request timeout.
+GitHub also intermittently 403s the Actions bot token on the stargazers list
+endpoint (github-actions[bot] is not treated as a repo admin/collaborator);
+when the fetch is ultimately unavailable the script exits 0 without writing
+SVGs, so the daily job stays green and the publish step keeps the last-good
+chart. Set STAR_HISTORY_TOKEN to a PAT with metadata:read for reliable
+updates.
 
 Env vars: GITHUB_REPOSITORY (owner/repo), GITHUB_TOKEN.
 Usage: python3 star_history.py [output_dir]
@@ -283,7 +286,22 @@ def main():
     repo = os.environ["GITHUB_REPOSITORY"]
     token = os.environ["GITHUB_TOKEN"]
 
-    times = fetch_star_times(repo, token)
+    try:
+        times = fetch_star_times(repo, token)
+    except (urllib.error.URLError, OSError, RuntimeError) as e:
+        # GitHub intermittently 403s the Actions bot token on the stargazers
+        # list endpoint (github-actions[bot] is not treated as a repo
+        # admin/collaborator). Don't fail the daily job over a cosmetic chart:
+        # emit no SVGs and exit 0 so the publish step keeps the last-good chart
+        # on the star-history branch. For reliable updates set STAR_HISTORY_TOKEN
+        # to a PAT with metadata:read (the workflow already prefers it).
+        print(
+            f"star-history: could not fetch stargazers ({e}); keeping the "
+            f"last-good chart and exiting 0.",
+            file=sys.stderr,
+        )
+        return
+
     # stargazers_count can differ slightly (deleted accounts); the timeline is
     # the chart's source of truth.
     total = len(times)

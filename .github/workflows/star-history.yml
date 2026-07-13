@@ -30,6 +30,10 @@ jobs:
 
       - name: Publish to star-history branch
         run: |
+          if [ ! -f out/star-history-light.svg ] || [ ! -f out/star-history-dark.svg ]; then
+            echo "No new chart generated (stargazer fetch unavailable); keeping the last-good star-history branch."
+            exit 0
+          fi
           cd out
           git init -b star-history
           git config user.name "github-actions[bot]"
