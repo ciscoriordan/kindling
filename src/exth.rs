@@ -39,16 +39,23 @@ const USB_RANGES: &[(u32, u32, usize, u32)] = &[
     (0x2150, 0x218F, 1, 4),  // Number Forms
     (0x2190, 0x21FF, 1, 5),  // Arrows
     (0x2200, 0x22FF, 1, 6),  // Mathematical Operators
-    (0x3000, 0x303F, 1, 20), // CJK Symbols and Punctuation
-    (0x3040, 0x309F, 1, 21), // Hiragana
-    (0x30A0, 0x30FF, 1, 22), // Katakana
-    (0x3100, 0x312F, 1, 23), // Bopomofo
-    (0x3130, 0x318F, 1, 24), // Hangul Compatibility Jamo
-    (0x4E00, 0x9FFF, 1, 27), // CJK Unified Ideographs
-    (0xAC00, 0xD7AF, 1, 28), // Hangul Syllables
-    (0xFB00, 0xFB06, 1, 30), // Alphabetic Presentation Forms (Latin)
-    (0xFB50, 0xFDFF, 1, 31), // Arabic Presentation Forms-A
-    (0xFE70, 0xFEFF, 2, 0),  // Arabic Presentation Forms-B
+    // The trailing comment on each row is the GLOBAL OS/2 bit, which is
+    // usb_index * 32 + bit. The rows from here down were previously off: the
+    // whole 0x3000..0x318F run sat 4 bits high and Hangul Syllables landed on
+    // bit 60, which the spec assigns to the Private Use Area. Korean was the
+    // only script with no correct fallback bit (ja and zh still pick up bit 59
+    // from CJK Unified Ideographs), so it declared a font signature naming a
+    // range its headwords do not occupy. Found while investigating issue #22.
+    (0x3000, 0x303F, 1, 16), // 48 CJK Symbols and Punctuation
+    (0x3040, 0x309F, 1, 17), // 49 Hiragana
+    (0x30A0, 0x30FF, 1, 18), // 50 Katakana
+    (0x3100, 0x312F, 1, 19), // 51 Bopomofo
+    (0x3130, 0x318F, 1, 20), // 52 Hangul Compatibility Jamo
+    (0x4E00, 0x9FFF, 1, 27), // 59 CJK Unified Ideographs
+    (0xAC00, 0xD7AF, 1, 24), // 56 Hangul Syllables
+    (0xFB00, 0xFB06, 1, 30), // 62 Alphabetic Presentation Forms (Latin)
+    (0xFB50, 0xFDFF, 1, 31), // 63 Arabic Presentation Forms-A
+    (0xFE70, 0xFEFF, 2, 3),  // 67 Arabic Presentation Forms-B
 ];
 
 /// Build EXTH 300 fontsignature from the set of codepoints in headwords.

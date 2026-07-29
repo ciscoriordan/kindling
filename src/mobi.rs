@@ -344,7 +344,7 @@ fn build_dictionary_mobi(
 
     // Find entry positions in the stripped text
     eprintln!("Finding entry positions...");
-    let entry_positions = find_entry_positions(&text_content, &all_entries);
+    let entry_positions = find_entry_positions(&text_content, &all_entries)?;
 
     // Build lookup terms + separate infl INDX data.
     //
@@ -2215,11 +2215,20 @@ fn strip_idx_markup(html: &str) -> String {
     if result.contains("</b><") {
         result = result.replace("</b><", "</b> <");
     }
+    // Same restore for the <big> headword wrapper PyGlossary uses on non-Latin
+    // scripts, for kindlegen parity and so is_entry_boundary sees the same
+    // `/> ` separator it sees on <b> dictionaries (issue #22).
+    if result.contains("</big><") {
+        result = result.replace("</big><", "</big> <");
+    }
     if result.contains("</p><hr") {
         result = result.replace("</p><hr", "</p> <hr");
     }
     if result.contains("/><b>") {
         result = result.replace("/><b>", "/> <b>");
+    }
+    if result.contains("/><big>") {
+        result = result.replace("/><big>", "/> <big>");
     }
 
     result.trim().to_string()
@@ -2953,12 +2962,34 @@ mod record_split_tests {
     }
 }
 
+/// The inline tags a dictionary source may wrap its headwords in.
+///
+/// PyGlossary picks the wrapper by writing system: `<b>` for Latin, Cyrillic
+/// and Arabic, `<big>` for Hangul, CJK, Devanagari, Armenian, Bengali, Burmese
+/// and Greek. kindling only ever built a `<b>headword</b>` needle, so on a
+/// `<big>` source every entry fell through to the bare-headword fallback,
+/// failed its boundary check, and was stored as `(0, 0)`. On device the
+/// headword was still found (the INDX label is built separately) but the popup
+/// rendered blank, because the entry's text span was zero length. That is
+/// issue #22: reported as Korean, but it hits every non-Latin dictionary
+/// PyGlossary produces. kindlegen accepts the same input, so this was ours.
+///
+/// Order matters only for tie-breaking; `<b>` is listed first because it is by
+/// far the common case and the scan stops at the first wrapper that lands.
+const HEADWORD_WRAPPERS: [(&[u8], &[u8]); 2] = [(b"<b>", b"</b>"), (b"<big>", b"</big>")];
+
 /// Scan `text_bytes` for the first occurrence of `needle` that lands at an
 /// entry boundary (so we don't pick up headword mentions inside etymologies,
-/// definitions, or cross-refs). Returns `(bold_pos, headword_start)`.
+/// definitions, or cross-refs). Returns `(wrapper_pos, headword_start)`.
+///
+/// `open_tag_len` is the length of the wrapper's opening tag, which is what
+/// separates the two returned offsets. It used to be hardcoded as 3 for
+/// `"<b>"`, which silently mis-positioned `<big>` entries by two bytes even in
+/// the one case where they did resolve.
 fn scan_for_bold_at_boundary(
     text_bytes: &[u8],
     needle: &[u8],
+    open_tag_len: usize,
     start: usize,
 ) -> Option<(usize, usize)> {
     let mut scan_from = start;
@@ -2966,13 +2997,50 @@ fn scan_for_bold_at_boundary(
         match find_bytes_from(text_bytes, needle, scan_from) {
             Some(bold_pos) => {
                 if is_entry_boundary(text_bytes, bold_pos) {
-                    return Some((bold_pos, bold_pos + 3));
+                    return Some((bold_pos, bold_pos + open_tag_len));
                 }
                 scan_from = bold_pos + needle.len();
             }
             None => return None,
         }
     }
+}
+
+/// Find the last headword wrapper opening tag in `hay`, whichever it is.
+///
+/// Used by the bare-headword fallback to anchor an entry's stored span on the
+/// wrapper rather than on the headword text itself. `<b>` is not a substring
+/// of `<big>`, so the two searches cannot alias.
+fn rfind_headword_wrapper(hay: &[u8]) -> Option<usize> {
+    HEADWORD_WRAPPERS
+        .iter()
+        .filter_map(|(open, _)| rfind_bytes(hay, open))
+        .max()
+}
+
+/// Build the `<tag>headword</tag>` search needle for one wrapper.
+fn headword_needle(open: &[u8], headword_bytes: &[u8], close: &[u8]) -> Vec<u8> {
+    let mut needle = Vec::with_capacity(open.len() + headword_bytes.len() + close.len());
+    needle.extend_from_slice(open);
+    needle.extend_from_slice(headword_bytes);
+    needle.extend_from_slice(close);
+    needle
+}
+
+/// Try every known headword wrapper in turn, returning the first that lands at
+/// an entry boundary.
+fn scan_wrappers_at_boundary(
+    text_bytes: &[u8],
+    headword_bytes: &[u8],
+    start: usize,
+) -> Option<(usize, usize)> {
+    for (open, close) in HEADWORD_WRAPPERS {
+        let needle = headword_needle(open, headword_bytes, close);
+        if let Some(found) = scan_for_bold_at_boundary(text_bytes, &needle, open.len(), start) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 /// Find the byte position of each dictionary entry in the stripped text.
@@ -2984,7 +3052,10 @@ fn scan_for_bold_at_boundary(
 /// an example sentence or other content, it is skipped.
 ///
 /// Falls back to bare headword search if no bold match is found.
-fn find_entry_positions(text_bytes: &[u8], entries: &[DictionaryEntry]) -> Vec<(usize, usize)> {
+fn find_entry_positions(
+    text_bytes: &[u8],
+    entries: &[DictionaryEntry],
+) -> Result<Vec<(usize, usize)>, String> {
     let mut positions = Vec::with_capacity(entries.len());
     let mut search_start: usize = 0;
 
@@ -3021,29 +3092,19 @@ fn find_entry_positions(text_bytes: &[u8], entries: &[DictionaryEntry]) -> Vec<(
             None
         };
 
-        // Build <b>headword</b> needle (escaped form).
-        let mut bold_needle = Vec::with_capacity(3 + headword_bytes.len() + 4);
-        bold_needle.extend_from_slice(b"<b>");
-        bold_needle.extend_from_slice(headword_bytes);
-        bold_needle.extend_from_slice(b"</b>");
-
-        // Search for <b>headword</b> at an entry boundary.
+        // Search for <wrapper>headword</wrapper> at an entry boundary, trying
+        // each wrapper kindling knows (see HEADWORD_WRAPPERS).
         // Entry headings are preceded by "<hr/>" or "/>" (after <br/>) plus
         // any trailing space padding from pad_text_for_chunking, or appear
         // near the start of the body. Skip matches inside example sentences
         // or other content.
-        let mut found = scan_for_bold_at_boundary(text_bytes, &bold_needle, search_start);
+        let mut found = scan_wrappers_at_boundary(text_bytes, headword_bytes, search_start);
 
         // Escaped needle didn't land: try the minimal-escape variant that
         // covers PyGlossary-style raw-`&` / raw-`'` headwords.
         if found.is_none() {
             if let Some(raw_hw) = &raw_entities_hw {
-                let raw_bytes = raw_hw.as_bytes();
-                let mut raw_needle = Vec::with_capacity(3 + raw_bytes.len() + 4);
-                raw_needle.extend_from_slice(b"<b>");
-                raw_needle.extend_from_slice(raw_bytes);
-                raw_needle.extend_from_slice(b"</b>");
-                found = scan_for_bold_at_boundary(text_bytes, &raw_needle, search_start);
+                found = scan_wrappers_at_boundary(text_bytes, raw_hw.as_bytes(), search_start);
             }
         }
 
@@ -3061,7 +3122,12 @@ fn find_entry_positions(text_bytes: &[u8], entries: &[DictionaryEntry]) -> Vec<(
                     match find_bytes_from(text_bytes, headword_bytes, scan_from) {
                         Some(p) => {
                             let search_from = if p >= 10 { p - 10 } else { 0 };
-                            let bs = match rfind_bytes(&text_bytes[search_from..p], b"<b>") {
+                            // Anchor on whichever wrapper precedes the headword
+                            // text. Looking for `<b>` alone left `<big>` entries
+                            // anchored on the text itself, which then failed
+                            // is_entry_boundary because its window saw `/><big>`
+                            // rather than the `/>` it needs (issue #22).
+                            let bs = match rfind_headword_wrapper(&text_bytes[search_from..p]) {
                                 Some(rel) => search_from + rel,
                                 None => p,
                             };
@@ -3106,20 +3172,53 @@ fn find_entry_positions(text_bytes: &[u8], entries: &[DictionaryEntry]) -> Vec<(
         .map(|(e, _)| e.headword.clone())
         .collect();
     if !unfound.is_empty() {
-        eprintln!(
-            "Warning: {} / {} entries not found in text blob",
+        // An entry stored as (0, 0) has a zero-length text span: the firmware
+        // finds the headword and then renders an empty popup. That is a broken
+        // dictionary, not a cosmetic problem, so it must not exit 0.
+        //
+        // This used to be a bare stderr warning, after which the build printed
+        // "Mobi file built successfully" and returned 0. PyGlossary's Mobi
+        // writer pipes kindling's stderr, logs only stdout, and never checks
+        // the return code, so downstream (reader.dict) had no way to see it at
+        // all. A non-zero exit with no output file is the only signal that
+        // actually reaches a wrapper.
+        let mut msg = format!(
+            "{} / {} entries could not be located in the text blob and would \
+             render as blank lookups on device",
             unfound.len(),
             entries.len()
         );
         for hw in unfound.iter().take(20) {
-            eprintln!("  Not found: {:?}", hw);
+            msg.push_str(&format!("\n  Not found: {:?}", hw));
         }
         if unfound.len() > 20 {
-            eprintln!("  ... and {} more", unfound.len() - 20);
+            msg.push_str(&format!("\n  ... and {} more", unfound.len() - 20));
+        }
+        if allow_unfound_entries() {
+            eprintln!("Warning: {}", msg);
+            eprintln!("  (continuing anyway because KINDLING_ALLOW_UNFOUND_ENTRIES is set)");
+        } else {
+            msg.push_str(
+                "\n  If these entries are genuinely absent from the source and you want to \
+                 ship anyway, set KINDLING_ALLOW_UNFOUND_ENTRIES=1.",
+            );
+            return Err(msg);
         }
     }
 
-    positions
+    Ok(positions)
+}
+
+/// Escape hatch for the hard failure on unlocatable entries.
+///
+/// Follows the same convention as `KINDLING_FOLD_ACCENTS` / `KINDLING_STRICT_ACCENTS`:
+/// an env var, because the wrappers that most need it (PyGlossary's Mobi
+/// writer, used by reader.dict) control the command line and cannot pass a flag.
+fn allow_unfound_entries() -> bool {
+    matches!(
+        std::env::var("KINDLING_ALLOW_UNFOUND_ENTRIES").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    )
 }
 
 /// Check if a `<b>` tag position is at an entry boundary (a headword heading).

@@ -6213,6 +6213,128 @@ mod tests {
         );
     }
 
+    /// Same fixture as `create_dict_fixture`, but wrapping headwords in `<big>`
+    /// instead of `<b>`.
+    ///
+    /// PyGlossary selects the wrapper by writing system and uses `<big>` for
+    /// every non-Latin script (Hangul, CJK, Devanagari, Armenian, Bengali,
+    /// Burmese, Greek). Every committed language fixture uses `<b>`, so nothing
+    /// exercised the `<big>` path and issue #22 shipped.
+    fn create_big_wrapped_dict_fixture(dir: &Path, entries: &[(&str, &[&str])]) -> PathBuf {
+        // Mirror the real PyGlossary shape, not a minimal one: <mbp:frameset>
+        // body, <mbp:pagebreak/> between entries, and the headword inside
+        // <idx:orth> with no value= attribute. A smaller fixture resolves via
+        // the `bold_pos < 200` shortcut in is_entry_boundary and passes even on
+        // the broken code, so it would not have caught issue #22.
+        let mut html_body = String::new();
+        for (hw, iforms) in entries {
+            // The headword appears exactly once, inside <idx:orth> wrapped in
+            // <big>, which is what PyGlossary emits. Repeating it as bare text
+            // elsewhere gives the bare-headword fallback something to anchor on
+            // and masks the bug.
+            html_body.push_str(&format!(
+                "<idx:entry name=\"default\" scriptable=\"yes\"><idx:orth><big>{hw}</big></idx:orth>",
+                hw = hw
+            ));
+            for iform in *iforms {
+                html_body.push_str(&format!(
+                    "<idx:infl><idx:iform value=\"{iform}\"/></idx:infl>",
+                    iform = iform
+                ));
+            }
+            html_body.push_str(
+                "<p>a definition, padded so the entries run past the 200-byte \
+                 head-of-body shortcut in is_entry_boundary</p>\
+                 </idx:entry><mbp:pagebreak/>\n",
+            );
+        }
+
+        let html = format!(
+            r#"<html xmlns:idx="http://www.mobipocket.com/idx" xmlns:mbp="http://www.mobipocket.com"><head><guide></guide></head><body><mbp:frameset>{}</mbp:frameset></body></html>"#,
+            html_body
+        );
+        fs::write(dir.join("content.html"), &html).unwrap();
+
+        let opf = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf">
+  <metadata>
+    <dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">Test Dict</dc:title>
+    <dc:language xmlns:dc="http://purl.org/dc/elements/1.1/">ko</dc:language>
+    <dc:creator xmlns:dc="http://purl.org/dc/elements/1.1/">Tester</dc:creator>
+    <x-metadata>
+      <DictionaryInLanguage>ko</DictionaryInLanguage>
+      <DictionaryOutLanguage>en</DictionaryOutLanguage>
+      <DefaultLookupIndex>default</DefaultLookupIndex>
+    </x-metadata>
+  </metadata>
+  <manifest>
+    <item id="content" href="content.html" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="content"/>
+  </spine>
+</package>"#;
+        let opf_path = dir.join("dict.opf");
+        fs::write(&opf_path, opf).unwrap();
+        opf_path
+    }
+
+    /// Headwords wrapped in `<big>` must resolve to real text spans.
+    ///
+    /// Before the fix every entry fell through to `(0, 0)`: the firmware found
+    /// the headword via the INDX label but rendered a zero-length body, so the
+    /// popup came up blank. The build still exited 0 and printed "Mobi file
+    /// built successfully", which is why it reached users (issue #22).
+    #[test]
+    fn test_find_entry_positions_big_wrapped_headwords() {
+        let dir = TempDir::new("entry_pos_big");
+        let entries: &[(&str, &[&str])] = &[
+            ("물", &["물이"]),
+            ("불", &["불이"]),
+            ("사람", &["사람이"]),
+            ("나무", &["나무가"]),
+            ("바다", &["바다가"]),
+            ("하늘", &["하늘이"]),
+            ("고양이", &["고양이가"]),
+            ("물고기", &["물고기가"]),
+        ];
+        let opf = create_big_wrapped_dict_fixture(dir.path(), entries);
+        let data = build_mobi_bytes(&opf, dir.path(), true, true, None);
+
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let orth_idx = read_u32_be(rec0, 40) as usize;
+
+        let indx_entries = parse_indx_entries(&data, &offsets, orth_idx);
+
+        assert_eq!(
+            indx_entries.len(),
+            entries.len(),
+            "INDX should have {} entries, got {}",
+            entries.len(),
+            indx_entries.len()
+        );
+
+        for (i, &(start_pos, text_len)) in indx_entries.iter().enumerate() {
+            assert!(
+                start_pos > 0 || text_len > 0,
+                "INDX entry {} has (start_pos=0, text_len=0): a <big>-wrapped \
+                 headword did not resolve, so its popup would render blank (issue #22)",
+                i
+            );
+            assert!(
+                text_len > 0,
+                "INDX entry {} has text_len=0, popup would be empty",
+                i
+            );
+        }
+
+        println!(
+            "  \u{2713} All {} <big>-wrapped INDX entries resolve to real spans (issue #22)",
+            indx_entries.len()
+        );
+    }
+
     // =======================================================================
     // 5. Decompression roundtrip (full MOBI text records)
     // =======================================================================
