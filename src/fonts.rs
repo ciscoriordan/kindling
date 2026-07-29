@@ -803,7 +803,10 @@ body { font-family: "SimSun", serif; color: black; }
         );
         // Body text that merely mentions font-family is not an attribute.
         let prose = strip_font_locking_inline_styles("<p>use font-family: SimSun here</p>");
-        assert!(prose.contains("font-family: SimSun here"), "prose untouched");
+        assert!(
+            prose.contains("font-family: SimSun here"),
+            "prose untouched"
+        );
         println!("  \u{2713} inline style=\"...\" font-family stripped");
     }
 
