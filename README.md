@@ -86,6 +86,8 @@ Then `use kindling::...`. Public API is defined in `src/lib.rs`.
 
 ## Usage
 
+The examples below assume `kindling-cli` is on your PATH (see [Installation](#installation)). If it is not, call it by its full path instead.
+
 ### Dictionaries
 
 ```bash
