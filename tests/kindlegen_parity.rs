@@ -484,3 +484,40 @@ fn looks_like_html(p: &[u8]) -> bool {
         .map(|b| *b == b'<')
         .unwrap_or(false)
 }
+
+/// kindlegen ignores `calibre:series` and `calibre:series_index` entirely.
+///
+/// The `series_book` fixture is `simple_book` plus those two OPF meta elements.
+/// kindlegen emits no EXTH 112 and no EXTH 113 for it; the series name reaches
+/// the device only through the title, if at all.
+///
+/// This pins a decision rather than a behavior. `build_book_exth` used to accept
+/// `series` / `series_index` parameters and write them to 112 and 113, even
+/// though kindling's own dump table at src/mobi_dump.rs calls 113 `asin`. Both
+/// production call sites passed `None`, so nothing ever shipped with a series
+/// index sitting in the ASIN field, but the path was one wiring-up away from
+/// doing it. Anyone reintroducing series support needs a verified EXTH target
+/// first, and this test is the reminder that kindlegen is not that source.
+#[test]
+fn parity_series_book_omits_series_exth() {
+    let kindling = kindling_build_parsed("series_book", "series_book.opf", "mobi");
+    let kindlegen = load_reference("series_book");
+
+    for (tool, parsed) in [("kindling", &kindling), ("kindlegen", &kindlegen)] {
+        let mut sections = vec![("kf7", &parsed.kf7)];
+        if let Some(kf8) = parsed.kf8.as_ref() {
+            sections.push(("kf8", kf8));
+        }
+        for (label, section) in sections {
+            for rtype in [112u32, 113] {
+                assert!(
+                    section.exth_first(rtype).is_none(),
+                    "{tool} {label}: EXTH {rtype} present on a build whose only series \
+                     metadata is calibre:series/_index, which kindlegen ignores. \
+                     Present: {:?}",
+                    section.exth_types()
+                );
+            }
+        }
+    }
+}
