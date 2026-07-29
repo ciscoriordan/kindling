@@ -307,8 +307,14 @@ fn dump_mobi_section(
     let _ = writeln!(out, "mobi.full_name_offset = {}", full_name_offset);
     let _ = writeln!(out, "mobi.full_name_length = {}", full_name_length);
 
-    // Decode full_name — offset is relative to MOBI header start (record0+16).
-    let name_abs = 16 + full_name_offset as usize;
+    // Decode full_name. The offset is relative to the start of RECORD 0, not to
+    // the MOBI header that begins 16 bytes into it. Adding 16 shifted every
+    // decode forward by 16 bytes, so the dump chopped the first 16 characters
+    // off the title and backfilled with whatever followed it (usually the NUL
+    // padding), e.g. "Kindling Korean Test Dictionary" printed as
+    // "Test Dictionary\0\0...". Silent, and it degraded the diff-based parity
+    // workflow the README recommends.
+    let name_abs = full_name_offset as usize;
     let name_end = name_abs + full_name_length as usize;
     let full_name = if name_end <= record0.len() {
         String::from_utf8_lossy(&record0[name_abs..name_end]).into_owned()
