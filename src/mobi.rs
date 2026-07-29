@@ -3172,18 +3172,25 @@ fn find_entry_positions(
         .map(|(e, _)| e.headword.clone())
         .collect();
     if !unfound.is_empty() {
-        // An entry stored as (0, 0) has a zero-length text span: the firmware
-        // finds the headword and then renders an empty popup. That is a broken
-        // dictionary, not a cosmetic problem, so it must not exit 0.
+        // An entry stored as (0, 0) has a zero-length text span, so the firmware
+        // finds the headword and renders an empty popup. That is a real defect,
+        // and 0.29.0 made it abort the build for exactly that reason.
         //
-        // This used to be a bare stderr warning, after which the build printed
-        // "Mobi file built successfully" and returned 0. PyGlossary's Mobi
-        // writer pipes kindling's stderr, logs only stdout, and never checks
-        // the return code, so downstream (reader.dict) had no way to see it at
-        // all. A non-zero exit with no output file is the only signal that
-        // actually reaches a wrapper.
+        // That was the wrong call and it shipped a worse regression than the bug
+        // it guarded. The reasoning was that PyGlossary's Mobi writer pipes
+        // stderr, logs only stdout, and never checks the return code, so a
+        // warning could not reach reader.dict; a non-zero exit was the only
+        // signal left. But a wrapper that ignores the exit code and looks for the
+        // output file gets NOTHING when we abort, which turns "some definitions
+        // are blank" into "the dictionary finds no words at all". Degrading the
+        // artifact beats withholding it, especially for the one consumer that
+        // cannot observe the failure.
+        //
+        // So: warn loudly, write the file, exit 0. Set KINDLING_STRICT_ENTRIES=1
+        // to abort instead, which is the right setting for a CI job or anyone
+        // who does check exit codes.
         let mut msg = format!(
-            "{} / {} entries could not be located in the text blob and would \
+            "{} / {} entries could not be located in the text blob and will \
              render as blank lookups on device",
             unfound.len(),
             entries.len()
@@ -3194,29 +3201,30 @@ fn find_entry_positions(
         if unfound.len() > 20 {
             msg.push_str(&format!("\n  ... and {} more", unfound.len() - 20));
         }
-        if allow_unfound_entries() {
-            eprintln!("Warning: {}", msg);
-            eprintln!("  (continuing anyway because KINDLING_ALLOW_UNFOUND_ENTRIES is set)");
-        } else {
-            msg.push_str(
-                "\n  If these entries are genuinely absent from the source and you want to \
-                 ship anyway, set KINDLING_ALLOW_UNFOUND_ENTRIES=1.",
-            );
+        if strict_entries() {
+            msg.push_str("\n  Aborting because KINDLING_STRICT_ENTRIES is set.");
             return Err(msg);
         }
+        eprintln!("Warning: {}", msg);
+        eprintln!(
+            "  The dictionary was still written. Set KINDLING_STRICT_ENTRIES=1 to fail \
+             the build on this instead."
+        );
     }
 
     Ok(positions)
 }
 
-/// Escape hatch for the hard failure on unlocatable entries.
+/// Opt in to aborting the build when an entry cannot be located.
 ///
-/// Follows the same convention as `KINDLING_FOLD_ACCENTS` / `KINDLING_STRICT_ACCENTS`:
-/// an env var, because the wrappers that most need it (PyGlossary's Mobi
-/// writer, used by reader.dict) control the command line and cannot pass a flag.
-fn allow_unfound_entries() -> bool {
+/// Off by default: see the comment above for why refusing to write the file is
+/// worse than writing a partially blank one. Follows the same convention as
+/// `KINDLING_FOLD_ACCENTS` / `KINDLING_STRICT_ACCENTS`, an env var, because the
+/// wrappers that most need it (PyGlossary's Mobi writer, used by reader.dict)
+/// control the command line and cannot pass a flag.
+fn strict_entries() -> bool {
     matches!(
-        std::env::var("KINDLING_ALLOW_UNFOUND_ENTRIES").as_deref(),
+        std::env::var("KINDLING_STRICT_ENTRIES").as_deref(),
         Ok("1") | Ok("true") | Ok("TRUE")
     )
 }
@@ -4459,4 +4467,52 @@ fn rfind_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         return None;
     }
     memchr::memmem::rfind(haystack, needle)
+}
+
+#[cfg(test)]
+mod unfound_entry_policy_tests {
+    use super::*;
+
+    /// An unlocatable entry must NOT abort the build by default.
+    ///
+    /// 0.29.0 made it abort, on the reasoning that PyGlossary ignores kindling's
+    /// exit code so a warning could never reach reader.dict. The effect was that
+    /// the wrapper, which looks for the output file rather than the exit status,
+    /// got no file at all: a dictionary that had rendered blank definitions
+    /// became one that found no words. Withholding the artifact is worse than
+    /// degrading it, so the default writes it and warns.
+    ///
+    /// KINDLING_STRICT_ENTRIES is deliberately not exercised here, because env
+    /// vars are process-global and would race the rest of the suite.
+    #[test]
+    fn unfound_entries_do_not_abort_by_default() {
+        assert!(
+            std::env::var("KINDLING_STRICT_ENTRIES").is_err(),
+            "this test assumes strict mode is not set in the test environment"
+        );
+
+        // A blob that contains none of the headwords below.
+        let blob =
+            b"<html><body><mbp:frameset><p>unrelated body text</p></mbp:frameset></body></html>";
+        let entries: Vec<DictionaryEntry> = ["ghostone", "ghosttwo"]
+            .iter()
+            .map(|hw| DictionaryEntry {
+                headword: hw.to_string(),
+                inflections: Vec::new(),
+                html_content: String::new(),
+            })
+            .collect();
+
+        let positions = find_entry_positions(blob, &entries)
+            .expect("must not abort: the caller still needs an output file");
+
+        assert_eq!(positions.len(), entries.len());
+        for (i, &(start, len)) in positions.iter().enumerate() {
+            assert_eq!(
+                (start, len),
+                (0, 0),
+                "entry {i} should be reported as unlocatable, not silently relocated"
+            );
+        }
+    }
 }
