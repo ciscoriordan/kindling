@@ -48,6 +48,20 @@ Download the latest release for your platform from [Releases](https://github.com
 - **Linux** - `kindling-cli-linux`
 - **Windows** - `kindling-cli-windows.exe`
 
+The Mac binaries are signed with a Developer ID and notarized, so they run as
+downloaded. Releases up to and including v0.28.0 were unsigned; if you are on one
+of those and macOS refuses to run it with "Apple could not verify ... is free of
+malware", clear the quarantine flag with `xattr -d com.apple.quarantine kindling-cli-mac-apple-silicon`
+or upgrade to a later release. Binaries obtained via `cargo install`, AppMan, AM,
+or `curl` are never quarantined and are unaffected either way.
+
+Then mark it executable and put it somewhere on your `PATH`:
+
+```bash
+chmod +x kindling-cli-mac-apple-silicon
+mv kindling-cli-mac-apple-silicon /usr/local/bin/kindling-cli
+```
+
 On Linux and BSD, install via [AppMan](https://github.com/ivan-hc/AppMan) (rootless, per-user):
 
 ```bash
@@ -79,7 +93,7 @@ Add the crate to your `Cargo.toml` (published as `kindling-mobi`; the library na
 
 ```toml
 [dependencies]
-kindling-mobi = "0.26"
+kindling-mobi = "0.29"
 ```
 
 Then `use kindling::...`. Public API is defined in `src/lib.rs`.
@@ -103,6 +117,8 @@ kindling-cli lookup output.mobi rivière   # simulate the on-device lookup of a 
 ```
 
 The input OPF must reference HTML files with `<idx:entry>`, `<idx:orth>`, and `<idx:iform>` markup following the [Amazon Kindle Publishing Guidelines](http://kindlegen.s3.amazonaws.com/AmazonKindlePublishingGuidelines.pdf). Both headwords and inflected forms are indexed so that looking up any form on the Kindle finds the correct dictionary entry.
+
+Headwords may be wrapped in either `<b>` or `<big>`. PyGlossary picks the wrapper by writing system and uses `<big>` for Hangul, CJK, Devanagari, Armenian, Bengali, Burmese and Greek, so dictionaries built through it (including reader.dict's) rely on the `<big>` path. If any entry cannot be located in the text blob, the build now fails rather than emitting a dictionary whose lookups resolve to a zero-length body and render as blank popups on device (issue #22). Set `KINDLING_ALLOW_UNFOUND_ENTRIES=1` to downgrade that back to a warning if the missing entries are genuinely absent from your source and you want to ship anyway.
 
 Latin-script dictionaries default to exact accent matching. Every character is its own symbol, so the index keeps `ê` distinct from `e`, while accent and case variants share a collation weight so accented headwords sort adjacent to their base. The Kindle firmware collates Latin dictionaries with its own accent-and-case-folding lookup, so the labels are pre-sorted in that folded order and the distinct symbols then let it return the exact form. This is confirmed end to end on real firmware: an unaccented or uppercase query resolves the accented, lowercase headword (`riviere` and `RIVIÈRE` both resolve `rivière`, `meme` and `MÊME` both resolve `même`, `cafe` resolves `café`), each to its own distinct entry, while a non-headword or a bare prefix correctly finds nothing. An unaccented query with no exact headword still falls back to its accented neighbour (issue #8). The folded sort also fixes accent-initial headwords like Polish `świat`, which a raw byte-order sort placed after `z`, where the firmware's collation never looks.
 
@@ -180,7 +196,7 @@ kindling-cli comic manga.cbz --rtl                              # manga (right-t
 kindling-cli comic webtoon/ --webtoon                           # webtoon (vertical strip)
 kindling-cli comic input/ --no-split --crop 0                   # disable smart processing
 kindling-cli comic input.cbz --title "My Comic" --language ja   # metadata overrides
-kindling-cli comic input.cbz --doc-type ebok                    # appear under Books on Kindle
+kindling-cli comic input.cbz --doc-type ebok                    # appear under Books on Kindle (default: no shelf)
 kindling-cli comic input.cbz --cover 3                          # use page 3 as cover
 kindling-cli comic input.cbz --legacy-mobi                      # opt into legacy dual MOBI7+KF8 (.mobi)
 kindling-cli comic input.cbz --mobi-ext                         # KF8-only bytes as .mobi so sideloaded covers show (issue #20)
@@ -212,8 +228,8 @@ Kindle library field mapping (what the Kindle actually displays for sideloaded c
 | Title | EXTH 503 (books/dicts) or KF8 Record 0 full_name (comics) | EXTH 503 is emitted for reflowable books and dictionaries. For fixed-layout comics, EXTH 503 is omitted - it breaks Kindle navigation (toolbar/go-home disappear). KCC/kindlegen also omit it for comics. For dual-format `.mobi`, Kindle reads full_name from KF8 Record 0, not KF7. |
 | Author | EXTH 100 | Set via `--author` flag or ComicInfo.xml `<Writer>`/`<Penciller>`. Defaults to "kindling". |
 | Cover | EXTH 201 (cover image offset in image pool) + EXTH 129 (KF8 cover URI) | Cover offset is 0-based index within image records starting at `first_image`. |
-| Document type | EXTH 501 | Omitted entirely for reflowable books. Its mere presence (any value) makes the Kindle reader treat the book as a non-navigable document and hide the back-to-library toolbar, trapping the reader in the book (device-verified, issue #15). kindlegen writes none for books. Comics are fixed-layout (a different reader, unaffected) and set it via `--doc-type`: `PDOC` = Documents shelf, `EBOK` = Books shelf. |
-- **Document type** (comics): `--doc-type ebok` to appear under Books instead of Documents on Kindle (default: `pdoc`). Reflowable books write no content-type record, because its presence breaks the reader's home navigation.
+| Document type | EXTH 501 | Omitted entirely by default, for comics as well as reflowable books. Its mere presence (any value) makes the Kindle reader treat the content as a non-navigable document and hide the back-to-library toolbar, trapping the reader inside (device-verified for books in issue #15, reported for comics on Paperwhite 5 firmware 5.18.1/5.19.2 in issue #21). kindlegen writes none for any content type. Set one explicitly with `--doc-type`: `PDOC` = Documents shelf, `EBOK` = Books shelf, `none` = omit (default). |
+- **Document type** (comics): `--doc-type pdoc` for the Documents shelf or `--doc-type ebok` for Books (default: `none`, no shelf assignment). Comics used to default to `pdoc`; they now omit the record like reflowable books do, because its presence hides the back-to-library button on some firmware and leaves no way out of the book (issue #21). Asking for a shelf is opt-in, and an unrecognized value is now an error rather than a silent fallback to `pdoc`.
 - **KF8-only by default**: comics output `.azw3` with only the KF8 section (no MOBI7); pass `--legacy-mobi` for the old dual-format behavior on pre-2012 Kindles
 
 ### Validation
@@ -639,7 +655,7 @@ These are Amazon firmware bugs, not kindling bugs, but they affect sideloaded MO
 
 When you copy a book to a Kindle over USB, the home-screen tile is drawn from a per-book thumbnail the firmware caches during indexing, not live from the file's cover. On current firmware (verified on Paperwhite 3 / 5.16 and Paperwhite 5 / 5.18, issue #20) that cache is populated from the embedded cover only for files with a `.mobi` extension; a KF8-only `.azw3` shows a gray placeholder even though its EXTH cover records (129/201/202) are correct and the cover renders fine inside the book. Byte-identical content shows the cover as `.mobi` and not as `.azw3`, so the firmware keys on the extension, not on anything in the records.
 
-- Build with `--mobi-ext` to emit the same KF8-only bytes under a `.mobi` name (or pass `-o book.mobi`). Either restores the library cover on every KF8-capable Kindle; nothing is lost, since a KF8-only payload in a `.mobi` container reads normally on those devices.
+- Build with `--mobi-ext` to emit the same KF8-only bytes under a `.mobi` name (or pass `-o book.mobi`). Either restores the library cover on every KF8-capable Kindle. One caveat: a KF8-only payload under a `.mobi` name is a container shape Amazon's own toolchain never produces (kindlegen's only `.mobi` output is a true dual MOBI7+KF8), and one Paperwhite 5 report has such a file indexing and showing its cover but then refusing to open with "The selected item could not be opened" (issue #21). That is a single unreplicated report and the bytes are identical to the `.azw3`, so if you hit it the cause is extension dispatch in the firmware rather than anything in the file. Fall back to `--legacy-mobi`, or keep the `.azw3` and accept the gray tile.
 - `--legacy-mobi` also yields a `.mobi` (a true dual MOBI7+KF8) if you additionally want pre-2012 devices.
 - Stamping an ASIN plus `EBOK` does not help: with no matching Amazon purchase the cloud cover lookup fails (still gray), and the device may auto-delete the sideload on WiFi sync. Tagging `PDOC` can make an `.azw3` render its own cover, but any EXTH 501 value breaks reflowable-book home navigation (issue #15), so kindling does not do this.
 
