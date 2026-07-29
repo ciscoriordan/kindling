@@ -85,7 +85,9 @@ kindling-mobi = "0.26"
 Then `use kindling::...`. Public API is defined in `src/lib.rs`.
 
 ## Usage
-The example commands below assume `kindling-cli.exe` has been added to your PATH. If you haven't done this, prefix each command with the full path to the executable instead.
+
+The examples below assume `kindling-cli` is on your PATH (see [Installation](#installation)). If it is not, call it by its full path instead.
+
 ### Dictionaries
 
 ```bash
