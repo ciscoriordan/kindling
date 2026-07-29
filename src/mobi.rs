@@ -3814,8 +3814,6 @@ fn build_record0(
             doc_type,
             None, // description
             None, // subject
-            None, // series
-            None, // series_index
         )
     };
 
@@ -4024,8 +4022,6 @@ fn build_kf8_record0(
         doc_type,
         None, // description
         None, // subject
-        None, // series
-        None, // series_index
     );
 
     // Full name offset

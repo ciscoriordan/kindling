@@ -235,14 +235,21 @@ pub struct FixedLayoutMeta {
 /// - `Some("PDOC")` or `None`: appears under "Documents" (default, safe).
 ///   No cloud deletion risk for sideloaded content.
 ///
-/// ## Series metadata
+/// ## Descriptive metadata
 /// - `description`: EXTH 103, maps to ComicInfo.xml `<Summary>`.
 /// - `subject`: EXTH 105, maps to ComicInfo.xml `<Genre>`.
-/// - `series`: EXTH 112 (`calibre:series`), maps to ComicInfo.xml `<Series>`.
-/// - `series_index`: EXTH 113 (`calibre:series_index`), maps to ComicInfo.xml `<Number>`.
 ///
-/// Calibre and other readers use EXTH 112/113 to group books into series and
-/// display volume numbering.
+/// There is deliberately no series output. This used to take `series` and
+/// `series_index` and write them to EXTH 112 and 113, but 113 is `asin` in the
+/// standard record map, and in kindling's own dump table (src/mobi_dump.rs), so
+/// a series number would have landed in the ASIN field. Nothing shipped that
+/// way, since both production call sites passed `None`, but the path existed.
+/// kindlegen ignores `calibre:series` / `calibre:series_index` outright and
+/// emits neither record (pinned by `parity_series_book_omits_series_exth`), so
+/// there is no oracle for what a correct series record would even be. Comics
+/// already carry series and volume through the title, via
+/// `ComicMetadata::effective_title`. Reintroducing this needs a verified target
+/// record first.
 pub fn build_book_exth(
     title: &str,
     author: &str,
@@ -258,8 +265,6 @@ pub fn build_book_exth(
     doc_type: Option<&str>,
     description: Option<&str>,
     subject: Option<&str>,
-    series: Option<&str>,
-    series_index: Option<&str>,
 ) -> Vec<u8> {
     let mut records: Vec<Vec<u8>> = Vec::new();
 
@@ -394,20 +399,6 @@ pub fn build_book_exth(
             records.push(exth_record(300, &fontsig));
             let ppd = fl.page_progression_direction.as_deref().unwrap_or("ltr");
             records.push(exth_record(527, ppd.as_bytes()));
-        }
-    }
-
-    // Series name (112) - calibre:series, maps to ComicInfo.xml <Series>
-    if let Some(s) = series {
-        if !s.is_empty() {
-            records.push(exth_record(112, s.as_bytes()));
-        }
-    }
-
-    // Series index (113) - calibre:series_index, maps to ComicInfo.xml <Number>
-    if let Some(si) = series_index {
-        if !si.is_empty() {
-            records.push(exth_record(113, si.as_bytes()));
         }
     }
 
@@ -646,8 +637,6 @@ mod tests {
             None, // doc_type: None should omit EXTH 501 entirely
             None,
             None,
-            None,
-            None,
         );
         let records = parse_exth_records(&exth);
         assert!(
@@ -674,8 +663,6 @@ mod tests {
             Some("PDOC"),
             None,
             None,
-            None,
-            None,
         );
         let records = parse_exth_records(&exth);
         let rec501 = find_record(&records, 501).expect("EXTH 501 should exist");
@@ -700,8 +687,6 @@ mod tests {
             Some("EBOK"),
             None,
             None,
-            None,
-            None,
         );
         let records = parse_exth_records(&exth);
         let rec501 = find_record(&records, 501).expect("EXTH 501 should exist");
@@ -712,8 +697,12 @@ mod tests {
         println!("  \u{2713} EXTH 501 = EBOK");
     }
 
+    /// EXTH 112/113 must never appear. 113 is `asin` in the standard record
+    /// map and in kindling's own dump table, so a series index there would sit
+    /// in the ASIN field. kindlegen ignores calibre series metadata and emits
+    /// neither record; see `parity_series_book_omits_series_exth`.
     #[test]
-    fn test_exth_series_metadata() {
+    fn test_exth_never_emits_series_records() {
         let exth = build_book_exth(
             "One Piece Vol 1",
             "Eiichiro Oda",
@@ -729,8 +718,6 @@ mod tests {
             None,
             Some("Luffy begins his adventure"), // description (103)
             Some("Manga, Adventure"),           // subject (105)
-            Some("One Piece"),                  // series (112)
-            Some("1"),                          // series_index (113)
         );
         let records = parse_exth_records(&exth);
 
@@ -739,98 +726,18 @@ mod tests {
             std::str::from_utf8(&desc).unwrap(),
             "Luffy begins his adventure"
         );
-
         let subj = find_record(&records, 105).expect("EXTH 105 (subject) should exist");
         assert_eq!(std::str::from_utf8(&subj).unwrap(), "Manga, Adventure");
 
-        let series = find_record(&records, 112).expect("EXTH 112 (series) should exist");
-        assert_eq!(std::str::from_utf8(&series).unwrap(), "One Piece");
-
-        let si = find_record(&records, 113).expect("EXTH 113 (series_index) should exist");
-        assert_eq!(std::str::from_utf8(&si).unwrap(), "1");
-        println!("  \u{2713} Series metadata: 103/105/112/113 all present and correct");
-    }
-
-    #[test]
-    fn test_exth_series_metadata_omitted_when_none() {
-        let exth = build_book_exth(
-            "Standalone Book",
-            "Author",
-            "2026-01-01",
-            "en",
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
-        let records = parse_exth_records(&exth);
-
-        assert!(
-            find_record(&records, 103).is_none(),
-            "EXTH 103 should be absent when None"
-        );
-        assert!(
-            find_record(&records, 105).is_none(),
-            "EXTH 105 should be absent when None"
-        );
         assert!(
             find_record(&records, 112).is_none(),
-            "EXTH 112 should be absent when None"
+            "EXTH 112 must not be emitted"
         );
         assert!(
             find_record(&records, 113).is_none(),
-            "EXTH 113 should be absent when None"
+            "EXTH 113 is asin; a series index must never be written there"
         );
-        println!("  \u{2713} EXTH 103/105/112/113 all absent when None");
-    }
-
-    #[test]
-    fn test_exth_series_metadata_omitted_when_empty() {
-        let exth = build_book_exth(
-            "Standalone Book",
-            "Author",
-            "2026-01-01",
-            "en",
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            false,
-            None,
-            Some(""), // empty description
-            Some(""), // empty subject
-            Some(""), // empty series
-            Some(""), // empty series_index
-        );
-        let records = parse_exth_records(&exth);
-
-        assert!(
-            find_record(&records, 103).is_none(),
-            "Empty description should not produce EXTH 103"
-        );
-        assert!(
-            find_record(&records, 105).is_none(),
-            "Empty subject should not produce EXTH 105"
-        );
-        assert!(
-            find_record(&records, 112).is_none(),
-            "Empty series should not produce EXTH 112"
-        );
-        assert!(
-            find_record(&records, 113).is_none(),
-            "Empty series_index should not produce EXTH 113"
-        );
-        println!("  \u{2713} EXTH 103/105/112/113 all absent when empty string");
+        println!("  \u{2713} 103/105 present, 112/113 never emitted");
     }
 
     #[test]
@@ -851,8 +758,6 @@ mod tests {
             Some("EBOK"),
             Some("A test book"),
             Some("Fiction"),
-            Some("Test Series"),
-            Some("3"),
         );
 
         // Must start with "EXTH"
