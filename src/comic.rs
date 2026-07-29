@@ -147,7 +147,7 @@ pub struct ComicOptions {
     /// Embed the generated EPUB in the MOBI (for Kindle Previewer compat). Default: true.
     pub embed_source: bool,
     /// Document type for EXTH 501: "EBOK" (Books shelf) or "PDOC" (Documents shelf).
-    /// Default: None (PDOC).
+    /// Default: None, which omits EXTH 501 entirely (issue #21).
     pub doc_type: Option<String>,
     /// Override title from ComicInfo.xml.
     pub title_override: Option<String>,
@@ -511,11 +511,20 @@ pub fn build_comic_with_options(
         true,  // skip HD images (KCC doesn't emit HD container)
         false, // default creator identity
         options.kf8_only,
-        // Comics always carry a cde_content_type (EXTH 501): they are
-        // fixed-layout and need a shelf assignment. Default to PDOC when none
-        // was requested. (Reflowable books omit 501 to keep their home-nav
-        // chrome - issue #15 - but comics use a different reader, unaffected.)
-        options.doc_type.as_deref().or(Some("PDOC")),
+        // Comics omit EXTH 501 by default, same as reflowable books, unless
+        // --doc-type explicitly asks for a shelf.
+        //
+        // This used to force PDOC on, on the theory that comics "use a
+        // different reader, unaffected" by the home-nav breakage of issue #15.
+        // That was never tested: the .or(Some("PDOC")) was added in the same
+        // commit that flipped the book default, purely to preserve the
+        // then-current behavior. Issue #21 reports the same missing
+        // back-to-library button on Paperwhite 5 firmware 5.18.1 and 5.19.2 for
+        // both AZW3 and dual-MOBI comics, trapping the reader in the book with
+        // a reboot as the only exit. kindlegen writes no 501 for any content
+        // type, so nothing needs it. A comic that is uncategorized in the
+        // library beats one you cannot leave.
+        options.doc_type.as_deref(),
         options.kindle_limits,
         options.self_check,
         options.kindlegen_parity,

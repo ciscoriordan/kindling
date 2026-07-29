@@ -228,9 +228,10 @@ enum Commands {
         #[arg(long, hide = true)]
         no_embed_source: bool,
 
-        /// Document type: "ebok" (Books shelf) or "pdoc" (Documents shelf, default).
+        /// Document type: "none" (no shelf assignment, default), "ebok" (Books shelf)
+        /// or "pdoc" (Documents shelf).
         /// WARNING: Amazon may auto-delete sideloaded EBOK files when Kindle connects to WiFi.
-        #[arg(long, default_value = "pdoc")]
+        #[arg(long, default_value = "none")]
         doc_type: String,
 
         /// Override the title from ComicInfo.xml
@@ -698,7 +699,11 @@ fn resolve_output_path(
     match output {
         Some(p) => p,
         None => {
-            let ext = if kf8_only && !mobi_ext { "azw3" } else { "mobi" };
+            let ext = if kf8_only && !mobi_ext {
+                "azw3"
+            } else {
+                "mobi"
+            };
             input.with_extension(ext)
         }
     }
@@ -1053,8 +1058,7 @@ fn main() {
                 };
 
                 let mobi_ext_applies = mobi_ext && effective_kf8_only && output.is_none();
-                let output_path =
-                    resolve_output_path(&input, output, effective_kf8_only, mobi_ext);
+                let output_path = resolve_output_path(&input, output, effective_kf8_only, mobi_ext);
                 if mobi_ext_applies {
                     eprintln!(
                         "--mobi-ext: writing KF8-only output as .mobi so the \
@@ -1165,19 +1169,26 @@ fn main() {
                     );
                 }
 
-                // Parse doc_type flag. Comics carry an explicit
-                // cde_content_type (they are fixed-layout and need a shelf
-                // assignment); only reflowable books omit EXTH 501 (None) to
-                // keep their home-nav chrome (issue #15).
+                // Parse doc_type flag. "none" omits EXTH 501, which is the
+                // default for comics as well as reflowable books: its mere
+                // presence costs the back-to-library button on some firmware
+                // (issue #15 for books, issue #21 for comics).
+                //
+                // Lowercasing rather than a clap value_parser keeps
+                // `--doc-type PDOC` working. An unrecognized value is a hard
+                // error, not a warn-and-substitute: silently shipping a shelf
+                // assignment the user did not ask for is how the comic default
+                // went untested for so long.
                 let doc_type_value = match doc_type.to_lowercase().as_str() {
+                    "none" => None,
                     "ebok" => Some("EBOK".to_string()),
                     "pdoc" => Some("PDOC".to_string()),
                     other => {
                         eprintln!(
-                            "Warning: unknown --doc-type '{}', using default 'pdoc'",
+                            "Error: unknown --doc-type '{}' (expected 'none', 'ebok' or 'pdoc')",
                             other
                         );
-                        Some("PDOC".to_string())
+                        std::process::exit(1);
                     }
                 };
 

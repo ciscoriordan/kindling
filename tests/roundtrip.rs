@@ -72,7 +72,7 @@ fn assert_palmdb_shape(parsed: &ParsedMobi, ctx: &str) {
     }
 }
 
-fn assert_required_exth(section: &MobiSection, ctx: &str, need_501: bool) {
+fn assert_required_exth(section: &MobiSection, ctx: &str, want_501: bool) {
     // EXTH 503 intentionally omitted - breaks Kindle fixed-layout navigation.
     for rtype in [100u32, 524] {
         assert!(
@@ -81,10 +81,21 @@ fn assert_required_exth(section: &MobiSection, ctx: &str, need_501: bool) {
             section.exth_types()
         );
     }
-    if need_501 {
+    // EXTH 501 is never required. It appears only when --doc-type asks for a
+    // shelf; its unconditional presence is what hid the back-to-library button
+    // on reflowable books (issue #15) and on comics (issue #21).
+    if want_501 {
         assert!(
             section.exth_first(501).is_some(),
-            "{ctx}: missing required EXTH 501 (cdetype). Present: {:?}",
+            "{ctx}: missing EXTH 501 (cdetype) despite an explicit --doc-type. \
+             Present: {:?}",
+            section.exth_types()
+        );
+    } else {
+        assert!(
+            section.exth_first(501).is_none(),
+            "{ctx}: EXTH 501 (cdetype) present without an explicit --doc-type. \
+             Present: {:?}",
             section.exth_types()
         );
     }
@@ -291,7 +302,7 @@ fn roundtrip_simple_comic() {
         kf7.header.encoding
     );
 
-    assert_required_exth(kf7, "comic KF8", true);
+    assert_required_exth(kf7, "comic KF8", false);
 
     // Comics require EXTH 201 (cover offset) and 202 (thumbnail offset) to
     // render in the Kindle library. The pure readback check in

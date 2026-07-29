@@ -4652,6 +4652,54 @@ mod tests {
         println!("  \u{2713} Comic doc_type=EBOK: EXTH 501='{}'", value);
     }
 
+    /// A default comic build must NOT carry EXTH 501.
+    ///
+    /// Its presence hides the back-to-library button on Paperwhite 5 firmware
+    /// 5.18.x/5.19.x, trapping the reader in the comic with a reboot as the
+    /// only way out (issue #21, same mechanism as issue #15 for reflowable
+    /// books). Comics used to force PDOC on unconditionally and no test
+    /// asserted the default, which is how it survived. kindlegen emits no 501
+    /// for any content type.
+    #[test]
+    fn test_comic_omits_exth_501_by_default() {
+        use crate::comic;
+
+        let dir = TempDir::new("comic_no_doc_type");
+        let images_dir = dir.path().join("images");
+        fs::create_dir_all(&images_dir).unwrap();
+
+        let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(100, 150, |_, _| {
+            image::Luma([128])
+        }));
+        img.save(images_dir.join("page_001.jpg")).unwrap();
+
+        let output_path = dir.path().join("default_comic.mobi");
+        let profile = comic::get_profile("paperwhite").unwrap();
+        let options = comic::ComicOptions {
+            embed_source: false,
+            ..Default::default()
+        };
+        assert!(
+            options.doc_type.is_none(),
+            "ComicOptions::default() must leave doc_type unset"
+        );
+        comic::build_comic_with_options(&images_dir, &output_path, &profile, &options)
+            .expect("default comic build should succeed");
+
+        let data = fs::read(&output_path).unwrap();
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let exth = parse_exth_records(rec0);
+
+        assert!(
+            exth.get(&501).is_none(),
+            "default comic build must omit EXTH 501, found {:?}",
+            exth.get(&501)
+                .map(|v| String::from_utf8_lossy(&v[0]).to_string())
+        );
+        println!("  \u{2713} Default comic build omits EXTH 501 (issue #21)");
+    }
+
     #[test]
     fn test_comic_title_override() {
         use crate::comic;

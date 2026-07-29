@@ -375,11 +375,13 @@ fn check_exth_metadata(
         )),
     }
 
-    // EXTH 501 - cde_content_type. Reflowable books MUST omit it: its mere
-    // presence makes the Kindle reader hide the back-to-library toolbar and
-    // trap the reader in the book (device-verified, issue #15). Dictionaries
-    // omit it too. Only comics (fixed-layout, a different reader, shelf set
-    // via --doc-type) are expected to carry one.
+    // EXTH 501 - cde_content_type. Every content type omits it by default: its
+    // mere presence makes the Kindle reader hide the back-to-library toolbar
+    // and trap the reader in the book (device-verified for reflowable books in
+    // issue #15, reported for comics on Paperwhite 5 firmware 5.18.x/5.19.x in
+    // issue #21). kindlegen emits no 501 for anything. It appears only when
+    // --doc-type explicitly asks for a shelf, so its absence is never a
+    // failure; when present, it still has to be a value the firmware knows.
     match find_exth_string(&section.exth, 501) {
         Some(data) => {
             report.pass();
@@ -393,12 +395,9 @@ fn check_exth_metadata(
                 report.pass();
             }
         }
-        None if expected.is_comic => report.fail(format!(
-            "{}: EXTH 501 (cde_content_type) missing on comic",
-            section_label
-        )),
         None => {
-            // Books and dictionaries correctly omit 501.
+            // Books, dictionaries and comics all correctly omit 501 unless a
+            // shelf was explicitly requested.
             report.pass();
         }
     }
