@@ -435,7 +435,7 @@ Kindling works with the KF7/MOBI format used by Kindle e-readers. The key struct
 - **Text records**: PalmDOC LZ77 compressed HTML with trailing bytes (`\x00\x81`)
 - **INDX records**: Orthographic index with headword entries, character mapping, and sort tables
 - **Image records**: Raw JPEG/PNG with JFIF header patching for Kindle cover compatibility
-- **KF8 section**: Dual-format output with BOUNDARY record, KF8 text, FDST, skeleton/fragment/NCX indexes
+- **KF8 section**: Dual-format output with BOUNDARY record, KF8 text, FDST, skeleton/fragment/NCX indexes. The FDST table is sized to the flows the book actually has (one for a book with no stylesheet, two with CSS), never declaring a zero-length flow, and EXTH 125 carries the real resource-record count; a hardcoded 2-flow table plus a fake count made a minimal no-CSS, no-image book fail to open on device with "Unable to Open Item"
 - **HD container**: CONT/CRES records for high-DPI Kindle screens
 - **FLIS/FCIS/EOF**: Required format records
 

@@ -470,6 +470,7 @@ fn build_dictionary_mobi(
         None, // no HD images for dictionaries
         creator_tag,
         None, // no doc_type for dictionaries
+        0,    // unused: the dictionary EXTH (build_exth) writes its own 125
     );
 
     // Assemble all records
@@ -960,6 +961,8 @@ fn build_book_mobi(
             hd_geometry_string.as_deref(),
             total_records,
             doc_type,
+            // EXTH 125: real count of resource records in this section
+            (num_image_records + num_font_records) as u32,
         );
 
         let kf8_flis_rec = build_flis();
@@ -1131,6 +1134,8 @@ fn build_book_mobi(
             hd_geometry_string.as_deref(),
             creator_tag,
             doc_type,
+            // EXTH 125: resources live in the KF7 section of a dual file
+            (num_image_records + num_font_records) as u32,
         );
 
         // Build KF8 record 0 (version=8, KF8-relative indices)
@@ -1164,6 +1169,9 @@ fn build_book_mobi(
             None, // no HD geometry in KF8 section of dual format
             0,    // total_records not used for KF8 section in dual format
             doc_type,
+            // EXTH 125 is 0 in the KF8 section of a dual file: the resource
+            // records live in the KF7 section (kindlegen does the same).
+            0,
         );
 
         // Build FLIS/FCIS/EOF for both sections
@@ -3681,6 +3689,7 @@ fn build_record0(
     hd_geometry: Option<&str>,
     creator_tag: bool,
     doc_type: Option<&str>,
+    resource_count: u32,
 ) -> Vec<u8> {
     let default_name = if is_dictionary { "Dictionary" } else { "Book" };
     let full_name = if opf.title.is_empty() {
@@ -3822,6 +3831,7 @@ fn build_record0(
             doc_type,
             None, // description
             None, // subject
+            resource_count,
         )
     };
 
@@ -3886,6 +3896,7 @@ fn build_kf8_record0(
     hd_geometry: Option<&str>,
     _total_records: usize,
     doc_type: Option<&str>,
+    resource_count: u32,
 ) -> Vec<u8> {
     let full_name = if opf.title.is_empty() {
         "Book"
@@ -4030,6 +4041,7 @@ fn build_kf8_record0(
         doc_type,
         None, // description
         None, // subject
+        resource_count,
     );
 
     // Full name offset

@@ -205,11 +205,13 @@ pub fn build_kf8_section(
         compress_text_kf8(&combined_text, &tbs_entries, html_length, tbs_type)
     };
 
-    // Step 4: FDST record. flow[1] carries the CSS flow when present and
-    // is an empty stub otherwise (unchanged from prior behavior, so the
-    // comic / dictionary paths that ship no CSS are byte-identical).
+    // Step 4: FDST record. flow[1] carries the CSS flow when present; a
+    // book with no CSS is a single-flow file and the FDST declares exactly
+    // one section. kindlegen and calibre never declare a zero-length flow,
+    // and a trailing empty flow is a structural defect that makes real
+    // Kindles reject the book at open time with "Unable to Open Item".
     let fdst = build_fdst(html_length, total_text_length);
-    let flow_count = 2; // Always 2 per KCC/libmobi
+    let flow_count = if css_bytes.is_empty() { 1 } else { 2 };
 
     // Step 5: Skeleton INDX records.
     let skeleton_indx = build_skeleton_indx(&skeleton_entries);
@@ -1521,9 +1523,15 @@ fn split_text_uncompressed_kf8(
 }
 
 /// Build the FDST (Flow Descriptor Table) record.
+///
+/// Declares one section per real flow: the HTML flow always, the CSS flow
+/// only when CSS was actually appended after the HTML. Never declares a
+/// zero-length flow: kindlegen and calibre both size the table to the real
+/// flows, and a trailing empty section (the pre-0.29.2 behavior for books
+/// with no CSS) makes real Kindle hardware refuse to open the book.
 fn build_fdst(html_length: usize, total_length: usize) -> Vec<u8> {
     let has_css = total_length > html_length;
-    let flow_count: usize = 2; // Always 2 per KCC/libmobi
+    let flow_count: usize = if has_css { 2 } else { 1 };
 
     let record_size = 12 + flow_count * 8;
     let mut fdst = Vec::with_capacity(record_size);
@@ -1535,13 +1543,10 @@ fn build_fdst(html_length: usize, total_length: usize) -> Vec<u8> {
     fdst.extend_from_slice(&0u32.to_be_bytes());
     fdst.extend_from_slice(&(html_length as u32).to_be_bytes());
 
-    // Flow 1: CSS or zero-length stub
+    // Flow 1: CSS, only when present
     if has_css {
         fdst.extend_from_slice(&(html_length as u32).to_be_bytes());
         fdst.extend_from_slice(&(total_length as u32).to_be_bytes());
-    } else {
-        fdst.extend_from_slice(&(html_length as u32).to_be_bytes());
-        fdst.extend_from_slice(&(html_length as u32).to_be_bytes());
     }
 
     fdst

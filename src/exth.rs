@@ -265,6 +265,7 @@ pub fn build_book_exth(
     doc_type: Option<&str>,
     description: Option<&str>,
     subject: Option<&str>,
+    resource_count: u32,
 ) -> Vec<u8> {
     let mut records: Vec<Vec<u8>> = Vec::new();
 
@@ -430,8 +431,13 @@ pub fn build_book_exth(
     // EXTH 547 (InMemory)
     records.push(exth_record(547, b"InMemory"));
 
-    // EXTH 125 (value 21 to match kindlegen)
-    records.push(exth_record(125, &21u32.to_be_bytes()));
+    // EXTH 125 (kf8_count_resources_fonts): the number of resource records
+    // (images + embedded fonts) in this section. kindlegen writes the real
+    // count - 0 for a text-only book. The old hardcoded 21 (cargo-culted
+    // from one kindlegen sample) claimed resources that do not exist, which
+    // together with a NULL first_image_index is a structural lie the
+    // device-side importer can trip over.
+    records.push(exth_record(125, &resource_count.to_be_bytes()));
 
     // EXTH 121: KF8 boundary record (global index of KF8 Record 0)
     if let Some(boundary) = kf8_boundary_record {
@@ -637,6 +643,7 @@ mod tests {
             None, // doc_type: None should omit EXTH 501 entirely
             None,
             None,
+            0, // resource_count
         );
         let records = parse_exth_records(&exth);
         assert!(
@@ -663,6 +670,7 @@ mod tests {
             Some("PDOC"),
             None,
             None,
+            0, // resource_count
         );
         let records = parse_exth_records(&exth);
         let rec501 = find_record(&records, 501).expect("EXTH 501 should exist");
@@ -687,6 +695,7 @@ mod tests {
             Some("EBOK"),
             None,
             None,
+            0, // resource_count
         );
         let records = parse_exth_records(&exth);
         let rec501 = find_record(&records, 501).expect("EXTH 501 should exist");
@@ -717,7 +726,8 @@ mod tests {
             false,
             None,
             Some("Luffy begins his adventure"), // description (103)
-            Some("Manga, Adventure"),           // subject (105)
+            Some("Manga, Adventure"),           // subject (105),
+            0,                                  // resource_count
         );
         let records = parse_exth_records(&exth);
 
@@ -758,6 +768,7 @@ mod tests {
             Some("EBOK"),
             Some("A test book"),
             Some("Fiction"),
+            0, // resource_count
         );
 
         // Must start with "EXTH"

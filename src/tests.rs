@@ -7963,35 +7963,179 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_kf8_fcis_entry_count_matches_flow_count() {
-        // FCIS entry_count (at offset 12) should match the FDST flow count.
-        // For a book with HTML+CSS, flow_count=2 and entry_count should be >= 2.
-        // The old value of 1 was wrong.
-        let dir = TempDir::new("kf8_fcis_flows");
-        let jpeg = make_test_jpeg();
-        let opf = create_book_fixture(dir.path(), Some(&jpeg));
-        let data = build_kf8_only_mobi_bytes(&opf, dir.path());
-        let (_, record_count, offsets) = parse_palmdb(&data);
-
-        // Find the FCIS record
-        let mut fcis_rec: Option<&[u8]> = None;
+    /// Find the first record with the given 4-byte magic; panics if absent.
+    fn find_record_with_magic<'a>(
+        data: &'a [u8],
+        offsets: &[u32],
+        record_count: u16,
+        magic: &[u8; 4],
+    ) -> &'a [u8] {
         for i in 0..record_count as usize {
-            let rec = get_record(&data, &offsets, i);
-            if rec.len() >= 4 && &rec[0..4] == b"FCIS" {
-                fcis_rec = Some(rec);
-                break;
+            let rec = get_record(data, offsets, i);
+            if rec.len() >= 4 && &rec[0..4] == magic {
+                return rec;
             }
         }
-        let fcis = fcis_rec.expect("Should find FCIS record");
+        panic!("Should find {} record", String::from_utf8_lossy(&magic[..]));
+    }
 
-        // Entry count is at offset 12 in the FCIS record (u32 BE)
+    #[test]
+    fn test_kf8_fcis_entry_count_matches_flow_count() {
+        // FCIS entry_count (at offset 12) must match the FDST flow count in
+        // both directions:
+        // - a book with a real CSS flow has flow_count=2 and FCIS entry_count 2
+        //   (the pre-hardware-debugging value of 1 was wrong for these);
+        // - a book with NO CSS is a single-flow file: FDST declares 1 section
+        //   and FCIS 1 entry (the old always-2 layout declared a zero-length
+        //   flow, which no kindlegen/calibre output ever contains).
+        // With CSS (create_book_fixture has none, so link one in):
+        let dir = TempDir::new("kf8_fcis_flows");
+        fs::write(dir.path().join("style.css"), "p { margin: 0; }").unwrap();
+        fs::write(
+            dir.path().join("content.html"),
+            r#"<html><head><title>T</title><link rel="stylesheet" type="text/css" href="style.css"/></head><body><p>x</p></body></html>"#,
+        )
+        .unwrap();
+        let opf = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf">
+  <metadata>
+    <dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">T</dc:title>
+    <dc:language xmlns:dc="http://purl.org/dc/elements/1.1/">en</dc:language>
+  </metadata>
+  <manifest>
+    <item id="content" href="content.html" media-type="application/xhtml+xml"/>
+    <item id="css" href="style.css" media-type="text/css"/>
+  </manifest>
+  <spine><itemref idref="content"/></spine>
+</package>"#;
+        let opf_path = dir.path().join("content.opf");
+        fs::write(&opf_path, opf).unwrap();
+        let data = build_kf8_only_mobi_bytes(&opf_path, dir.path());
+        let (_, record_count, offsets) = parse_palmdb(&data);
+
+        let fcis = find_record_with_magic(&data, &offsets, record_count, b"FCIS");
         let entry_count = read_u32_be(fcis, 12);
-        assert!(
-            entry_count >= 2,
-            "FCIS entry_count should be >= 2 for a book with HTML+CSS flows, got {}",
-            entry_count
+        let fdst = find_record_with_magic(&data, &offsets, record_count, b"FDST");
+        let fdst_sections = read_u32_be(fdst, 8);
+        assert_eq!(
+            fdst_sections, 2,
+            "book with CSS should declare 2 FDST flows, got {}",
+            fdst_sections
         );
+        assert_eq!(
+            entry_count, fdst_sections,
+            "FCIS entry_count ({}) must match FDST flow count ({})",
+            entry_count, fdst_sections
+        );
+
+        // Without CSS:
+        let dir2 = TempDir::new("kf8_fcis_noflow");
+        let opf2 = create_book_fixture(dir2.path(), None);
+        let data2 = build_kf8_only_mobi_bytes(&opf2, dir2.path());
+        let (_, record_count2, offsets2) = parse_palmdb(&data2);
+
+        let fcis2 = find_record_with_magic(&data2, &offsets2, record_count2, b"FCIS");
+        let entry_count2 = read_u32_be(fcis2, 12);
+        let fdst2 = find_record_with_magic(&data2, &offsets2, record_count2, b"FDST");
+        let fdst_sections2 = read_u32_be(fdst2, 8);
+        assert_eq!(
+            fdst_sections2, 1,
+            "book without CSS should declare 1 FDST flow, got {}",
+            fdst_sections2
+        );
+        assert_eq!(
+            entry_count2, fdst_sections2,
+            "FCIS entry_count ({}) must match FDST flow count ({})",
+            entry_count2, fdst_sections2
+        );
+    }
+
+    #[test]
+    fn test_kf8_minimal_book_has_no_empty_flow_or_fake_resources() {
+        // Regression test for the "Unable to Open Item" minimal-book bug: a
+        // single-chapter book with NO cover, NO NCX/nav, and NO CSS built
+        // KF8-only used to ship two structural lies that no kindlegen,
+        // calibre, or device-verified kindling output contains:
+        // - an FDST declaring 2 flows where flow 1 was a zero-length stub
+        //   (header num_flows = 2 as well), and
+        // - EXTH 125 claiming 21 resource records in a file that has none
+        //   (with first_image_index = NULL, so the claim is undereferenceable).
+        let dir = TempDir::new("kf8_minimal_book");
+        fs::write(
+            dir.path().join("book.html"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="ko" lang="ko">
+<head><title>Minimal</title></head>
+<body><h1>One</h1><p>only chapter</p></body></html>"#,
+        )
+        .unwrap();
+        let opf = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookId">
+<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+<dc:title>Minimal</dc:title>
+<dc:language>ko</dc:language>
+<dc:identifier id="BookId">minimal-no-cover-no-ncx</dc:identifier>
+</metadata>
+<manifest>
+<item id="content" href="book.html" media-type="application/xhtml+xml"/>
+</manifest>
+<spine><itemref idref="content"/></spine>
+</package>"#;
+        let opf_path = dir.path().join("book.opf");
+        fs::write(&opf_path, opf).unwrap();
+        let data = build_kf8_only_mobi_bytes(&opf_path, dir.path());
+        let (_, record_count, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        // Uncompressed text length from the PalmDOC header.
+        let text_length = read_u32_be(rec0, 4);
+
+        // FDST: exactly one section, covering the whole text, and no
+        // zero-length section anywhere in the table.
+        let fdst = find_record_with_magic(&data, &offsets, record_count, b"FDST");
+        let sections = read_u32_be(fdst, 8);
+        assert_eq!(
+            sections, 1,
+            "no-CSS book must declare exactly 1 FDST flow, got {}",
+            sections
+        );
+        for i in 0..sections as usize {
+            let start = read_u32_be(fdst, 12 + i * 8);
+            let end = read_u32_be(fdst, 16 + i * 8);
+            assert!(
+                end > start,
+                "FDST section {} is empty ({}..{}); zero-length flows break device open",
+                i,
+                start,
+                end
+            );
+        }
+        assert_eq!(read_u32_be(fdst, 12), 0, "flow 0 must start at 0");
+        assert_eq!(
+            read_u32_be(fdst, 16),
+            text_length,
+            "flow 0 must cover the whole text"
+        );
+
+        // KF8 MOBI header num_flows (offset 180, record byte 16 + 180)
+        // must match the FDST table.
+        let num_flows = read_u32_be(rec0, 16 + 180);
+        assert_eq!(
+            num_flows, sections,
+            "header num_flows ({}) must match FDST section count ({})",
+            num_flows, sections
+        );
+
+        // EXTH 125 must not claim resources the file does not have.
+        let exth = parse_exth_records(rec0);
+        let rec125 = exth.get(&125).expect("EXTH 125 should be present");
+        let claimed = u32::from_be_bytes([rec125[0][0], rec125[0][1], rec125[0][2], rec125[0][3]]);
+        assert_eq!(
+            claimed, 0,
+            "book with no images/fonts must claim 0 resources in EXTH 125, got {}",
+            claimed
+        );
+        println!("  \u{2713} minimal no-cover/no-NCX book: 1 real flow, EXTH 125 = 0");
     }
 
     #[test]
@@ -8312,7 +8456,12 @@ mod tests {
     }
 
     #[test]
-    fn test_book_exth_125_value_21() {
+    fn test_book_exth_125_is_real_resource_count() {
+        // EXTH 125 (kf8_count_resources_fonts) must be the real number of
+        // resource records in the section, like kindlegen writes - not the
+        // old hardcoded 21. This dual-format fixture carries the cover image
+        // plus the generated library thumbnail, so the KF7 section holds
+        // exactly 2 resource records.
         let dir = TempDir::new("book_exth_125");
         let jpeg = make_test_jpeg();
         let opf = create_book_fixture(dir.path(), Some(&jpeg));
@@ -8323,8 +8472,27 @@ mod tests {
 
         let entries = exth.get(&125).expect("Book EXTH 125 should be present");
         let val = u32::from_be_bytes([entries[0][0], entries[0][1], entries[0][2], entries[0][3]]);
-        assert_eq!(val, 21, "Book EXTH 125 should be 21, got {}", val);
-        println!("  \u{2713} Book EXTH 125: {}", val);
+        assert_eq!(
+            val, 2,
+            "Book EXTH 125 should equal the section's resource record count (cover + thumb), got {}",
+            val
+        );
+
+        // The KF8 section of a dual file holds no resources; kindlegen
+        // writes EXTH 125 = 0 there.
+        let kf7_exth = parse_exth_records(rec0);
+        let boundary = kf7_exth.get(&121).expect("dual file must carry EXTH 121");
+        let kf8_rec0_idx = u32::from_be_bytes(boundary[0][0..4].try_into().unwrap()) as usize;
+        let kf8_rec0 = get_record(&data, &offsets, kf8_rec0_idx);
+        let kf8_exth = parse_exth_records(kf8_rec0);
+        let kf8_125 = kf8_exth.get(&125).expect("KF8 EXTH 125 should be present");
+        let kf8_val =
+            u32::from_be_bytes([kf8_125[0][0], kf8_125[0][1], kf8_125[0][2], kf8_125[0][3]]);
+        assert_eq!(
+            kf8_val, 0,
+            "KF8 section of a dual file must claim 0 resources"
+        );
+        println!("  \u{2713} Book EXTH 125: KF7 = {}, KF8 = {}", val, kf8_val);
     }
 
     #[test]
