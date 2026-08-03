@@ -771,7 +771,11 @@ mod validate {
         // And that dual container really is larger than the KF8-only default,
         // which is the layer the device needs to open a .mobi at all.
         let default = run_build(&[opf.to_str().unwrap()]);
-        assert!(default.status.success(), "default build\n{}", dump(&default));
+        assert!(
+            default.status.success(),
+            "default build\n{}",
+            dump(&default)
+        );
         let kf8_only_len = std::fs::metadata(&azw3).unwrap().len();
         assert!(
             kf8_only_len < legacy_bytes.len() as u64,
