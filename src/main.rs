@@ -72,14 +72,12 @@ enum Commands {
         #[arg(long)]
         legacy_mobi: bool,
 
-        /// Emit KF8-only output with a .mobi extension instead of .azw3. The
-        /// bytes are identical modern KF8; only the filename changes. When a
-        /// file is sideloaded over USB, Kindle firmware populates the
-        /// home-screen library thumbnail from the embedded cover only via the
-        /// legacy .mobi ingest path, so a KF8-only .azw3 shows a gray tile
-        /// while the same bytes named .mobi show the cover (issue #20). Unlike
-        /// --legacy-mobi this adds no MOBI7/KF7 layer. Affects only the derived
-        /// output name; an explicit -o always wins.
+        /// Deprecated alias for --legacy-mobi. This used to write KF8-only
+        /// bytes under a .mobi name to restore the sideloaded library cover
+        /// (issue #20), but Kindle firmware dispatches on the extension and
+        /// refuses to open such a file, confirmed on a Paperwhite 3 and a
+        /// Paperwhite 5 (issue #24). It now builds the dual MOBI7+KF8 that
+        /// shows the cover and opens. Pass --legacy-mobi instead.
         #[arg(long)]
         mobi_ext: bool,
 
@@ -263,12 +261,12 @@ enum Commands {
         #[arg(long)]
         legacy_mobi: bool,
 
-        /// Emit KF8-only output with a .mobi extension instead of .azw3
-        /// (identical KF8 bytes, filename only). Restores the home-screen
-        /// library cover for USB-sideloaded files, which Kindle firmware
-        /// populates only via the legacy .mobi ingest path (issue #20). Unlike
-        /// --legacy-mobi this adds no MOBI7/KF7 layer; an explicit -o always
-        /// wins.
+        /// Deprecated alias for --legacy-mobi. This used to write KF8-only
+        /// bytes under a .mobi name to restore the sideloaded library cover
+        /// (issue #20), but Kindle firmware dispatches on the extension and
+        /// refuses to open such a file (issue #24). It now builds the dual
+        /// MOBI7+KF8 that shows the cover and opens. Pass --legacy-mobi
+        /// instead.
         #[arg(long)]
         mobi_ext: bool,
 
@@ -688,24 +686,38 @@ fn parse_kindlegen_args() -> (PathBuf, Option<String>, bool, bool, bool, bool) {
 /// format). If no output is specified, derive a default filename by
 /// replacing the input extension with `.azw3` for KF8-only builds or
 /// `.mobi` for dual-format (legacy MOBI7+KF8 and dictionary) builds.
-/// `mobi_ext` forces the `.mobi` extension for KF8-only builds too (same KF8
-/// bytes, filename only) so USB-sideloaded library covers show (issue #20).
-fn resolve_output_path(
-    input: &PathBuf,
-    output: Option<PathBuf>,
-    kf8_only: bool,
-    mobi_ext: bool,
-) -> PathBuf {
+fn resolve_output_path(input: &PathBuf, output: Option<PathBuf>, kf8_only: bool) -> PathBuf {
     match output {
         Some(p) => p,
         None => {
-            let ext = if kf8_only && !mobi_ext {
-                "azw3"
-            } else {
-                "mobi"
-            };
+            let ext = if kf8_only { "azw3" } else { "mobi" };
             input.with_extension(ext)
         }
+    }
+}
+
+/// Warn when a KF8-only payload is about to be written under a `.mobi` name.
+///
+/// Kindle firmware dispatches on the extension: a KF8-only file named `.mobi`
+/// shows its cover in the library and then refuses to open, confirmed on a
+/// Paperwhite 3 (5.16.2.1.1) and a Paperwhite 5 (5.19.2) against byte-identical
+/// builds (issue #24). Nothing in the file is wrong, so no readback check can
+/// catch this; the only signal is the name the caller chose.
+fn warn_if_kf8_only_named_mobi(path: &std::path::Path, kf8_only: bool) {
+    if !kf8_only {
+        return;
+    }
+    if path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("mobi"))
+    {
+        eprintln!(
+            "Warning: writing KF8-only bytes to {}. Kindle devices show the \
+             cover for a .mobi but refuse to open it when the payload has no \
+             MOBI7 layer (issue #24). Use .azw3, or pass --legacy-mobi for a \
+             dual MOBI7+KF8 .mobi that opens.",
+            path.display()
+        );
     }
 }
 
@@ -1053,18 +1065,21 @@ fn main() {
                          modern default."
                     );
                     false
+                } else if mobi_ext {
+                    eprintln!(
+                        "Warning: --mobi-ext is deprecated and now builds the \
+                         same dual MOBI7+KF8 as --legacy-mobi. Naming KF8-only \
+                         bytes .mobi showed the library cover but left a book \
+                         no Kindle would open (issue #24); the dual container \
+                         gives you both. Pass --legacy-mobi instead."
+                    );
+                    false
                 } else {
                     true
                 };
 
-                let mobi_ext_applies = mobi_ext && effective_kf8_only && output.is_none();
-                let output_path = resolve_output_path(&input, output, effective_kf8_only, mobi_ext);
-                if mobi_ext_applies {
-                    eprintln!(
-                        "--mobi-ext: writing KF8-only output as .mobi so the \
-                         sideloaded library cover shows (issue #20)."
-                    );
-                }
+                let output_path = resolve_output_path(&input, output, effective_kf8_only);
+                warn_if_kf8_only_named_mobi(&output_path, effective_kf8_only);
                 do_build(
                     &input,
                     &output_path,
@@ -1146,28 +1161,21 @@ fn main() {
                          modern default."
                     );
                     false
+                } else if mobi_ext {
+                    eprintln!(
+                        "Warning: --mobi-ext is deprecated and now builds the \
+                         same dual MOBI7+KF8 as --legacy-mobi. Naming KF8-only \
+                         bytes .mobi showed the library cover but left a book \
+                         no Kindle would open (issue #24); the dual container \
+                         gives you both. Pass --legacy-mobi instead."
+                    );
+                    false
                 } else {
                     true
                 };
 
-                let mobi_ext_applies = mobi_ext && effective_kf8_only && output.is_none();
-                let output_path = match output {
-                    Some(p) => p,
-                    None => {
-                        let ext = if effective_kf8_only && !mobi_ext {
-                            "azw3"
-                        } else {
-                            "mobi"
-                        };
-                        input.with_extension(ext)
-                    }
-                };
-                if mobi_ext_applies {
-                    eprintln!(
-                        "--mobi-ext: writing KF8-only output as .mobi so the \
-                         sideloaded library cover shows (issue #20)."
-                    );
-                }
+                let output_path = resolve_output_path(&input, output, effective_kf8_only);
+                warn_if_kf8_only_named_mobi(&output_path, effective_kf8_only);
 
                 // Parse doc_type flag. "none" omits EXTH 501, which is the
                 // default for comics as well as reflowable books: its mere

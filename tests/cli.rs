@@ -715,12 +715,15 @@ mod validate {
     }
 
     #[test]
-    fn build_non_dict_mobi_ext_flag_produces_kf8_only_mobi() {
-        // issue #20: `--mobi-ext` writes the modern KF8-only bytes under a
-        // `.mobi` filename (NOT the dual MOBI7+KF8 that `--legacy-mobi`
-        // produces), so USB-sideloaded library covers show. Assert we get a
-        // `.mobi` and no `.azw3`, and that it is smaller than the dual-format
-        // `--legacy-mobi` build, which carries the extra MOBI7/KF7 layer.
+    fn build_non_dict_mobi_ext_flag_is_now_a_legacy_mobi_alias() {
+        // issue #24: `--mobi-ext` used to write KF8-only bytes under a `.mobi`
+        // name to restore the sideloaded library cover (issue #20). Kindle
+        // firmware dispatches on the extension and refuses to open such a
+        // file, confirmed on a Paperwhite 3 and a Paperwhite 5 against
+        // byte-identical builds, so the flag now produces the dual MOBI7+KF8
+        // that both shows the cover and opens. Assert it lands on `.mobi`,
+        // warns that it is deprecated, and is byte-for-byte what
+        // `--legacy-mobi` produces.
         let (tmp, opf) = stage_fixture("clean_book", "clean_book.opf");
 
         let out = run_build(&["--mobi-ext", opf.to_str().unwrap()]);
@@ -742,23 +745,72 @@ mod validate {
             "did not expect .azw3 with --mobi-ext at {:?}",
             azw3
         );
-        let kf8_only_len = std::fs::metadata(&mobi).unwrap().len();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("--mobi-ext is deprecated"),
+            "--mobi-ext must say it is deprecated\n{}",
+            dump(&out)
+        );
+        let mobi_ext_bytes = std::fs::read(&mobi).unwrap();
         std::fs::remove_file(&mobi).unwrap();
 
-        // Same fixture, dual-format: must be larger (it also carries KF7).
+        // Same fixture via --legacy-mobi: the same dual container.
         let legacy = run_build(&["--legacy-mobi", opf.to_str().unwrap()]);
         assert!(
             legacy.status.success(),
             "build clean_book --legacy-mobi should succeed\n{}",
             dump(&legacy)
         );
-        let dual_len = std::fs::metadata(&mobi).unwrap().len();
+        let legacy_bytes = std::fs::read(&mobi).unwrap();
+        assert_eq!(
+            mobi_ext_bytes.len(),
+            legacy_bytes.len(),
+            "--mobi-ext must now produce the same dual MOBI7+KF8 as --legacy-mobi"
+        );
+
+        // And that dual container really is larger than the KF8-only default,
+        // which is the layer the device needs to open a .mobi at all.
+        let default = run_build(&[opf.to_str().unwrap()]);
+        assert!(default.status.success(), "default build\n{}", dump(&default));
+        let kf8_only_len = std::fs::metadata(&azw3).unwrap().len();
         assert!(
-            kf8_only_len < dual_len,
-            "--mobi-ext KF8-only ({} bytes) should be smaller than --legacy-mobi \
-             dual-format ({} bytes); --mobi-ext must not add the MOBI7/KF7 layer",
+            kf8_only_len < legacy_bytes.len() as u64,
+            "KF8-only ({} bytes) should be smaller than the dual container ({} bytes)",
             kf8_only_len,
-            dual_len
+            legacy_bytes.len()
+        );
+    }
+
+    #[test]
+    fn explicit_mobi_output_on_a_kf8_only_build_warns() {
+        // issue #24: `-o book.mobi` on the default build writes exactly the
+        // container the device refuses to open, and nothing in the file is
+        // wrong, so no readback check can catch it. The filename is the only
+        // signal available.
+        let (tmp, opf) = stage_fixture("clean_book", "clean_book.opf");
+        let target = tmp.path().join("trap.mobi");
+
+        let out = run_build(&["-o", target.to_str().unwrap(), opf.to_str().unwrap()]);
+        assert!(out.status.success(), "build should succeed\n{}", dump(&out));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("refuse to open") && stderr.contains("issue #24"),
+            "expected a KF8-only-named-.mobi warning\n{}",
+            dump(&out)
+        );
+
+        // The dual build writes the same name with no warning: that one opens.
+        let legacy = run_build(&[
+            "--legacy-mobi",
+            "-o",
+            target.to_str().unwrap(),
+            opf.to_str().unwrap(),
+        ]);
+        assert!(legacy.status.success(), "legacy build\n{}", dump(&legacy));
+        assert!(
+            !String::from_utf8_lossy(&legacy.stderr).contains("refuse to open"),
+            "a dual MOBI7+KF8 .mobi must not warn\n{}",
+            dump(&legacy)
         );
     }
 
