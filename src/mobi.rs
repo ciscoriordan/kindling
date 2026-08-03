@@ -240,7 +240,10 @@ fn build_dictionary_mobi(
             }
             total_image_bytes += data.len();
             href_to_recindex.insert(href.clone(), recindex);
-            image_records.push(data);
+            // Dictionaries carry no HD container, so an oversized image has
+            // nowhere else to live; re-encoding it into the LD cap is the only
+            // way the reader can decode it at all (issue #25).
+            image_records.push(fit_ld_image(&data).unwrap_or(data));
 
             if let Some(ref cover) = cover_href {
                 if href == cover {
@@ -562,10 +565,18 @@ fn build_book_mobi(
     // Build the href-to-recindex mapping and load image data
     // Image recindex is 1-based (first image = "00001")
     let mut image_records: Vec<Vec<u8>> = Vec::new();
+    // Full-resolution originals for the images whose LD record had to be
+    // re-encoded to fit `LD_IMAGE_MAX_BYTES`, keyed by LD record index. Only
+    // these get a real CRES slot in the HD container; every other slot is a
+    // placeholder, because shipping the same bytes twice is pure file bloat.
+    let mut hd_originals: std::collections::HashMap<usize, Vec<u8>> =
+        std::collections::HashMap::new();
     let mut href_to_recindex: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
     let mut cover_offset: Option<u32> = None;
     let mut total_image_bytes: usize = 0;
+    let mut shrunk_count: usize = 0;
+    let mut oversize_kept: Vec<String> = Vec::new();
 
     for (idx, (href, _media_type)) in image_items.iter().enumerate() {
         let recindex = idx + 1; // 1-based
@@ -594,7 +605,20 @@ fn build_book_mobi(
             }
             total_image_bytes += data.len();
             href_to_recindex.insert(href.clone(), recindex);
-            image_records.push(data);
+            // Cap the LD record; the original moves to the HD container.
+            match fit_ld_image(&data) {
+                Some(fitted) => {
+                    hd_originals.insert(idx, data);
+                    image_records.push(fitted);
+                    shrunk_count += 1;
+                }
+                None => {
+                    if data.len() > LD_IMAGE_MAX_BYTES {
+                        oversize_kept.push(href.clone());
+                    }
+                    image_records.push(data);
+                }
+            }
 
             // Check if this is the cover image
             if let Some(ref cover) = cover_href {
@@ -620,45 +644,63 @@ fn build_book_mobi(
             total_image_bytes
         );
     }
+    if shrunk_count > 0 {
+        eprintln!(
+            "Re-encoded {} image(s) over {} KB so the reader can decode them; {} (issue #25)",
+            shrunk_count,
+            LD_IMAGE_MAX_BYTES / 1024,
+            if hd_images {
+                "originals kept in the HD container"
+            } else {
+                "--no-hd-images: originals dropped"
+            },
+        );
+    }
+    for href in &oversize_kept {
+        eprintln!(
+            "Warning: {href} is over {} KB and could not be re-encoded; the reader may fail to open the book",
+            LD_IMAGE_MAX_BYTES / 1024,
+        );
+    }
 
     // Generate a library-grid thumbnail from the cover image and append it
     // as the last record in the LD image pool. Both EXTH 202 (thumbnail
     // offset) and the MOBI spec require the thumbnail to live in the
     // contiguous image-record range that starts at first_image_record, so
-    // we cannot store it elsewhere. The thumbnail record index within
-    // `image_records` is tracked so build_hd_container can emit a
-    // placeholder CRES slot for it instead of an HD copy.
-    let (thumb_offset, thumb_hd_skip): (Option<u32>, std::collections::HashSet<usize>) = {
-        let mut hd_skip: std::collections::HashSet<usize> = std::collections::HashSet::new();
-        let thumb_off = match cover_offset {
-            Some(cov) => {
-                let cov_idx = cov as usize;
-                let cover_bytes = image_records.get(cov_idx).cloned().unwrap_or_default();
-                if cover_bytes.is_empty() {
-                    None
-                } else if let Some(thumb) = build_thumbnail_record(&cover_bytes) {
-                    let thumb_idx = image_records.len();
-                    let thumb_len = thumb.len();
-                    image_records.push(thumb);
-                    let _ = total_image_bytes; // informational total already logged
-                    hd_skip.insert(thumb_idx);
-                    eprintln!(
-                        "Generated {} byte library thumbnail (recindex {}, EXTH 202={})",
-                        thumb_len,
-                        thumb_idx + 1,
-                        thumb_idx,
-                    );
-                    Some(thumb_idx as u32)
-                } else {
-                    eprintln!(
-                        "Warning: could not decode cover image to generate thumbnail; library tile will fall back to the cover"
-                    );
-                    None
-                }
+    // we cannot store it elsewhere. It gets no entry in `hd_originals`, so
+    // build_hd_container gives it a placeholder slot rather than an HD copy.
+    let thumb_offset: Option<u32> = match cover_offset {
+        Some(cov) => {
+            let cov_idx = cov as usize;
+            // Downscale from the full-resolution original when the LD record
+            // was re-encoded, so the tile is not a copy of a copy.
+            let cover_bytes = hd_originals
+                .get(&cov_idx)
+                .or_else(|| image_records.get(cov_idx))
+                .cloned()
+                .unwrap_or_default();
+            if cover_bytes.is_empty() {
+                None
+            } else if let Some(thumb) = build_thumbnail_record(&cover_bytes) {
+                let thumb_idx = image_records.len();
+                let thumb_len = thumb.len();
+                image_records.push(thumb);
+                let _ = total_image_bytes; // informational total already logged
+                eprintln!(
+                    "Generated {} byte library thumbnail (recindex {}, EXTH 202={})",
+                    thumb_len,
+                    thumb_idx + 1,
+                    thumb_idx,
+                );
+                Some(thumb_idx as u32)
+            } else {
+                eprintln!(
+                    "Warning: could not decode cover image to generate thumbnail; library tile will fall back to the cover"
+                );
+                None
             }
-            None => None,
-        };
-        (thumb_off, hd_skip)
+        }
+        None => None,
     };
 
     // Compute the KF8 cover URI once (same string for both KF7 and KF8
@@ -907,10 +949,14 @@ fn build_book_mobi(
         // +2 skips the NULL pad record (text_count+1=NULL, +2=first INDX)
         let kf8_first_nonbook = kf8_text_count + 2;
 
-        // HD container
-        let hd_container: Option<HdContainer> = if hd_images && num_image_records > 0 {
+        // HD container. Only worth emitting when at least one image has a
+        // full-resolution original the LD pool does not already hold; a
+        // container of nothing but placeholders is dead weight, and kindlegen
+        // omits it entirely in that case (none of the parity fixtures have
+        // one).
+        let hd_container: Option<HdContainer> = if hd_images && !hd_originals.is_empty() {
             eprintln!("Building HD image container (CONT/CRES)...");
-            Some(build_hd_container(opf, &image_records, &thumb_hd_skip))
+            Some(build_hd_container(opf, &image_records, &hd_originals))
         } else {
             None
         };
@@ -1086,10 +1132,14 @@ fn build_book_mobi(
         // +2 skips the NULL pad record (text_count+1=NULL, +2=first INDX)
         let kf8_first_nonbook = kf8_text_count + 2;
 
-        // HD container
-        let hd_container: Option<HdContainer> = if hd_images && num_image_records > 0 {
+        // HD container. Only worth emitting when at least one image has a
+        // full-resolution original the LD pool does not already hold; a
+        // container of nothing but placeholders is dead weight, and kindlegen
+        // omits it entirely in that case (none of the parity fixtures have
+        // one).
+        let hd_container: Option<HdContainer> = if hd_images && !hd_originals.is_empty() {
             eprintln!("Building HD image container (CONT/CRES)...");
-            Some(build_hd_container(opf, &image_records, &thumb_hd_skip))
+            Some(build_hd_container(opf, &image_records, &hd_originals))
         } else {
             None
         };
@@ -1302,21 +1352,21 @@ impl HdContainer {
 
 /// Build the HD image container for a book MOBI.
 ///
-/// Each image from the KF7 section gets a corresponding slot in the HD container:
-/// either a CRES record with the full image data (for all images, since the source
-/// images from EPUB are typically already high-res) or a 4-byte placeholder
-/// (0xA0A0A0A0) for empty/missing images.
+/// Every LD image gets a slot, but a slot only holds a real CRES record when
+/// there is genuinely a better copy to ship: `hd_originals` maps an LD record
+/// index to the full-resolution original of an image whose LD record had to be
+/// re-encoded down to `LD_IMAGE_MAX_BYTES`. Every other slot is a 4-byte
+/// placeholder (0xA0A0A0A0). Storing a CRES for images the LD pool already
+/// holds at full resolution only duplicates bytes: on the issue #25 EPUB that
+/// was 52 redundant copies and 2.3 MB. kindlegen makes the same choice, 18
+/// CRES records and 33 placeholders for that book.
 ///
-/// `hd_skip` holds LD image indices that should be represented by a
-/// placeholder CRES slot even when the LD data would otherwise qualify. We
-/// use this to skip the synthetic library thumbnail record appended at the
-/// end of the LD image pool: the thumbnail is small, low quality, and exists
-/// only for the library grid tile, so there is no value in also shipping an
-/// HD version of it.
+/// The synthetic library thumbnail appended at the end of the LD pool never
+/// appears in `hd_originals`, so it lands on the placeholder path.
 fn build_hd_container(
     opf: &OPFData,
     image_records: &[Vec<u8>],
-    hd_skip: &std::collections::HashSet<usize>,
+    hd_originals: &std::collections::HashMap<usize, Vec<u8>>,
 ) -> HdContainer {
     let title = if opf.title.is_empty() {
         "Book"
@@ -1331,9 +1381,13 @@ fn build_hd_container(
     let mut max_height: u32 = 0;
     let mut kindle_embed_parts: Vec<String> = Vec::new();
 
-    for (idx, img_data) in image_records.iter().enumerate() {
-        if img_data.is_empty() || hd_skip.contains(&idx) {
-            // Empty image slot or caller-requested skip - use placeholder
+    for idx in 0..num_images {
+        let Some(img_data) = hd_originals.get(&idx) else {
+            // Nothing better than the LD record exists - use placeholder
+            cres_records.push(vec![0xA0, 0xA0, 0xA0, 0xA0]);
+            continue;
+        };
+        if img_data.is_empty() {
             cres_records.push(vec![0xA0, 0xA0, 0xA0, 0xA0]);
             continue;
         }
@@ -1534,6 +1588,78 @@ fn encode_kindle_embed_base32(recindex: usize) -> String {
         v /= 32;
     }
     String::from_utf8(result.to_vec()).unwrap()
+}
+
+/// Hard ceiling on a single LD (low-definition) image record, in bytes.
+///
+/// The Kindle renderer decodes an image record into a fixed-size buffer and a
+/// record larger than this kills the reader app mid-book rather than failing
+/// gracefully (issue #25: the reader closed on the page before the first
+/// 151 KB JPEG). kindlegen enforces exactly this limit: on the issue #25 EPUB
+/// it left the 130,484-byte image alone and re-encoded all 18 images above
+/// 131,072 bytes, moving each original into the HD container.
+pub(crate) const LD_IMAGE_MAX_BYTES: usize = 128 * 1024;
+
+/// Re-encode an oversized image so it fits `LD_IMAGE_MAX_BYTES`.
+///
+/// Returns `None` when `data` already fits or cannot be decoded, in which case
+/// the caller keeps the original bytes. Dimensions are preserved and only JPEG
+/// quality is lowered, matching kindlegen (a 596x800 / 180 KB source comes back
+/// 596x800 / 107 KB). The full-resolution original belongs in the HD container
+/// so a high-DPI device still gets the good copy.
+pub(crate) fn fit_ld_image(data: &[u8]) -> Option<Vec<u8>> {
+    if data.len() <= LD_IMAGE_MAX_BYTES {
+        return None;
+    }
+    let img = image::load_from_memory(data).ok()?;
+    // Alpha cannot survive the JPEG re-encode; flatten onto white so a
+    // transparent PNG does not come back with a black background.
+    let flattened = match img {
+        image::DynamicImage::ImageRgba8(_) | image::DynamicImage::ImageLumaA8(_) => {
+            let rgba = img.to_rgba8();
+            let (w, h) = rgba.dimensions();
+            let mut rgb = image::RgbImage::new(w, h);
+            for (x, y, px) in rgba.enumerate_pixels() {
+                let a = px[3] as u32;
+                let blend = |c: u8| (((c as u32 * a) + 255 * (255 - a)) / 255) as u8;
+                rgb.put_pixel(x, y, image::Rgb([blend(px[0]), blend(px[1]), blend(px[2])]));
+            }
+            image::DynamicImage::ImageRgb8(rgb)
+        }
+        other => other,
+    };
+    // Walk quality down until it fits. Starting at 85 lands most photographic
+    // sources in one pass; the floor keeps a pathological source from being
+    // ground into mush.
+    for quality in [85u8, 75, 65, 55, 45, 35, 25] {
+        if let Some(buf) = encode_under_cap(&flattened, quality) {
+            return Some(buf);
+        }
+    }
+    // Quality alone was not enough (very large or very noisy source). Halve
+    // the geometry until it fits: a smaller page still renders, an oversized
+    // record closes the reader.
+    let (mut w, mut h) = (flattened.width(), flattened.height());
+    while w > 64 && h > 64 {
+        w /= 2;
+        h /= 2;
+        let scaled = flattened.resize(w, h, image::imageops::FilterType::Lanczos3);
+        for quality in [75u8, 55, 35] {
+            if let Some(buf) = encode_under_cap(&scaled, quality) {
+                return Some(buf);
+            }
+        }
+    }
+    None
+}
+
+/// JPEG-encode `img` at `quality`, returning it only if it fits the LD cap.
+fn encode_under_cap(img: &image::DynamicImage, quality: u8) -> Option<Vec<u8>> {
+    let mut buf: Vec<u8> = Vec::with_capacity(LD_IMAGE_MAX_BYTES);
+    let cursor = std::io::Cursor::new(&mut buf);
+    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(cursor, quality);
+    img.write_with_encoder(encoder).ok()?;
+    (buf.len() <= LD_IMAGE_MAX_BYTES).then_some(buf)
 }
 
 /// Downscale an image to a library-thumbnail sized JPEG.

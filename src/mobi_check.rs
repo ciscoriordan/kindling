@@ -734,6 +734,42 @@ pub fn check_mobi_file(
         }
     }
 
+    // Oversized LD image record check (P1).
+    //
+    // The reader decodes an image record into a fixed buffer, and one over
+    // 128 KB closes the reading app when the page carrying it comes into
+    // view rather than just rendering blank (issue #25: the app died on the
+    // page before a 151 KB JPEG). kindlegen never emits one, re-encoding the
+    // LD copy and moving the original into the HD container instead, which
+    // is what `fit_ld_image` now does. CRES records live in the HD container
+    // and are exempt: the device only pulls those on demand, and their
+    // "CRES" magic keeps them out of this scan.
+    //
+    // P1 rather than P0 because re-encoding can legitimately fail on a source
+    // the `image` crate cannot decode, and refusing to ship the book is worse
+    // than shipping it with a warning already printed at collection time.
+    let mut oversized_images: Vec<(usize, usize)> = Vec::new();
+    for i in 0..palmdb.num_records {
+        if let Some(r) = palmdb.record(&data, i) {
+            let is_bitmap = r.starts_with(&[0xFF, 0xD8, 0xFF])
+                || r.starts_with(b"\x89PNG\r\n\x1a\n")
+                || r.starts_with(b"GIF8");
+            if is_bitmap && r.len() > crate::mobi::LD_IMAGE_MAX_BYTES {
+                oversized_images.push((i, r.len()));
+            }
+        }
+    }
+    for (i, len) in &oversized_images {
+        report.warn(format!(
+            "image record {} is {} bytes, over the {} KB per-record limit the \
+             Kindle reader can decode; the reading app may close when the page \
+             using it is reached (issue #25)",
+            i,
+            len,
+            crate::mobi::LD_IMAGE_MAX_BYTES / 1024,
+        ));
+    }
+
     // PalmDB name length (P1).
     let name_end = data[..32].iter().position(|&b| b == 0).unwrap_or(32);
     if name_end > 31 {

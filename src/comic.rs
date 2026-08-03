@@ -1024,8 +1024,12 @@ fn process_image_pipeline(
             page
         };
 
-        // Encode as JPEG with the configured quality level
+        // Encode as JPEG with the configured quality level. A page that
+        // overshoots what the reader can decode in one record gets re-encoded
+        // down: comics have no HD container to park the original in, so the
+        // page has to fit or the reading app closes on it (issue #25).
         let jpeg_buf = encode_jpeg(&page, options.jpeg_quality)?;
+        let jpeg_buf = crate::mobi::fit_ld_image(&jpeg_buf).unwrap_or(jpeg_buf);
         results.push(jpeg_buf);
     }
 

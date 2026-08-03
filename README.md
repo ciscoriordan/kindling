@@ -174,7 +174,7 @@ kindling-cli build input.epub --no-validate            # skip KDP pre-flight val
 kindling-cli build input.epub --force-user-fonts       # skip font embedding; Aa menu font always applies
 ```
 
-Auto-detects dictionary vs book from the OPF's `DictionaryInLanguage` metadata. Book MOBIs include embedded images and an HD image container (for high-DPI Kindle screens). The original EPUB is embedded by default for Kindle Previewer compatibility (`--no-embed-source` to skip).
+Auto-detects dictionary vs book from the OPF's `DictionaryInLanguage` metadata. Book MOBIs include embedded images and, when any image exceeds the 128 KB per-record limit the reader can decode, an HD image container (for high-DPI Kindle screens) carrying the full-resolution originals. The original EPUB is embedded by default for Kindle Previewer compatibility (`--no-embed-source` to skip).
 
 The on-device "Go To" table of contents is built from the EPUB navigation document, preferring the EPUB3 nav (`properties="nav"`) and falling back to the EPUB2 `toc.ncx`, so chapter names survive even when every chapter file carries the same generic `<title>` (issue #18). Entries that point at `file#anchor` targets inside a shared spine file each get their own TOC node at the anchor position, matching kindlegen's NCX. Files without a nav document fall back to per-file `<title>` labels.
 
@@ -434,9 +434,9 @@ Kindling works with the KF7/MOBI format used by Kindle e-readers. The key struct
 - **Record 0**: PalmDOC header + MOBI header (264 bytes) + EXTH metadata + full name
 - **Text records**: PalmDOC LZ77 compressed HTML with trailing bytes (`\x00\x81`)
 - **INDX records**: Orthographic index with headword entries, character mapping, and sort tables
-- **Image records**: Raw JPEG/PNG with JFIF header patching for Kindle cover compatibility
+- **Image records**: JPEG/PNG with JFIF header patching for Kindle cover compatibility, each capped at 128 KB. The reader decodes an image record into a fixed buffer, and one over that limit closes the reading app when the page carrying it scrolls into view instead of just rendering blank (issue #25). Oversized images are re-encoded to fit at the same pixel dimensions and the untouched original moves into the HD container, which is what kindlegen does
 - **KF8 section**: Dual-format output with BOUNDARY record, KF8 text, FDST, skeleton/fragment/NCX indexes. The FDST table is sized to the flows the book actually has (one for a book with no stylesheet, two with CSS), never declaring a zero-length flow, and EXTH 125 carries the real resource-record count; a hardcoded 2-flow table plus a fake count made a minimal no-CSS, no-image book fail to open on device with "Unable to Open Item"
-- **HD container**: CONT/CRES records for high-DPI Kindle screens
+- **HD container**: CONT/CRES records for high-DPI Kindle screens. Only images whose main record had to be re-encoded to fit the 128 KB cap get a real CRES slot holding the original; the rest are 4-byte placeholders, since a CRES that duplicates its own image record is pure file bloat. A book where nothing needed re-encoding gets no container at all, matching every kindlegen reference build
 - **FLIS/FCIS/EOF**: Required format records
 
 ### Key format details

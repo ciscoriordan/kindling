@@ -895,6 +895,169 @@ mod tests {
         fs::read(&output_path).expect("could not read output AZW3")
     }
 
+    // =======================================================================
+    // 4c. LD image record size cap (issue #25)
+    // =======================================================================
+
+    /// Generate a 1400x1400 JPEG over `LD_IMAGE_MAX_BYTES`: smooth ramps with
+    /// a random flat tile laid over them, encoded at q98.
+    ///
+    /// `tile` sets how coarse that texture is, which is what decides whether
+    /// the frame can be squeezed back under the cap. 16 leaves plenty of
+    /// headroom (q85 already fits), 4 is effectively incompressible. The LCG
+    /// is fixed so both fixtures are deterministic.
+    fn make_oversized_jpeg(tile: u32) -> Vec<u8> {
+        let mut seed: u32 = 0x1234_5678;
+        let mut tiles: HashMap<(u32, u32), u32> = HashMap::new();
+        let img = image::RgbImage::from_fn(1400, 1400, |x, y| {
+            let jitter = *tiles.entry((x / tile, y / tile)).or_insert_with(|| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (seed >> 24) % 40
+            });
+            image::Rgb([
+                (x * 255 / 1400 + jitter) as u8,
+                (y * 255 / 1400 + jitter) as u8,
+                ((x + y) * 255 / 2800 + jitter) as u8,
+            ])
+        });
+        let mut buf = Vec::new();
+        let cursor = std::io::Cursor::new(&mut buf);
+        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(cursor, 98);
+        image::DynamicImage::ImageRgb8(img)
+            .write_with_encoder(encoder)
+            .unwrap();
+        assert!(
+            buf.len() > mobi::LD_IMAGE_MAX_BYTES,
+            "fixture must exceed the cap, got {} bytes",
+            buf.len()
+        );
+        buf
+    }
+
+    /// Walk the PalmDB records, returning (bare bitmap records, CRES payloads,
+    /// placeholder count).
+    fn split_image_records(data: &[u8]) -> (Vec<Vec<u8>>, Vec<Vec<u8>>, usize) {
+        let (_, count, offsets) = parse_palmdb(data);
+        let mut bitmaps = Vec::new();
+        let mut cres = Vec::new();
+        let mut placeholders = 0usize;
+        for i in 0..count as usize {
+            let r = get_record(data, &offsets, i);
+            if r.starts_with(b"CRES") && r.len() > 12 {
+                cres.push(r[12..].to_vec());
+            } else if r == [0xA0, 0xA0, 0xA0, 0xA0] {
+                placeholders += 1;
+            } else if r.starts_with(&[0xFF, 0xD8, 0xFF]) || r.starts_with(b"\x89PNG\r\n\x1a\n") {
+                bitmaps.push(r.to_vec());
+            }
+        }
+        (bitmaps, cres, placeholders)
+    }
+
+    #[test]
+    fn fit_ld_image_shrinks_only_oversized_and_keeps_dimensions() {
+        let small = make_test_jpeg();
+        assert!(
+            mobi::fit_ld_image(&small).is_none(),
+            "an image already under the cap must be passed through untouched"
+        );
+
+        let big = make_oversized_jpeg(16);
+        let fitted = mobi::fit_ld_image(&big).expect("oversized JPEG should be re-encoded");
+        assert!(
+            fitted.len() <= mobi::LD_IMAGE_MAX_BYTES,
+            "re-encoded image is still {} bytes",
+            fitted.len()
+        );
+        // kindlegen lowers quality but never resizes, so a page laid out
+        // against the original geometry still renders identically.
+        let before = image::load_from_memory(&big).unwrap();
+        let after = image::load_from_memory(&fitted).unwrap();
+        assert_eq!(
+            image::GenericImageView::dimensions(&before),
+            image::GenericImageView::dimensions(&after),
+            "re-encode must preserve dimensions"
+        );
+
+        // An incompressible page cannot fit at any quality, so geometry has to
+        // give. Shipping a smaller page beats shipping a record that closes
+        // the reader.
+        let noisy = make_oversized_jpeg(4);
+        let squeezed = mobi::fit_ld_image(&noisy).expect("must always produce something that fits");
+        assert!(
+            squeezed.len() <= mobi::LD_IMAGE_MAX_BYTES,
+            "noisy image is still {} bytes",
+            squeezed.len()
+        );
+    }
+
+    #[test]
+    fn oversized_image_is_capped_in_ld_pool_and_kept_whole_in_hd_container() {
+        // Issue #25: a 151 KB JPEG shipped verbatim as an LD record closed the
+        // reading app on the page before it. The LD copy must fit the cap and
+        // the full-resolution original must survive in the HD container.
+        let dir = TempDir::new("ld_cap_book");
+        let big = make_oversized_jpeg(16);
+        let opf = create_book_fixture(dir.path(), Some(&big));
+        let data = build_kf8_only_mobi_bytes(&opf, dir.path());
+
+        let (bitmaps, cres, placeholders) = split_image_records(&data);
+        assert!(!bitmaps.is_empty(), "expected at least one image record");
+        for b in &bitmaps {
+            assert!(
+                b.len() <= mobi::LD_IMAGE_MAX_BYTES,
+                "LD image record is {} bytes, over the {} byte cap",
+                b.len(),
+                mobi::LD_IMAGE_MAX_BYTES
+            );
+        }
+        assert_eq!(
+            cres.len(),
+            1,
+            "exactly the one downsampled image should get a CRES slot"
+        );
+        // The collector patches JFIF density units in place before anything
+        // else touches the bytes, so compare past that byte.
+        assert_eq!(
+            cres[0].len(),
+            big.len(),
+            "the CRES payload must be the full-resolution original"
+        );
+        assert_eq!(
+            cres[0][14..],
+            big[14..],
+            "the CRES payload must be the original, not a re-encode"
+        );
+        assert!(
+            cres[0].len() > mobi::LD_IMAGE_MAX_BYTES,
+            "the HD copy is exempt from the LD cap"
+        );
+        // The remaining slot is the library thumbnail, which never needs an
+        // HD copy.
+        assert!(
+            placeholders >= 1,
+            "images the LD pool already holds at full resolution take placeholder slots"
+        );
+    }
+
+    #[test]
+    fn book_with_only_small_images_gets_no_hd_container() {
+        // Every CRES would be a byte-identical copy of its LD record, so the
+        // whole container is dead weight. None of the kindlegen parity
+        // fixtures carry one either.
+        let dir = TempDir::new("no_hd_container");
+        let jpeg = make_test_jpeg();
+        let opf = create_book_fixture(dir.path(), Some(&jpeg));
+        let data = build_kf8_only_mobi_bytes(&opf, dir.path());
+
+        let (_, cres, _) = split_image_records(&data);
+        assert!(cres.is_empty(), "expected no CRES records");
+        assert!(
+            !data.windows(12).any(|w| w == b"CONTBOUNDARY"),
+            "expected no HD container at all"
+        );
+    }
+
     #[test]
     fn test_kf8_only_record0_version_8() {
         let dir = TempDir::new("kf8only_ver");
@@ -3902,12 +4065,17 @@ mod tests {
         let images_dir = dir.path().join("images");
         fs::create_dir_all(&images_dir).unwrap();
 
-        // Create a single test image with varied content (so quality matters)
+        // Create a single test image with varied content (so quality matters).
+        // Smooth ramps plus coarse blocks, not per-pixel noise: an
+        // incompressible page hits the LD record cap and both builds converge
+        // on the same re-encode, which would make this test about the cap
+        // rather than about the quality flag.
         let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(200, 300, |x, y| {
+            let block = if (x / 16 + y / 16) % 2 == 0 { 40 } else { 0 };
             image::Rgb([
-                ((x * 7 + y * 3) % 256) as u8,
-                ((x * 3 + y * 11 + 50) % 256) as u8,
-                ((x * 5 + y * 7 + 100) % 256) as u8,
+                (x * 255 / 200) as u8,
+                (y * 255 / 300) as u8,
+                (128 + block) as u8,
             ])
         }));
         img.save(images_dir.join("page_001.jpg")).unwrap();
