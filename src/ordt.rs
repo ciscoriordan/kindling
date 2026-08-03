@@ -90,10 +90,15 @@ const SPACE_WEIGHT: u16 = 3;
 /// just above space and below kana. Punctuation pulled in is ignorable (0).
 const ASCII_ALNUM_WEIGHT: u16 = 2;
 
-/// Maximum encoded label size in bytes (5-bit length field, max 31; two-
-/// byte elements need an even count, so 30).
-const MAX_LABEL_BYTES_2: usize = 30;
-const MAX_LABEL_BYTES_1: usize = 31;
+/// Maximum encoded label size in bytes. The entry writer's length field is a
+/// full byte capped at 254 (`encode_indx_entry`), and kindlegen stores long
+/// dictionary labels in full (a 34-byte Korean phrase label was verified
+/// intact in a kindlegen production-scale build), so the encoder must not cut
+/// earlier: an earlier 30-byte cap (a leftover of the removed 5-bit length
+/// field) silently truncated 15+ character Korean headwords, which then could
+/// never exact-match a query (issue #22). 254 keeps two-byte elements on an
+/// even boundary.
+const MAX_LABEL_BYTES: usize = 254;
 
 /// Collation weight for a kana code point, folding katakana onto hiragana.
 /// Returns None for non-kana. ヴ ヵ ヶ (and the hiragana ゔ ゕ ゖ) sit just
@@ -375,6 +380,13 @@ impl OrdtTables {
                     add(mark, 0, &mut ordt1, &mut ordt2, &mut sym_of);
                 }
             }
+        } else if labels.iter().any(|s| s.contains(' ')) {
+            // kindlegen extends the minimal no-kana table with the space
+            // symbol when any headword contains a space (verified on a
+            // production-scale Korean build: ORDT2 = [NUL, %, _, space],
+            // ORDT1 weights [0, 0, 0, 3]). Multi-word headwords then encode
+            // space as symbol 3 rather than the literal 0x0020.
+            add(0x0020, SPACE_WEIGHT, &mut ordt1, &mut ordt2, &mut sym_of);
         }
 
         // Safety: any character used by a label whose code point is below
@@ -501,10 +513,14 @@ impl OrdtTables {
         }
 
         // Single-byte labels (ordt_type = 1, like kindlegen) when the table
-        // fits a byte index; every label character is in the table, so there
-        // are no literals to force two-byte elements unless the table itself
-        // exceeds 256 symbols.
-        let two_byte = ordt2.len() > 256;
+        // fits a byte index; every BMP label character is in the table, so
+        // the only possible literals are supplementary-plane characters
+        // (stored as surrogate pairs, which need two-byte elements).
+        let two_byte = ordt2.len() > 256
+            || labels
+                .iter()
+                .flat_map(|s| s.chars())
+                .any(|c| c as u32 > 0xFFFF);
 
         OrdtTables {
             ordt1,
@@ -535,33 +551,45 @@ impl OrdtTables {
     }
 
     /// Encode a label as ORDT elements: one per character, the symbol index
-    /// for table characters and the raw code point for literals. The
-    /// prolonged sound mark ー is folded onto the preceding vowel first (see
-    /// `label_codepoints`). Truncated to the 5-bit length limit at a
-    /// character boundary.
+    /// for table characters and the raw code point for literals. A
+    /// supplementary-plane literal becomes its UTF-16 surrogate pair (two
+    /// elements), exactly as kindlegen stores it (verified: kindlegen encodes
+    /// a U+200D7 headword as elements D840 DCD7) and as `encode_indx_label`
+    /// does on the UTF-16BE path; dropping such characters instead produced
+    /// zero-length labels that sorted to the head of the index, a structure
+    /// kindlegen never emits (issue #22). The prolonged sound mark ー is
+    /// folded onto the preceding vowel first (see `label_codepoints`).
+    /// Truncated at a character boundary to the entry writer's 254-byte
+    /// length cap, never splitting a surrogate pair.
     pub fn encode_label(&self, text: &str) -> Vec<u8> {
-        let max_bytes = if self.two_byte {
-            MAX_LABEL_BYTES_2
-        } else {
-            MAX_LABEL_BYTES_1
-        };
         let elem_bytes = if self.two_byte { 2 } else { 1 };
         let mut out: Vec<u8> = Vec::new();
         for cp in label_codepoints(text) {
-            if out.len() + elem_bytes > max_bytes {
+            let needed = if cp > 0xFFFF {
+                elem_bytes * 2
+            } else {
+                elem_bytes
+            };
+            if out.len() + needed > MAX_LABEL_BYTES {
                 break;
             }
             match char::from_u32(cp).and_then(|c| self.sym_of.get(&c)) {
                 Some(&sym) => self.push_elem(&mut out, sym),
                 None => {
-                    // Out-of-table literal code point. Representable only in
-                    // two-byte labels (a one-byte table is built only when no
-                    // literals are present); BMP only, and skipped if it would
-                    // collide with the symbol-index range.
+                    // Out-of-table literal. Representable only in two-byte
+                    // labels (a one-byte table is built only when no literals
+                    // are present). Symbol indices occupy the low element
+                    // values, so a literal must be >= the table size; BMP
+                    // code points below it cannot occur (the safety loop in
+                    // `new` pulls them into the table).
                     if self.two_byte && cp <= 0xFFFF && cp >= self.count() {
                         self.push_elem(&mut out, cp as u16);
+                    } else if self.two_byte && cp > 0xFFFF {
+                        let adjusted = cp - 0x1_0000;
+                        self.push_elem(&mut out, (0xD800 + (adjusted >> 10)) as u16);
+                        self.push_elem(&mut out, (0xDC00 + (adjusted & 0x3FF)) as u16);
                     }
-                    // else: unrepresentable; drop the character.
+                    // else (one-byte table): unreachable, no literals exist.
                 }
             }
         }
@@ -920,6 +948,72 @@ mod tests {
         let zh = OrdtTables::new(&["山", "水", "爱"]);
         assert_eq!(zh.count(), 3, "no-kana dict keeps only NUL/%/_");
         assert!(!zh.sym_of.contains_key(&'あ'));
+    }
+
+    #[test]
+    fn no_kana_space_headwords_add_space_symbol() {
+        // kindlegen's no-kana table gains the space symbol (weight 3) when a
+        // headword contains a space: ORDT2 [NUL, %, _, space], ORDT1
+        // [0, 0, 0, 3], and the space encodes as symbol 3, not literal 0x20.
+        let ko = OrdtTables::new(&["빅 벤", "빅맥"]);
+        assert_eq!(ko.count(), 4);
+        assert_eq!(ko.ordt2, vec![0x0000, 0x0025, 0x005F, 0x0020]);
+        assert_eq!(ko.ordt1, vec![0, 0, 0, SPACE_WEIGHT]);
+        let e = elems(&ko, &ko.encode_label("빅 벤"));
+        assert_eq!(e, vec![0xBE45, 0x0003, 0xBCA4]);
+        // Space stays weighted (not ignorable), so "빅 벤" keeps sorting
+        // before "빅맥" exactly as it does with a literal 0x20.
+        assert!(ko.sort_key(&ko.encode_label("빅 벤")) < ko.sort_key(&ko.encode_label("빅맥")));
+        // Space-free no-kana dictionaries keep the minimal 3-entry table.
+        let ko2 = OrdtTables::new(&["빅맥"]);
+        assert_eq!(ko2.count(), 3);
+    }
+
+    #[test]
+    fn astral_literal_encodes_surrogate_pair() {
+        // U+200D7 (rare hanja used as a Korean lookup term). kindlegen stores
+        // it as the surrogate pair D840 DCD7; dropping it produced an empty
+        // label at the head of the index (issue #22).
+        let o = OrdtTables::new(&["\u{200D7}", "빅맥"]);
+        assert!(o.two_byte);
+        let e = elems(&o, &o.encode_label("\u{200D7}"));
+        assert_eq!(e, vec![0xD840, 0xDCD7]);
+        assert!(
+            !o.encode_label("\u{200D7}").is_empty(),
+            "astral-only labels must never encode to zero length"
+        );
+        // Matches the UTF-16BE path byte-for-byte for the same string.
+        assert_eq!(
+            o.encode_label("\u{200D7}"),
+            crate::indx::encode_indx_label("\u{200D7}")
+        );
+        // Sort key: literal surrogate units, after every BMP Hangul label.
+        assert!(o.sort_key(&o.encode_label("빅맥")) < o.sort_key(&o.encode_label("\u{200D7}")));
+    }
+
+    #[test]
+    fn long_labels_kept_to_entry_cap() {
+        // 17-char Korean phrase labels are stored in full by kindlegen; the
+        // old 30-byte cap truncated at 15 chars and the entry could then
+        // never exact-match its own headword (issue #22).
+        let long = "소비에트 사회주의 공화국 연방";
+        let n = long.chars().count();
+        assert!(n > 15, "must exceed the old 15-char truncation point");
+        let o = OrdtTables::new(&[long]);
+        let e = elems(&o, &o.encode_label(long));
+        assert_eq!(e.len(), n, "no truncation below the 254-byte entry cap");
+        // Truncation still applies at 254 bytes (127 two-byte elements), at a
+        // character boundary.
+        let very_long: String = "가".repeat(200);
+        let bytes = o.encode_label(&very_long);
+        assert_eq!(bytes.len(), 254);
+        // A surrogate pair is never split at the cap: 126 BMP chars (252
+        // bytes) followed by an astral char (4 bytes needed, 2 remaining).
+        let mut tail = "나".repeat(126);
+        tail.push('\u{200D7}');
+        let t = OrdtTables::new(&[tail.as_str()]);
+        let b = t.encode_label(&tail);
+        assert_eq!(b.len(), 252, "pair dropped whole, not split");
     }
 
     #[test]
