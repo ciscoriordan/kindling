@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+#
+# Refuse the commit when staged Rust code is not rustfmt-clean.
+#
+# The fmt job in .github/workflows/test.yml runs the same check and fails the
+# whole run over it, so catching it here saves a red build.
+#
+# Enable with: git config core.hooksPath .githooks
+
+set -uo pipefail
+
+git diff --cached --name-only --diff-filter=ACM | grep -q '\.rs$' || exit 0
+
+if ! cargo fmt --all -- --check; then
+  cat >&2 <<'EOF'
+
+pre-commit: rustfmt wants the changes above, and CI will fail on them.
+  fix:    cargo fmt --all && git add -u
+  bypass: git commit --no-verify
+EOF
+  exit 1
+fi

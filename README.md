@@ -606,6 +606,16 @@ The suite currently contains over 810 tests spanning unit tests in `src/tests.rs
 - **kindlegen byte/field parity tests** (`tests/kindlegen_parity.rs`): build the same inputs with `kindling-cli` and diff the output field-by-field against a committed kindlegen reference `.mobi`. Timestamp/UID fields (EXTH 112, 113, 204-207, etc.) are compared by presence only; core metadata (EXTH 100, 101, 524) must match exactly. Divergences are reported in a readable table via `cargo test -- --nocapture`.
 - **Per-language dictionary tests** (`tests/dict_languages.rs`): build a dictionary for each supported language from its `tests/fixtures/langs/<code>/` fixture and assert the INDX/MOBI language ids and locale, that every entry has a non-empty text pointer (the first-entry white-page guard), that headwords round-trip through the labels, and the per-language collation. For the generated-ORDT languages (ja, zh, ko, ar) decode every per-character label back to its headword and assert byte parity with the committed kindlegen build: the ORDT table and orth headword labels are identical for the all-literal scripts, and the literal code points plus collation order match for Japanese.
 
+### Git hooks
+
+The repo ships two optional hooks in `.githooks/` that run the CI checks before they can turn a build red. Enable them once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+`pre-commit` refuses a commit whose staged Rust code is not rustfmt-clean. `pre-push` re-runs that check plus `cargo check --all-targets`; the full test suite stays in CI. Both take `--no-verify` if you need to get past them.
+
 ### kindlegen parity setup
 
 The parity tests do NOT invoke kindlegen at test time. Instead, each parity fixture ships a committed `kindlegen_reference.mobi` alongside the OPF/EPUB/CBZ sources:

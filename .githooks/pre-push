@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+#
+# Last stop before CI sees the branch: the two checks cheap enough to run on
+# every push. The full `cargo test` stays in CI, where it takes ~3 minutes.
+#
+# Enable with: git config core.hooksPath .githooks
+
+set -uo pipefail
+
+fail=0
+
+if ! cargo fmt --all -- --check; then
+  echo >&2 "pre-push: not rustfmt-clean; run 'cargo fmt --all'"
+  fail=1
+fi
+
+if ! cargo check --all-targets --quiet; then
+  echo >&2 "pre-push: 'cargo check --all-targets' failed"
+  fail=1
+fi
+
+if [ "$fail" -ne 0 ]; then
+  echo >&2 "bypass with: git push --no-verify"
+  exit 1
+fi
