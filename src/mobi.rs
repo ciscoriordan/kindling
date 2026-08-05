@@ -703,17 +703,23 @@ fn build_book_mobi(
         None => None,
     };
 
-    // Compute the KF8 cover URI once (same string for both KF7 and KF8
+    // Compute the KF8 thumbnail URI once (same string for both KF7 and KF8
     // sections in dual-format, and for the sole KF8 section in KF8-only).
-    // Modern Kindle firmware uses EXTH 129 = "kindle:embed:XXXX" where XXXX
-    // is the base32-encoded 1-based recindex of the cover image relative to
-    // first_image_record. This is the primary cover-lookup path on Paperwhite
-    // 11+, Oasis 3, and Scribe; without it the library thumbnail pipeline
-    // falls back to the placeholder and fixed-layout comics fail to open.
-    let kf8_cover_uri: Option<String> = cover_offset.map(|off| {
-        let recindex = (off as usize) + 1; // 1-based
-        format!("kindle:embed:{}", encode_kindle_embed_base32(recindex))
-    });
+    // EXTH 129 is "kindle:embed:XXXX" where XXXX is the base32-encoded
+    // ZERO-based resource offset of the LIBRARY THUMBNAIL - the same number
+    // that goes in EXTH 202, not the cover. Verified against all four
+    // kindlegen parity references: 129 tracks 202 in every one, and in
+    // simple_comic they differ from the cover (201=0, 202=4, 129=0004).
+    // Calibre agrees; it calls the record `kf8_thumbnail_uri` and writes
+    // base32(thumbnail_offset). kindling used to write base32(cover + 1),
+    // which only coincides with the right answer when the cover is image 0
+    // and the thumbnail lands immediately after it. In any real book it
+    // pointed at an arbitrary interior page, so the device-side thumbnail
+    // pipeline (library tile and lock-screen cover) had nothing usable to
+    // read (issue #26).
+    let kf8_thumb_uri: Option<String> = thumb_offset
+        .or(cover_offset)
+        .map(|off| format!("kindle:embed:{}", encode_kindle_embed_base32(off as usize)));
 
     // Collect manifest fonts as KF8 FONT resource records (issue #18).
     // They are appended directly after the image records (thumbnail
@@ -999,7 +1005,7 @@ fn build_book_mobi(
             no_compress,
             cover_offset,
             thumb_offset,
-            kf8_cover_uri.as_deref(),
+            kf8_thumb_uri.as_deref(),
             fixed_layout.as_ref(),
             kf8_first_image,
             creator_tag,
@@ -1176,7 +1182,7 @@ fn build_book_mobi(
             kf7_first_image,
             cover_offset,
             thumb_offset,
-            kf8_cover_uri.as_deref(),
+            kf8_thumb_uri.as_deref(),
             fixed_layout.as_ref(),
             Some(6),
             Some(kf8_record0_global as u32),
@@ -1211,7 +1217,7 @@ fn build_book_mobi(
             no_compress,
             cover_offset,
             thumb_offset,
-            kf8_cover_uri.as_deref(),
+            kf8_thumb_uri.as_deref(),
             fixed_layout.as_ref(),
             kf8_fdst_idx, // KF8 first_image = fdst_idx (matches KCC/kindlegen)
             creator_tag,
@@ -3807,7 +3813,7 @@ fn build_record0(
     first_image_record: usize,
     cover_offset: Option<u32>,
     thumb_offset: Option<u32>,
-    kf8_cover_uri: Option<&str>,
+    kf8_thumb_uri: Option<&str>,
     fixed_layout: Option<&exth::FixedLayoutMeta>,
     override_version: Option<u32>,
     kf8_boundary_record: Option<u32>,
@@ -3942,6 +3948,7 @@ fn build_record0(
             cover_offset,
         )
     } else {
+        let asin = doc_type.map(|_| exth::book_asin(&opf.dc_identifiers, full_name, &opf.author));
         exth::build_book_exth(
             full_name,
             &opf.author,
@@ -3949,12 +3956,13 @@ fn build_record0(
             &opf.language,
             cover_offset,
             thumb_offset,
-            kf8_cover_uri,
+            kf8_thumb_uri,
             fixed_layout,
             kf8_boundary_record,
             hd_geometry,
             creator_tag,
             doc_type,
+            asin.as_deref(),
             None, // description
             None, // subject
             resource_count,
@@ -4014,7 +4022,7 @@ fn build_kf8_record0(
     no_compress: bool,
     cover_offset: Option<u32>,
     thumb_offset: Option<u32>,
-    kf8_cover_uri: Option<&str>,
+    kf8_thumb_uri: Option<&str>,
     fixed_layout: Option<&exth::FixedLayoutMeta>,
     first_image_record: usize,
     creator_tag: bool,
@@ -4152,6 +4160,7 @@ fn build_kf8_record0(
     // Build EXTH header
     // In KF8-only mode, include HD geometry (EXTH 536) if present.
     // Never include EXTH 121 (KF8 boundary) since there's no KF7 section.
+    let asin = doc_type.map(|_| exth::book_asin(&opf.dc_identifiers, full_name, &opf.author));
     let exth_data = exth::build_book_exth(
         full_name,
         &opf.author,
@@ -4159,12 +4168,13 @@ fn build_kf8_record0(
         &opf.language,
         cover_offset,
         thumb_offset,
-        kf8_cover_uri,
+        kf8_thumb_uri,
         fixed_layout,
         None, // no KF8 boundary in KF8 header itself
         hd_geometry,
         creator_tag,
         doc_type,
+        asin.as_deref(),
         None, // description
         None, // subject
         resource_count,

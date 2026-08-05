@@ -786,6 +786,52 @@ mod validate {
     }
 
     #[test]
+    fn rewrite_metadata_retitles_both_sections_of_a_dual_mobi() {
+        // A dual-format .mobi carries two MOBI headers, and Kindle reads the
+        // library title from the KF8 one. rewrite-metadata used to rebuild
+        // record 0 only, which is the KF7 section, so `--title` reported
+        // success and the device went on showing the old name. Caught by
+        // retitling a --legacy-mobi build for a device test and finding it
+        // still listed under its original title.
+        let (tmp, opf) = stage_fixture("clean_book", "clean_book.opf");
+        let built = run_build(&["--legacy-mobi", opf.to_str().unwrap()]);
+        assert!(built.status.success(), "dual build\n{}", dump(&built));
+        let mobi = tmp.path().join("clean_book.mobi");
+
+        let retitled = tmp.path().join("retitled.mobi");
+        let out = Command::new(kindling_bin())
+            .arg("rewrite-metadata")
+            .arg(&mobi)
+            .args(["--title", "Retitled Dual"])
+            .arg("-o")
+            .arg(&retitled)
+            .output()
+            .expect("failed to spawn kindling-cli rewrite-metadata");
+        assert!(out.status.success(), "rewrite-metadata\n{}", dump(&out));
+
+        let dumped = Command::new(kindling_bin())
+            .arg("dump")
+            .arg(&retitled)
+            .output()
+            .expect("failed to spawn kindling-cli dump");
+        let text = String::from_utf8_lossy(&dumped.stdout);
+
+        // Both sections must carry the new title, and neither may keep the
+        // old one. The fixture title is what the KF8 half used to retain.
+        let hits = text.matches("Retitled Dual").count();
+        assert!(
+            hits >= 4,
+            "expected the new title in both sections' full_name and EXTH 503 \
+             (>=4 mentions), got {hits}:\n{text}"
+        );
+        assert!(
+            !text.contains("Clean Book"),
+            "the KF8 section kept the old title, so the device would still \
+             show it:\n{text}"
+        );
+    }
+
+    #[test]
     fn explicit_mobi_output_on_a_kf8_only_build_warns() {
         // issue #24: `-o book.mobi` on the default build writes exactly the
         // container the device refuses to open, and nothing in the file is

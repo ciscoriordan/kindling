@@ -467,8 +467,8 @@ impl OPFData {
     /// Find the cover image manifest item id from OPF metadata.
     ///
     /// Returns the OPF manifest item `id` attribute for the cover image, which
-    /// is the string used for EXTH 129 (KF8 cover URI) on modern Kindle
-    /// firmware. Mirrors `get_cover_image_href`: prefers
+    /// picks the record EXTH 201 points at and the image the library
+    /// thumbnail is downscaled from. Mirrors `get_cover_image_href`: prefers
     /// `properties="coverimage"` (EPUB 3) and falls back to
     /// `<meta name="cover" content="...">`.
     pub fn get_cover_image_id(&self) -> Option<String> {
@@ -535,7 +535,7 @@ impl OPFData {
         }
 
         // Method 3: OEB 1.x EmbeddedCover; reverse-look up the manifest id
-        // from the href so EXTH 129 can still carry the KF8 cover URI.
+        // from the href so the cover still gets an EXTH 201 offset.
         if let Some(href) = &self.embedded_cover_href {
             for item in &self.manifest_items {
                 if item.href == *href && item.media_type.starts_with("image/") {

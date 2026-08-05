@@ -9336,6 +9336,86 @@ mod tests {
         }
     }
 
+    /// EXTH 129 is the thumbnail URI, not the cover URI: it must decode to the
+    /// same 0-based resource offset EXTH 202 carries. Every kindlegen parity
+    /// reference writes 129 == 202, and on simple_comic they differ from the
+    /// cover (201=0, 202=4, 129=0004). kindling used to write
+    /// base32(cover + 1), which aimed the device thumbnail pipeline at an
+    /// arbitrary interior image (issue #26: the reporter's book had its cover
+    /// at offset 0 and a 53-image pool, so 129 pointed at page two). The
+    /// fixture puts the cover first and two more images behind it, so the old
+    /// formula would yield 1 where the thumbnail is 3.
+    #[test]
+    fn test_exth_129_points_at_thumbnail_not_cover() {
+        let dir = TempDir::new("exth129_thumb");
+        let jpeg = make_test_jpeg();
+        for name in ["cover.jpg", "a.jpg", "b.jpg"] {
+            fs::write(dir.path().join(name), &jpeg).unwrap();
+        }
+        fs::write(
+            dir.path().join("content.html"),
+            r#"<html><head><title>T</title></head><body><p>x<img src="cover.jpg"/><img src="a.jpg"/><img src="b.jpg"/></p></body></html>"#,
+        )
+        .unwrap();
+        let opf_path = dir.path().join("content.opf");
+        fs::write(
+            &opf_path,
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf">
+  <metadata>
+    <dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">T</dc:title>
+    <dc:language xmlns:dc="http://purl.org/dc/elements/1.1/">en</dc:language>
+    <meta name="cover" content="imgc"/>
+  </metadata>
+  <manifest>
+    <item id="content" href="content.html" media-type="application/xhtml+xml"/>
+    <item id="imgc" href="cover.jpg" media-type="image/jpeg"/>
+    <item id="imga" href="a.jpg" media-type="image/jpeg"/>
+    <item id="imgb" href="b.jpg" media-type="image/jpeg"/>
+  </manifest>
+  <spine>
+    <itemref idref="content"/>
+  </spine>
+</package>"#,
+        )
+        .unwrap();
+
+        let data = build_mobi_bytes(&opf_path, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let exth = parse_exth_records(rec0);
+
+        let thumb_offset = u32::from_be_bytes(
+            exth.get(&202).expect("EXTH 202 must be present")[0][..4]
+                .try_into()
+                .unwrap(),
+        );
+        let cover_offset = u32::from_be_bytes(
+            exth.get(&201).expect("EXTH 201 must be present")[0][..4]
+                .try_into()
+                .unwrap(),
+        );
+        assert_ne!(
+            thumb_offset, cover_offset,
+            "the thumbnail must live in its own downscaled record"
+        );
+
+        let uri = String::from_utf8(exth.get(&129).expect("EXTH 129 must be present")[0].clone())
+            .unwrap();
+        let payload = uri
+            .strip_prefix("kindle:embed:")
+            .expect("EXTH 129 must be a kindle:embed URI");
+        let decoded = payload.chars().fold(0u32, |acc, c| {
+            acc * 32 + c.to_digit(36).expect("base32 digit")
+        });
+        assert_eq!(
+            decoded, thumb_offset,
+            "EXTH 129 ({uri}) must decode to the EXTH 202 thumbnail offset {thumb_offset}, \
+             not the cover offset {cover_offset}"
+        );
+        println!("  \u{2713} EXTH 129 = {uri} = EXTH 202 offset {thumb_offset}");
+    }
+
     #[test]
     fn test_book_images_between_text_and_flis() {
         let dir = TempDir::new("book_img_order");

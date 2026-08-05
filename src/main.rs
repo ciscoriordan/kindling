@@ -140,6 +140,17 @@ enum Commands {
         /// automatically; this flag extends it to books with fonts.
         #[arg(long)]
         force_user_fonts: bool,
+
+        /// Document type: "none" (no shelf assignment, default), "ebok"
+        /// (Books shelf) or "pdoc" (Documents shelf). Writing EXTH 501 also
+        /// writes an EXTH 113 identifier, and that pair is what lets the
+        /// firmware store a cover for the book, which is what the lock
+        /// screen displays (issue #26). Only "ebok" gets one: the device
+        /// keeps no thumbnails for PDOC content.
+        /// WARNING: this used to cost the back-to-library button (issue #15),
+        /// and Amazon may auto-delete sideloaded EBOK files on WiFi sync.
+        #[arg(long, default_value = "none")]
+        doc_type: String,
     },
 
     /// Convert comic images/CBZ/CBR/EPUB to Kindle-optimized MOBI
@@ -405,11 +416,14 @@ enum Commands {
         #[arg(long = "subject", action = clap::ArgAction::Append)]
         subjects: Vec<String>,
 
-        /// New series name (EXTH 112).
+        /// Rejected. Used to write EXTH 112, which is not the series name:
+        /// calibre stores `calibre:<uuid>` there as the source identifier.
         #[arg(long)]
         series: Option<String>,
 
-        /// New series index (EXTH 113).
+        /// Rejected. Used to write EXTH 113, which is the ASIN. kindling now
+        /// puts a real identifier there for lock screen covers (issue #26),
+        /// so a series number in that field would break them.
         #[arg(long = "series-index")]
         series_index: Option<String>,
 
@@ -753,6 +767,28 @@ fn detect_is_dictionary(input: &std::path::Path) -> bool {
     }
 }
 
+/// Parse the `--doc-type` flag into an EXTH 501 value.
+///
+/// "none" omits EXTH 501, the default for comics as well as reflowable books:
+/// its mere presence costs the back-to-library button on some firmware (issue
+/// #15 for books, issue #21 for comics).
+///
+/// Lowercasing rather than a clap value_parser keeps `--doc-type PDOC`
+/// working. An unrecognized value is a hard error, not a warn-and-substitute:
+/// silently shipping a shelf assignment the user did not ask for is how the
+/// comic default went untested for so long.
+fn parse_doc_type(raw: &str) -> Option<String> {
+    match raw.to_lowercase().as_str() {
+        "none" => None,
+        "ebok" => Some("EBOK".to_string()),
+        "pdoc" => Some("PDOC".to_string()),
+        other => {
+            eprintln!("Error: unknown --doc-type '{other}' (expected 'none', 'ebok' or 'pdoc')");
+            std::process::exit(1);
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn do_build(
     input: &PathBuf,
@@ -764,6 +800,7 @@ fn do_build(
     no_hd_images: bool,
     creator_tag: bool,
     kf8_only: bool,
+    doc_type: Option<&str>,
     kindle_limits: bool,
     no_validate: bool,
     self_check: bool,
@@ -875,7 +912,7 @@ fn do_build(
             no_hd_images,
             creator_tag,
             kf8_only,
-            None,
+            doc_type,
             kindle_limits,
             self_check,
             false, // kindlegen_parity: only meaningful for the comic path
@@ -893,7 +930,7 @@ fn do_build(
             no_hd_images,
             creator_tag,
             kf8_only,
-            None,
+            doc_type,
             kindle_limits,
             self_check,
             false, // kindlegen_parity: only meaningful for the comic path
@@ -982,6 +1019,7 @@ fn main() {
             false,
             false,
             false,
+            None, // doc_type: not part of the kindlegen interface
             true,
             no_validate,
             !no_self_check,
@@ -1012,6 +1050,7 @@ fn main() {
                 strict_accents,
                 fold_accents,
                 force_user_fonts,
+                doc_type,
             } => {
                 // Default: ON for dictionaries, OFF for books.
                 // Since we don't know the content type yet at parse time, we pass
@@ -1090,6 +1129,7 @@ fn main() {
                     no_hd_images,
                     creator_tag,
                     effective_kf8_only,
+                    parse_doc_type(&doc_type).as_deref(),
                     effective_kindle_limits,
                     no_validate,
                     !no_self_check,
@@ -1187,18 +1227,7 @@ fn main() {
                 // error, not a warn-and-substitute: silently shipping a shelf
                 // assignment the user did not ask for is how the comic default
                 // went untested for so long.
-                let doc_type_value = match doc_type.to_lowercase().as_str() {
-                    "none" => None,
-                    "ebok" => Some("EBOK".to_string()),
-                    "pdoc" => Some("PDOC".to_string()),
-                    other => {
-                        eprintln!(
-                            "Error: unknown --doc-type '{}' (expected 'none', 'ebok' or 'pdoc')",
-                            other
-                        );
-                        std::process::exit(1);
-                    }
-                };
+                let doc_type_value = parse_doc_type(&doc_type);
 
                 // Parse cover flag: either a page number or a file path
                 let cover_source = cover.map(|c| {
@@ -1761,6 +1790,23 @@ fn do_rewrite_metadata(
     series_index: Option<String>,
     cover: Option<&PathBuf>,
 ) {
+    // Refuse the series flags rather than writing them to the wrong record.
+    //
+    // These wrote EXTH 112 and 113, which are the source identifier and the
+    // ASIN. The same mistake was removed from the builder in abc5cae; it
+    // survived here. There is no oracle for a correct series record either:
+    // kindlegen ignores calibre's series metadata and emits nothing, so
+    // there is no target to point them at. Writing 113 now also collides
+    // with the lock screen cover work, which needs a real identifier there.
+    if series.is_some() || series_index.is_some() {
+        eprintln!(
+            "Error: --series and --series-index are not supported. They wrote EXTH 112 and 113, \
+             which are the source identifier and the ASIN, not series fields. kindlegen emits no \
+             series record at all, so there is no correct record to write instead."
+        );
+        process::exit(1);
+    }
+
     let default_output;
     let output_path: PathBuf = if dry_run {
         input.clone()
@@ -1811,8 +1857,6 @@ fn do_rewrite_metadata(
         } else {
             Some(subjects)
         },
-        series,
-        series_index,
         cover_image: cover_bytes,
     };
 

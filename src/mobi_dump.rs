@@ -473,7 +473,7 @@ fn exth_type_name(rtype: u32) -> &'static str {
         119 => "retail_price_currency",
         121 => "kf8boundary",
         125 => "kf8_count_resources_fonts",
-        129 => "kf8_cover_uri",
+        129 => "kf8_thumbnail_uri",
         131 => "kf8_unknown131",
         201 => "coveroffset",
         202 => "thumboffset",

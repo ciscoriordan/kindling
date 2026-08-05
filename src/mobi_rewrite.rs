@@ -8,7 +8,7 @@
 //! metadata fields on an already-built file.
 //!
 //! Intended callers are downstream library-manager consumers that let users
-//! edit book metadata (title, authors, series, tags, description, cover) and
+//! edit book metadata (title, authors, tags, description, cover) and
 //! need the changes to land inside the MOBI/AZW3 without a lossy round trip
 //! through EPUB rebuild. Book content records (text, non-cover images,
 //! indices, INDX, FLIS, FCIS, SRCS) are never touched.
@@ -32,16 +32,27 @@
 //! ## Scope
 //!
 //! - Supported fields: title, authors (multi), publisher, description,
-//!   language, ISBN, ASIN, publication date, subjects/tags (multi), series
-//!   name, series index, cover image bytes.
+//!   language, ISBN, ASIN, publication date, subjects/tags (multi), cover
+//!   image bytes.
+//! - Deliberately NOT supported: series name and series index. Those wrote
+//!   EXTH 112 and 113, which are the source identifier and the ASIN. The
+//!   builder shed the same mistake in abc5cae. kindlegen ignores calibre's
+//!   series metadata and emits no series record, so there is no verified
+//!   record to write instead, and 113 now carries the identifier the lock
+//!   screen cover depends on (issue #26).
 //! - Cover replacement only works on files that already have a cover record.
 //!   Adding a cover to a file that has none would require re-inserting a
 //!   PalmDB record, which shifts every downstream record and their boundary
 //!   offsets; that is out of scope here.
 //! - Unknown EXTH records in the input are preserved unchanged.
 //! - The PalmDOC compression type, FLIS/FCIS, FDST, index records, and text
-//!   content bytes are never touched. Only record 0 (MOBI header + EXTH +
-//!   full_name) and optionally the cover image record are rewritten.
+//!   content bytes are never touched. Only the section header records (MOBI
+//!   header + EXTH + full_name) and optionally the cover image record are
+//!   rewritten.
+//! - Dual-format `.mobi` files carry two section headers, and both are
+//!   rewritten. Kindle reads a dual file's library title from the KF8
+//!   section, so rewriting record 0 alone (which is the KF7 section) left the
+//!   device showing the old title while the command reported success.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -58,8 +69,7 @@ const EXTH_DESCRIPTION: u32 = 103;
 const EXTH_ISBN: u32 = 104;
 const EXTH_SUBJECT: u32 = 105;
 const EXTH_PUBLICATION_DATE: u32 = 106;
-const EXTH_SERIES_NAME: u32 = 112;
-const EXTH_SERIES_INDEX: u32 = 113;
+const EXTH_KF8_BOUNDARY: u32 = 121;
 const EXTH_COVER_OFFSET: u32 = 201;
 const EXTH_DRM_SERVER_ID: u32 = 401;
 const EXTH_DRM_COMMERCE_ID: u32 = 402;
@@ -105,8 +115,6 @@ pub struct MetadataUpdates {
     pub asin: Option<String>,
     pub publication_date: Option<String>,
     pub subjects: Option<Vec<String>>,
-    pub series: Option<String>,
-    pub series_index: Option<String>,
     pub cover_image: Option<Vec<u8>>,
 }
 
@@ -123,8 +131,6 @@ impl MetadataUpdates {
             && self.asin.is_none()
             && self.publication_date.is_none()
             && self.subjects.is_none()
-            && self.series.is_none()
-            && self.series_index.is_none()
             && self.cover_image.is_none()
     }
 }
@@ -234,10 +240,17 @@ pub fn rewrite_mobi_metadata(
     }
 
     // Determine which EXTH mutations (and cover replacement) the updates
-    // struct actually implies against the current file state.
-    let plan = plan_changes(&parsed, updates)?;
+    // struct actually implies against the current file state. Dual-format
+    // files get one plan per section: the two can disagree, and a file whose
+    // KF7 half already matches is not a no-op if its KF8 half does not.
+    let has_cover = parsed.cover_record_idx.is_some();
+    let plan = plan_changes(&parsed.primary, has_cover, updates)?;
+    let kf8_plan = match parsed.kf8.as_ref() {
+        Some(section) => Some(plan_changes(section, has_cover, updates)?),
+        None => None,
+    };
 
-    if plan.is_noop() {
+    if plan.is_noop() && kf8_plan.as_ref().is_none_or(Plan::is_noop) {
         // Byte-stable no-op path. Copy the file verbatim and return an
         // empty report. This also covers the idempotent case: after a
         // real run, the next call with the same updates sees matching
@@ -254,13 +267,26 @@ pub fn rewrite_mobi_metadata(
 
     // Non-no-op path. Rebuild record 0 (and optionally the cover record),
     // shift downstream PalmDB offsets, and write the output file.
-    let new_bytes = apply_plan(&input_bytes, &parsed, &plan)?;
+    let new_bytes = apply_plan(&input_bytes, &parsed, &plan, kf8_plan.as_ref())?;
     fs::write(output, &new_bytes)?;
+
+    // Report the KF7 changes, plus any the KF8 section needed on its own.
+    // The two normally coincide; they diverge when one section was already
+    // up to date, and reporting only the primary would then print "no
+    // changes" for a file that was in fact rewritten.
+    let mut changes = plan.exth_changes;
+    if let Some(kf8_plan) = kf8_plan {
+        for change in kf8_plan.exth_changes {
+            if !changes.contains(&change) {
+                changes.push(change);
+            }
+        }
+    }
 
     Ok(RewriteReport {
         input_path: input.to_path_buf(),
         output_path: output.to_path_buf(),
-        changes: plan.exth_changes,
+        changes,
         cover_updated: plan.new_cover_bytes.is_some(),
         no_op: false,
     })
@@ -270,6 +296,24 @@ pub fn rewrite_mobi_metadata(
 // Parsing
 // ---------------------------------------------------------------------------
 
+/// One MOBI section's header record: everything needed to rebuild it.
+///
+/// A dual-format `.mobi` carries two of these. The KF7 section is record 0;
+/// the KF8 section starts at the record named by the KF7 section's EXTH 121,
+/// and it has its own MOBI header, its own EXTH block and its own full_name.
+struct SectionView {
+    /// PalmDB record index of this section's header record.
+    record_idx: usize,
+    /// MOBI header length in bytes (read from the record at offset 20).
+    mobi_header_length: usize,
+    /// full_name_offset as stored in the MOBI header (relative to the record).
+    full_name_offset: usize,
+    /// full_name_length as stored in the MOBI header.
+    full_name_length: usize,
+    /// Parsed EXTH records as (type, data) pairs in input order.
+    exth_records: Vec<(u32, Vec<u8>)>,
+}
+
 /// Parsed view of a MOBI file used by the rewrite pipeline. Owns the data it
 /// points into so the caller can drop the input buffer without worry.
 struct ParsedMobi {
@@ -278,14 +322,14 @@ struct ParsedMobi {
     /// Byte range of record 0 (MOBI header container) in the input buffer.
     record0_start: usize,
     record0_end: usize,
-    /// MOBI header length in bytes (read from record0 offset 20).
-    mobi_header_length: usize,
-    /// full_name_offset as stored in the MOBI header (relative to record 0).
-    full_name_offset: usize,
-    /// full_name_length as stored in the MOBI header.
-    full_name_length: usize,
-    /// Parsed EXTH records as (type, data) pairs in input order.
-    exth_records: Vec<(u32, Vec<u8>)>,
+    /// Record 0's header view. In a dual file this is the KF7 section.
+    primary: SectionView,
+    /// The KF8 section's header record, present only on dual-format files.
+    ///
+    /// Rewriting only record 0 is what made `rewrite-metadata --title` look
+    /// like it worked and change nothing on device: Kindle reads a dual
+    /// `.mobi`'s library title from the KF8 section's full_name, not KF7's.
+    kf8: Option<SectionView>,
     /// True if the file's PalmDOC encryption byte is nonzero or any DRM
     /// EXTH (401/402/403) is present.
     is_drm_encrypted: bool,
@@ -353,54 +397,40 @@ fn parse_mobi(data: &[u8]) -> Result<ParsedMobi, RewriteError> {
     }
 
     let record0 = &data[record0_start..record0_end];
-    if record0.len() < PALMDOC_HEADER_LEN + 24 {
-        return Err(RewriteError::MalformedHeader(format!(
-            "record 0 is {} bytes, too small for PalmDOC + MOBI header",
-            record0.len()
-        )));
-    }
 
     // PalmDOC encryption byte at offset 12.
     let encryption_type = read_u16_be(record0, PALMDOC_ENCRYPTION_TYPE_OFFSET).unwrap_or(0);
 
-    if &record0[MOBI_MAGIC_OFFSET..MOBI_MAGIC_OFFSET + 4] != b"MOBI" {
-        return Err(RewriteError::MalformedHeader(format!(
-            "expected MOBI magic at record0 offset {}, got {:?}",
-            MOBI_MAGIC_OFFSET,
-            String::from_utf8_lossy(&record0[MOBI_MAGIC_OFFSET..MOBI_MAGIC_OFFSET + 4])
-        )));
-    }
+    let primary = parse_section_record0(record0, 0)?;
+    let exth_records = primary.exth_records.clone();
 
-    let mobi_header_length = read_u32_be(record0, MOBI_HEADER_LENGTH_OFFSET)
-        .ok_or_else(|| RewriteError::MalformedHeader("MOBI header length field truncated".into()))?
-        as usize;
-    if mobi_header_length < 232 {
-        return Err(RewriteError::MalformedHeader(format!(
-            "MOBI header length {} is too short (expected >= 232)",
-            mobi_header_length
-        )));
-    }
-
-    let exth_flags = read_u32_be(record0, MOBI_EXTH_FLAGS_OFFSET).unwrap_or(0);
-    let has_exth = exth_flags & 0x40 != 0;
-
-    let exth_start = MOBI_MAGIC_OFFSET + mobi_header_length;
-    let (exth_records, _exth_end) = if has_exth {
-        parse_exth_block(record0, exth_start)?
-    } else {
-        (Vec::new(), exth_start)
+    // A dual-format .mobi names its KF8 section in EXTH 121. That section
+    // has its own MOBI header, EXTH block and full_name, and it is the one
+    // Kindle reads the library title from, so it has to be rewritten too.
+    // A KF8 boundary of 0xFFFFFFFF is kindlegen's "no KF8 section" marker.
+    let kf8 = match exth_records.iter().find(|(t, _)| *t == EXTH_KF8_BOUNDARY) {
+        Some((_, d)) if d.len() == 4 => {
+            let idx = u32::from_be_bytes([d[0], d[1], d[2], d[3]]) as usize;
+            if idx == 0 || idx >= num_records {
+                None
+            } else {
+                let start = record_offsets[idx] as usize;
+                let end = if idx + 1 < num_records {
+                    record_offsets[idx + 1] as usize
+                } else {
+                    data.len()
+                };
+                if end > data.len() || start >= end {
+                    return Err(RewriteError::MalformedHeader(format!(
+                        "KF8 boundary record {} has invalid bounds [{}..{}]",
+                        idx, start, end
+                    )));
+                }
+                Some(parse_section_record0(&data[start..end], idx)?)
+            }
+        }
+        _ => None,
     };
-
-    let full_name_offset = read_u32_be(record0, MOBI_FULL_NAME_OFFSET_FIELD).unwrap_or(0) as usize;
-    let full_name_length = read_u32_be(record0, MOBI_FULL_NAME_LENGTH_FIELD).unwrap_or(0) as usize;
-    if full_name_offset + full_name_length > record0.len() {
-        return Err(RewriteError::MalformedHeader(format!(
-            "full_name range [{}..{}] exceeds record 0 length {}",
-            full_name_offset,
-            full_name_offset + full_name_length,
-            record0.len()
-        )));
-    }
 
     // DRM detection: PalmDOC encryption byte OR any of EXTH 401/402/403.
     let has_drm_exth = exth_records.iter().any(|(t, _)| {
@@ -429,12 +459,74 @@ fn parse_mobi(data: &[u8]) -> Result<ParsedMobi, RewriteError> {
         record_offsets,
         record0_start,
         record0_end,
+        primary,
+        kf8,
+        is_drm_encrypted,
+        cover_record_idx,
+    })
+}
+
+/// Parse one section's header record into a [`SectionView`].
+///
+/// Shared by record 0 and, on dual-format files, by the KF8 boundary record:
+/// the two have the same PalmDOC + MOBI header + EXTH + full_name layout, so
+/// there is no reason for the rewriter to understand it in two places.
+fn parse_section_record0(record: &[u8], record_idx: usize) -> Result<SectionView, RewriteError> {
+    if record.len() < PALMDOC_HEADER_LEN + 24 {
+        return Err(RewriteError::MalformedHeader(format!(
+            "record {} is {} bytes, too small for PalmDOC + MOBI header",
+            record_idx,
+            record.len()
+        )));
+    }
+
+    if &record[MOBI_MAGIC_OFFSET..MOBI_MAGIC_OFFSET + 4] != b"MOBI" {
+        return Err(RewriteError::MalformedHeader(format!(
+            "expected MOBI magic at record {} offset {}, got {:?}",
+            record_idx,
+            MOBI_MAGIC_OFFSET,
+            String::from_utf8_lossy(&record[MOBI_MAGIC_OFFSET..MOBI_MAGIC_OFFSET + 4])
+        )));
+    }
+
+    let mobi_header_length = read_u32_be(record, MOBI_HEADER_LENGTH_OFFSET)
+        .ok_or_else(|| RewriteError::MalformedHeader("MOBI header length field truncated".into()))?
+        as usize;
+    if mobi_header_length < 232 {
+        return Err(RewriteError::MalformedHeader(format!(
+            "MOBI header length {} is too short (expected >= 232)",
+            mobi_header_length
+        )));
+    }
+
+    let exth_flags = read_u32_be(record, MOBI_EXTH_FLAGS_OFFSET).unwrap_or(0);
+    let has_exth = exth_flags & 0x40 != 0;
+
+    let exth_start = MOBI_MAGIC_OFFSET + mobi_header_length;
+    let (exth_records, _exth_end) = if has_exth {
+        parse_exth_block(record, exth_start)?
+    } else {
+        (Vec::new(), exth_start)
+    };
+
+    let full_name_offset = read_u32_be(record, MOBI_FULL_NAME_OFFSET_FIELD).unwrap_or(0) as usize;
+    let full_name_length = read_u32_be(record, MOBI_FULL_NAME_LENGTH_FIELD).unwrap_or(0) as usize;
+    if full_name_offset + full_name_length > record.len() {
+        return Err(RewriteError::MalformedHeader(format!(
+            "full_name range [{}..{}] exceeds record {} length {}",
+            full_name_offset,
+            full_name_offset + full_name_length,
+            record_idx,
+            record.len()
+        )));
+    }
+
+    Ok(SectionView {
+        record_idx,
         mobi_header_length,
         full_name_offset,
         full_name_length,
         exth_records,
-        is_drm_encrypted,
-        cover_record_idx,
     })
 }
 
@@ -535,13 +627,23 @@ impl Plan {
     }
 }
 
-fn plan_changes(parsed: &ParsedMobi, updates: &MetadataUpdates) -> Result<Plan, RewriteError> {
+/// Plan the mutations for ONE section.
+///
+/// Called once per MOBI section, because a dual-format file's two sections
+/// can disagree: the KF7 half may already carry the requested title while the
+/// KF8 half still has the old one, and a plan computed from KF7 alone would
+/// call that a no-op and change nothing.
+fn plan_changes(
+    section: &SectionView,
+    has_cover_record: bool,
+    updates: &MetadataUpdates,
+) -> Result<Plan, RewriteError> {
     let mut plan = Plan::default();
 
     // Index existing EXTH records by type. Some types are multi-valued
     // (100 author, 105 subject), so we keep a Vec per type.
     let mut existing: HashMap<u32, Vec<&[u8]>> = HashMap::new();
-    for (t, data) in &parsed.exth_records {
+    for (t, data) in &section.exth_records {
         existing.entry(*t).or_default().push(data.as_slice());
     }
 
@@ -613,8 +715,6 @@ fn plan_changes(parsed: &ParsedMobi, updates: &MetadataUpdates) -> Result<Plan, 
     plan_single(EXTH_ISBN, updates.isbn.as_deref());
     plan_single(EXTH_ASIN, updates.asin.as_deref());
     plan_single(EXTH_PUBLICATION_DATE, updates.publication_date.as_deref());
-    plan_single(EXTH_SERIES_NAME, updates.series.as_deref());
-    plan_single(EXTH_SERIES_INDEX, updates.series_index.as_deref());
 
     // Title: EXTH 503 (updated title), EXTH 542 (4-byte md5-derived hash of
     // the title bytes, kindlegen and kindling both write this), AND the
@@ -756,7 +856,7 @@ fn plan_changes(parsed: &ParsedMobi, updates: &MetadataUpdates) -> Result<Plan, 
     // compare the new bytes against the existing cover record bytes; if
     // they match, this is a no-op.
     if let Some(new_cover) = &updates.cover_image {
-        if parsed.cover_record_idx.is_none() {
+        if !has_cover_record {
             return Err(RewriteError::NoCoverRecord);
         }
         if !is_recognized_image(new_cover) {
@@ -792,69 +892,86 @@ fn is_recognized_image(bytes: &[u8]) -> bool {
 // shift downstream PalmDB offsets and write the new file.
 // ---------------------------------------------------------------------------
 
-fn apply_plan(input: &[u8], parsed: &ParsedMobi, plan: &Plan) -> Result<Vec<u8>, RewriteError> {
-    // Step 1: construct new EXTH records Vec by applying exth_field_plans
-    // on top of parsed.exth_records.
-    let mut new_exth = parsed.exth_records.clone();
-
-    // First, strip all records whose types appear in the plan.
+/// Rebuild one section's header record with the plan applied.
+///
+/// Layout is identical for both sections: palmdoc(16) + mobi_header +
+/// EXTH + full_name + 4-byte-align padding.
+fn rebuild_section_record(old: &[u8], section: &SectionView, plan: &Plan) -> Vec<u8> {
+    // Construct the new EXTH list by applying exth_field_plans on top of the
+    // section's existing records: strip every type the plan touches, then
+    // append the plan's values. Kindle does not depend on EXTH record order,
+    // and keeping stable positions for untouched records minimizes churn.
+    let mut new_exth = section.exth_records.clone();
     let plan_types: std::collections::HashSet<u32> =
         plan.exth_field_plans.iter().map(|p| p.exth_type).collect();
     new_exth.retain(|(t, _)| !plan_types.contains(t));
-
-    // Then, for each plan entry, append the new records at the end. Kindle
-    // does not depend on EXTH record order, and keeping stable positions
-    // for records we did not touch minimizes churn.
     for field_plan in &plan.exth_field_plans {
         for value in &field_plan.new_values {
             new_exth.push((field_plan.exth_type, value.clone()));
         }
     }
-
-    // Step 2: serialize the new EXTH block (with 4-byte alignment).
     let new_exth_block = serialize_exth_block(&new_exth);
 
-    // Step 3: determine the new full_name.
     let new_full_name_bytes: Vec<u8> = if let Some(ref s) = plan.new_full_name {
         s.as_bytes().to_vec()
     } else {
-        // Unchanged: read the current full_name from record 0.
-        let record0 = &input[parsed.record0_start..parsed.record0_end];
-        record0[parsed.full_name_offset..parsed.full_name_offset + parsed.full_name_length].to_vec()
+        old[section.full_name_offset..section.full_name_offset + section.full_name_length].to_vec()
     };
 
-    // Step 4: build new record 0.
-    // Layout: palmdoc(16) + mobi_header + new_exth + full_name + padding(4-align).
-    let record0_old = &input[parsed.record0_start..parsed.record0_end];
-    let mut record0_new = Vec::with_capacity(record0_old.len() + new_exth_block.len());
+    let mut rebuilt = Vec::with_capacity(old.len() + new_exth_block.len());
     // PalmDOC header unchanged.
-    record0_new.extend_from_slice(&record0_old[..PALMDOC_HEADER_LEN]);
-    // MOBI header unchanged (we will patch the full_name_offset/length
-    // fields after the fact).
-    record0_new.extend_from_slice(
-        &record0_old[PALMDOC_HEADER_LEN..PALMDOC_HEADER_LEN + parsed.mobi_header_length],
+    rebuilt.extend_from_slice(&old[..PALMDOC_HEADER_LEN]);
+    // MOBI header unchanged; the full_name fields get patched below.
+    rebuilt.extend_from_slice(
+        &old[PALMDOC_HEADER_LEN..PALMDOC_HEADER_LEN + section.mobi_header_length],
     );
-    // New EXTH block.
-    record0_new.extend_from_slice(&new_exth_block);
-    // New full_name bytes.
-    let new_full_name_offset = record0_new.len();
-    record0_new.extend_from_slice(&new_full_name_bytes);
-    // Pad to 4-byte boundary.
-    while record0_new.len() % 4 != 0 {
-        record0_new.push(0x00);
+    rebuilt.extend_from_slice(&new_exth_block);
+    let new_full_name_offset = rebuilt.len();
+    rebuilt.extend_from_slice(&new_full_name_bytes);
+    while rebuilt.len() % 4 != 0 {
+        rebuilt.push(0x00);
     }
 
-    // Patch full_name_offset and full_name_length in the MOBI header.
     put_u32_be(
-        &mut record0_new,
+        &mut rebuilt,
         MOBI_FULL_NAME_OFFSET_FIELD,
         new_full_name_offset as u32,
     );
     put_u32_be(
-        &mut record0_new,
+        &mut rebuilt,
         MOBI_FULL_NAME_LENGTH_FIELD,
         new_full_name_bytes.len() as u32,
     );
+    rebuilt
+}
+
+fn apply_plan(
+    input: &[u8],
+    parsed: &ParsedMobi,
+    plan: &Plan,
+    kf8_plan: Option<&Plan>,
+) -> Result<Vec<u8>, RewriteError> {
+    let record0_old = &input[parsed.record0_start..parsed.record0_end];
+    let record0_new = rebuild_section_record(record0_old, &parsed.primary, plan);
+
+    // Rewrite the KF8 section's header record the same way. Record indices
+    // do not change (we substitute records, never insert or remove), so the
+    // KF7 section's EXTH 121 boundary pointer stays correct without patching.
+    let kf8_rebuilt: Option<(usize, Vec<u8>)> = match (parsed.kf8.as_ref(), kf8_plan) {
+        (Some(section), Some(kf8_plan)) => {
+            let start = parsed.record_offsets[section.record_idx] as usize;
+            let end = if section.record_idx + 1 < parsed.record_offsets.len() {
+                parsed.record_offsets[section.record_idx + 1] as usize
+            } else {
+                input.len()
+            };
+            Some((
+                section.record_idx,
+                rebuild_section_record(&input[start..end], section, kf8_plan),
+            ))
+        }
+        _ => None,
+    };
 
     // Step 5: optionally replace the cover image record.
     //
@@ -873,6 +990,10 @@ fn apply_plan(input: &[u8], parsed: &ParsedMobi, plan: &Plan) -> Result<Vec<u8>,
         };
         let bytes = if i == 0 {
             record0_new.clone()
+        } else if let Some((idx, ref rebuilt)) = kf8_rebuilt
+            && i == idx
+        {
+            rebuilt.clone()
         } else if plan.new_cover_bytes.is_some() && Some(i) == parsed.cover_record_idx {
             plan.new_cover_bytes.clone().unwrap()
         } else {
@@ -900,7 +1021,7 @@ fn apply_plan(input: &[u8], parsed: &ParsedMobi, plan: &Plan) -> Result<Vec<u8>,
     // Record info table: 8 bytes per record. offset(u32) + attrs(u8) + uid(3 bytes).
     let record_info_bytes = &input[PALMDB_HEADER_LEN..PALMDB_HEADER_LEN + num_records * 8];
 
-    let mut out = Vec::with_capacity(input.len() + new_exth_block.len());
+    let mut out = Vec::with_capacity(input.len() + record0_new.len());
     out.extend_from_slice(palmdb_header_bytes);
     out.extend_from_slice(record_info_bytes);
     out.extend_from_slice(gap_bytes);
@@ -1236,12 +1357,14 @@ mod tests {
         let out_bytes = fs::read(&output).unwrap();
         let parsed = parse_mobi(&out_bytes).unwrap();
         let t503 = parsed
+            .primary
             .exth_records
             .iter()
             .find(|(t, _)| *t == EXTH_UPDATED_TITLE)
             .unwrap();
         assert_eq!(t503.1, b"Brand New Title");
         let t542 = parsed
+            .primary
             .exth_records
             .iter()
             .find(|(t, _)| *t == EXTH_TITLE_HASH)
@@ -1249,8 +1372,8 @@ mod tests {
         assert_eq!(t542.1, md5_first4(b"Brand New Title"));
         // Verify full_name in record 0 at the field offset.
         let record0 = &out_bytes[parsed.record0_start..parsed.record0_end];
-        let fno = parsed.full_name_offset;
-        let fnl = parsed.full_name_length;
+        let fno = parsed.primary.full_name_offset;
+        let fnl = parsed.primary.full_name_length;
         assert_eq!(&record0[fno..fno + fnl], b"Brand New Title");
     }
 
@@ -1268,6 +1391,7 @@ mod tests {
         let out_bytes = fs::read(&output).unwrap();
         let parsed = parse_mobi(&out_bytes).unwrap();
         let authors: Vec<&Vec<u8>> = parsed
+            .primary
             .exth_records
             .iter()
             .filter(|(t, _)| *t == EXTH_CREATOR)
@@ -1292,6 +1416,7 @@ mod tests {
         let out_bytes = fs::read(&output).unwrap();
         let parsed = parse_mobi(&out_bytes).unwrap();
         let pub_rec = parsed
+            .primary
             .exth_records
             .iter()
             .find(|(t, _)| *t == EXTH_PUBLISHER)
@@ -1312,6 +1437,7 @@ mod tests {
         let parsed = parse_mobi(&fs::read(&output).unwrap()).unwrap();
         assert_eq!(
             parsed
+                .primary
                 .exth_records
                 .iter()
                 .find(|(t, _)| *t == EXTH_DESCRIPTION)
@@ -1334,6 +1460,7 @@ mod tests {
         let parsed = parse_mobi(&fs::read(&output).unwrap()).unwrap();
         assert_eq!(
             parsed
+                .primary
                 .exth_records
                 .iter()
                 .find(|(t, _)| *t == EXTH_ISBN)
@@ -1356,6 +1483,7 @@ mod tests {
         let parsed = parse_mobi(&fs::read(&output).unwrap()).unwrap();
         assert_eq!(
             parsed
+                .primary
                 .exth_records
                 .iter()
                 .find(|(t, _)| *t == EXTH_ASIN)
@@ -1378,6 +1506,7 @@ mod tests {
         let parsed = parse_mobi(&fs::read(&output).unwrap()).unwrap();
         assert_eq!(
             parsed
+                .primary
                 .exth_records
                 .iter()
                 .find(|(t, _)| *t == EXTH_LANGUAGE)
@@ -1400,6 +1529,7 @@ mod tests {
         let parsed = parse_mobi(&fs::read(&output).unwrap()).unwrap();
         assert_eq!(
             parsed
+                .primary
                 .exth_records
                 .iter()
                 .find(|(t, _)| *t == EXTH_PUBLICATION_DATE)
@@ -1428,6 +1558,7 @@ mod tests {
         rewrite_mobi_metadata(&input, &output, &updates).unwrap();
         let parsed = parse_mobi(&fs::read(&output).unwrap()).unwrap();
         let subjects: Vec<Vec<u8>> = parsed
+            .primary
             .exth_records
             .iter()
             .filter(|(t, _)| *t == EXTH_SUBJECT)
@@ -1444,35 +1575,28 @@ mod tests {
     }
 
     #[test]
-    fn series_update() {
+    fn series_fields_are_gone_from_the_update_surface() {
+        // EXTH 112 and 113 are the source identifier and the ASIN, not series
+        // fields, so the rewriter no longer offers a way to write them. 113 in
+        // particular now carries the identifier the lock screen cover is filed
+        // under (issue #26); a series number there would break it. Guard the
+        // records rather than the (now absent) struct fields, since only the
+        // bytes on disk actually matter.
         let bytes = build_synthetic_mobi("T", &default_exth(), 0, make_jpeg(0));
         let input = write_tmp("series_in", &bytes);
         let output = tmp_path("series_out");
         let updates = MetadataUpdates {
-            series: Some("Foundation".to_string()),
-            series_index: Some("3".to_string()),
+            title: Some("Retitled".to_string()),
             ..Default::default()
         };
         rewrite_mobi_metadata(&input, &output, &updates).unwrap();
         let parsed = parse_mobi(&fs::read(&output).unwrap()).unwrap();
-        assert_eq!(
-            parsed
-                .exth_records
-                .iter()
-                .find(|(t, _)| *t == EXTH_SERIES_NAME)
-                .unwrap()
-                .1,
-            b"Foundation"
-        );
-        assert_eq!(
-            parsed
-                .exth_records
-                .iter()
-                .find(|(t, _)| *t == EXTH_SERIES_INDEX)
-                .unwrap()
-                .1,
-            b"3"
-        );
+        for rec in [112u32, 113] {
+            assert!(
+                !parsed.primary.exth_records.iter().any(|(t, _)| *t == rec),
+                "a metadata rewrite must never introduce EXTH {rec}"
+            );
+        }
     }
 
     #[test]
@@ -1689,12 +1813,14 @@ mod tests {
         let parsed = parse_mobi(&fs::read(&output).unwrap()).unwrap();
         assert!(
             parsed
+                .primary
                 .exth_records
                 .iter()
                 .any(|(t, d)| *t == 99999 && d == &vec![1, 2, 3, 4])
         );
         assert!(
             parsed
+                .primary
                 .exth_records
                 .iter()
                 .any(|(t, d)| *t == EXTH_CDE_TYPE && d == b"PDOC")
@@ -1714,6 +1840,7 @@ mod tests {
         let parsed = parse_mobi(&fs::read(&output).unwrap()).unwrap();
         assert!(
             parsed
+                .primary
                 .exth_records
                 .iter()
                 .find(|(t, _)| *t == EXTH_DESCRIPTION)

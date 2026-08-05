@@ -514,18 +514,19 @@ fn check_cover_image(
         }
 
         // KF8-only comics require EXTH 129 (kindle:embed URI). This is the
-        // primary cover-lookup path on Paperwhite 11+, Oasis 3, and Scribe.
+        // thumbnail-resolution path on Paperwhite 11+, Oasis 3, and Scribe.
         // A missing EXTH 129 on a fixed-layout comic is why Vader Down
         // indexed but failed to open ("Unable to Open Item") even after the
-        // SRCS bloat fix in v0.7.7: the reader could not resolve the cover
-        // image for the opening spread.
+        // SRCS bloat fix in v0.7.7: the reader could not resolve the artwork
+        // for the opening spread.
         if is_kf8_only {
             match find_exth_string(&section.exth, 129) {
                 None => {
                     report.fail(
                         "KF8-only comic MOBI is missing EXTH 129 (kindle:embed \
-                         cover URI); modern Kindle firmware uses this to locate \
-                         the cover and the book will fail to open"
+                         thumbnail URI); modern Kindle firmware uses this to \
+                         locate the library thumbnail and the book will fail \
+                         to open"
                             .to_string(),
                     );
                 }
@@ -594,6 +595,51 @@ fn check_cover_image(
             }
         }
     }
+
+    // EXTH 129 must resolve to the same resource as EXTH 202. The record is
+    // the thumbnail URI, not the cover URI: all four kindlegen parity
+    // references write base32(EXTH 202), and calibre calls it
+    // `kf8_thumbnail_uri` and writes base32(thumbnail_offset). Writing
+    // base32(cover + 1) instead only looks right when the cover is image 0
+    // and the thumbnail follows it; anywhere else it aims the device-side
+    // thumbnail pipeline at an arbitrary interior image (issue #26).
+    if let (Some(uri), Some(p202)) = (find_exth_string(&section.exth, 129), exth202) {
+        if p202.len() == 4 {
+            let want = u32::from_be_bytes([p202[0], p202[1], p202[2], p202[3]]);
+            match uri
+                .strip_prefix(b"kindle:embed:".as_slice())
+                .and_then(decode_kindle_embed_base32)
+            {
+                Some(got) if got == want => report.pass(),
+                Some(got) => report.fail(format!(
+                    "EXTH 129 points at resource {} but EXTH 202 (thumbnail) is \
+                     resource {}; 129 is the thumbnail URI and must match",
+                    got, want
+                )),
+                None => report.fail(format!(
+                    "EXTH 129 has invalid value {:?} (expected \"kindle:embed:XXXX\")",
+                    String::from_utf8_lossy(uri)
+                )),
+            }
+        }
+    }
+}
+
+/// Decode the 4-char base32 payload of a `kindle:embed:XXXX` URI.
+fn decode_kindle_embed_base32(payload: &[u8]) -> Option<u32> {
+    if payload.is_empty() {
+        return None;
+    }
+    let mut value: u32 = 0;
+    for c in payload {
+        let digit = match c {
+            b'0'..=b'9' => c - b'0',
+            b'A'..=b'V' => c - b'A' + 10,
+            _ => return None,
+        };
+        value = value.checked_mul(32)?.checked_add(digit as u32)?;
+    }
+    Some(value)
 }
 
 /// Minimal JPEG SOF scanner to pull out (width, height) for thumbnail
@@ -668,7 +714,7 @@ pub fn check_mobi_file(
 
     // A .azw3 file with file_version >= 8 in its only MOBI section is a
     // KF8-only comic (no KF7 boundary), which modern Kindle firmware reads
-    // via the EXTH 129 kindle:embed cover URI path. We pass this flag into
+    // via the EXTH 129 kindle:embed thumbnail URI path. We pass this flag into
     // the cover-image check so it can require EXTH 129 on KF8-only comics
     // without falsely flagging dual-format builds where the KF7 section
     // does not need it.

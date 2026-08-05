@@ -227,13 +227,31 @@ pub struct FixedLayoutMeta {
 /// If `hd_geometry` is Some, adds EXTH 536 with the HD image geometry string
 /// (format: "WxH:start-end|").
 ///
-/// ## Document type (`doc_type`)
+/// ## Document type (`doc_type`) and ASIN (`asin`)
 /// Controls EXTH record 501 which determines where the book appears on Kindle:
 /// - `Some("EBOK")`: appears under "Books". WARNING: Amazon may auto-delete
 ///   sideloaded EBOK files when the Kindle connects to WiFi, since it checks
 ///   whether the ASIN is in the user's purchase history.
 /// - `Some("PDOC")` or `None`: appears under "Documents" (default, safe).
 ///   No cloud deletion risk for sideloaded content.
+///
+/// `asin` writes EXTH 113. Paired with 501 it is what makes a sideloaded book
+/// eligible for the lock screen cover, i.e. what the firmware shows when
+/// "Display book cover on lock screen" is on (issue #26). Verified on a
+/// Paperwhite 5 running 5.19.2 against two builds of the same EPUB: the one
+/// carrying 113 + 501 = EBOK shows its cover, the one carrying neither shows
+/// the wallpaper.
+///
+/// The pair is a gate, not the image source. The firmware also files a
+/// `system/thumbnails/thumbnail_<113>_<501>_portrait.jpg` keyed on these two
+/// records, but on that device the file it wrote was Amazon's "No image
+/// available" placeholder: it treated the identifier as a real ASIN, asked
+/// the store, and cached the miss. The lock screen kept showing the correct
+/// cover anyway, so the displayed image comes from the book's own cover and
+/// thumbnail records, not from that file. This is the same store lookup
+/// behind the long-standing sideloaded-cover-disappears complaints, which is
+/// why calibre keeps backups in an `amazon-cover-bug/` directory on the
+/// device; it did not cost us the lock screen cover here.
 ///
 /// ## Descriptive metadata
 /// - `description`: EXTH 103, maps to ComicInfo.xml `<Summary>`.
@@ -257,12 +275,13 @@ pub fn build_book_exth(
     language: &str,
     cover_offset: Option<u32>,
     thumb_offset: Option<u32>,
-    kf8_cover_uri: Option<&str>,
+    kf8_thumb_uri: Option<&str>,
     fixed_layout: Option<&FixedLayoutMeta>,
     kf8_boundary_record: Option<u32>,
     hd_geometry: Option<&str>,
     creator_tag: bool,
     doc_type: Option<&str>,
+    asin: Option<&str>,
     description: Option<&str>,
     subject: Option<&str>,
     resource_count: u32,
@@ -351,14 +370,16 @@ pub fn build_book_exth(
     // Creator build (207)
     records.push(exth_record(207, &0u32.to_be_bytes())); // build = 0
 
-    // KF8 cover URI (129). Modern Kindle firmware (Paperwhite 11+, Oasis 3,
-    // Scribe, etc.) looks up the cover via a `kindle:embed:XXXX` URI where
-    // XXXX is the 4-char base32 encoding of the 1-based recindex of the
-    // cover image relative to first_image_record. This is what kindlegen
-    // and Calibre emit. Without it, the library thumbnail pipeline and the
+    // KF8 thumbnail URI (129). Modern Kindle firmware (Paperwhite 11+, Oasis
+    // 3, Scribe, etc.) reaches the library thumbnail through a
+    // `kindle:embed:XXXX` URI where XXXX is the 4-char base32 encoding of the
+    // 0-based resource offset of the thumbnail relative to
+    // first_image_record - the same number EXTH 202 carries. kindlegen writes
+    // 129 == 202 in every parity reference and calibre calls the record
+    // `kf8_thumbnail_uri`. Without it, the library thumbnail pipeline and the
     // open-book flow both fall back to a grey placeholder and, for
     // fixed-layout comics, the reader may refuse to open the file at all.
-    if let Some(uri) = kf8_cover_uri {
+    if let Some(uri) = kf8_thumb_uri {
         if !uri.is_empty() {
             records.push(exth_record(129, uri.as_bytes()));
         }
@@ -416,6 +437,18 @@ pub fn build_book_exth(
     //            content on WiFi sync, since it verifies the ASIN against the
     //            user's purchase history).
     //   "PDOC" = Documents shelf.
+    //
+    // The "any value breaks nav" claim above is stated more broadly than the
+    // evidence now supports. Retested 2026-08-05 on a Paperwhite 5 running
+    // 5.19.2: a reflowable book carrying 501 = EBOK still showed the
+    // back-to-library toolbar, and so did the same book built without a 501.
+    // So EBOK is not what cost the toolbar on that firmware. Whatever issue
+    // #15 hit was either fixed by the structural work in 0.20.0 (which shipped
+    // alongside the 501 removal, so the two were never separated) or is
+    // specific to older firmware. PDOC on a reflowable book has not been
+    // retested. Keeping the default at None regardless: kindlegen writes no
+    // 501 for any content type, and issue #21 reported the toolbar loss on
+    // comics independently.
     match doc_type {
         Some("EBOK") => {
             records.push(exth_record(501, b"EBOK"));
@@ -425,6 +458,17 @@ pub fn build_book_exth(
         }
         None => {
             // Omit EXTH 501: reflowable books keep their navigation chrome.
+        }
+    }
+
+    // ASIN (113). Only meaningful next to a 501: the pair is the key the
+    // firmware files the cover under, as
+    // `system/thumbnails/thumbnail_<113>_<501>_portrait.jpg`. Emitting 113
+    // alone leaves an identifier nothing reads, so the caller only supplies
+    // one when it also asked for a doc type (issue #26).
+    if let Some(asin) = asin {
+        if !asin.is_empty() && doc_type.is_some() {
+            records.push(exth_record(113, asin.as_bytes()));
         }
     }
 
@@ -463,6 +507,70 @@ pub fn build_book_exth(
     exth.extend_from_slice(&vec![0u8; padding]);
 
     exth
+}
+
+/// Pick the value for EXTH 113 on a book that asked for a doc type.
+///
+/// The firmware turns 113 and 501 into a filename, so the only hard
+/// requirements are that the string be filename-safe and that it stay the same
+/// across rebuilds: a value that churns orphans the thumbnail the device
+/// already wrote and leaves the lock screen on wallpaper until the next sync.
+/// So prefer a UUID the EPUB already carries (most EPUBs publish one as
+/// `<dc:identifier>urn:uuid:…`), which is also what calibre puts there, and
+/// otherwise derive one from the metadata that names the book.
+pub fn book_asin(dc_identifiers: &[String], title: &str, author: &str) -> String {
+    for id in dc_identifiers {
+        let candidate = id
+            .trim()
+            .strip_prefix("urn:uuid:")
+            .unwrap_or(id.trim())
+            .to_ascii_lowercase();
+        if is_uuid(&candidate) {
+            return candidate;
+        }
+    }
+    derive_uuid(&format!(
+        "{}\u{0}{}\u{0}{}",
+        dc_identifiers.first().map(String::as_str).unwrap_or(""),
+        title,
+        author
+    ))
+}
+
+/// 8-4-4-4-12 lowercase hex, the shape the firmware writes into the thumbnail
+/// filename. Deliberately does not police the version/variant nibbles: the
+/// point is a stable filename-safe token, not RFC 4122 conformance.
+fn is_uuid(s: &str) -> bool {
+    let groups: Vec<&str> = s.split('-').collect();
+    groups.len() == 5
+        && [8usize, 4, 4, 4, 12]
+            .iter()
+            .zip(&groups)
+            .all(|(want, g)| g.len() == *want)
+        && s.chars().all(|c| c == '-' || c.is_ascii_hexdigit())
+}
+
+/// Derive a stable UUIDv8 from a seed string.
+///
+/// Version 8 is the RFC 9562 slot for implementation-defined layouts, which is
+/// what this is: the 128 bits come from the MD5 the fontsignature builder
+/// already needs, then get the version and variant nibbles stamped on so the
+/// result reads as a UUID to anything that parses one. MD5 is the wrong tool
+/// for a security decision and the right one here - this names a file, and the
+/// only property that matters is that the same book hashes the same way twice.
+fn derive_uuid(seed: &str) -> String {
+    let mut b = md5_hash(seed.as_bytes());
+    b[6] = (b[6] & 0x0f) | 0x80; // version 8
+    b[8] = (b[8] & 0x3f) | 0x80; // RFC 9562 variant
+    let hex: String = b.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    )
 }
 
 /// Build the complete EXTH header with metadata records for dictionaries.
@@ -641,6 +749,7 @@ mod tests {
             None,
             false,
             None, // doc_type: None should omit EXTH 501 entirely
+            None, // asin
             None,
             None,
             0, // resource_count
@@ -668,6 +777,7 @@ mod tests {
             None,
             false,
             Some("PDOC"),
+            None, // asin
             None,
             None,
             0, // resource_count
@@ -676,6 +786,81 @@ mod tests {
         let rec501 = find_record(&records, 501).expect("EXTH 501 should exist");
         assert_eq!(rec501, b"PDOC");
         println!("  \u{2713} EXTH 501 explicit = PDOC");
+    }
+
+    #[test]
+    fn test_book_asin_prefers_an_epub_uuid() {
+        // The firmware turns EXTH 113 into a filename, so a UUID the EPUB
+        // already publishes is the best value available: stable by
+        // construction and the same one calibre would have used.
+        let ids = vec![
+            "9781234567890".to_string(),
+            "urn:uuid:22CB9524-8A52-4B75-B5CB-C4FDF9BA169C".to_string(),
+        ];
+        assert_eq!(
+            book_asin(&ids, "T", "A"),
+            "22cb9524-8a52-4b75-b5cb-c4fdf9ba169c",
+            "a urn:uuid identifier should be unwrapped and lowercased"
+        );
+        println!("  \u{2713} book_asin picks the EPUB's own uuid");
+    }
+
+    #[test]
+    fn test_book_asin_derives_a_stable_uuid() {
+        // No UUID in the EPUB, so one gets derived. It has to be UUID-shaped
+        // (the firmware writes it into thumbnail_<113>_<501>_portrait.jpg) and
+        // it has to survive a rebuild, or the device orphans the thumbnail it
+        // already wrote and the lock screen drops back to wallpaper.
+        let ids = vec!["9781234567890".to_string()];
+        let first = book_asin(&ids, "Test Book", "Author");
+        assert!(
+            is_uuid(&first),
+            "derived asin {first} is not UUID-shaped and would break the filename"
+        );
+        assert_eq!(first, book_asin(&ids, "Test Book", "Author"), "not stable");
+        assert_ne!(
+            first,
+            book_asin(&ids, "Other Book", "Author"),
+            "two different books must not collide onto one thumbnail"
+        );
+        println!("  \u{2713} derived asin is UUID-shaped, stable, and title-sensitive");
+    }
+
+    #[test]
+    fn test_exth_113_needs_a_doc_type() {
+        // 113 alone names nothing: the firmware keys the thumbnail on the
+        // pair. Emitting it without a 501 would just be a stray identifier.
+        let build = |doc_type| {
+            build_book_exth(
+                "Test Book",
+                "Author",
+                "2026-01-01",
+                "en",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                false,
+                doc_type,
+                Some("22cb9524-8a52-4b75-b5cb-c4fdf9ba169c"),
+                None,
+                None,
+                0,
+            )
+        };
+        let with_type = parse_exth_records(&build(Some("EBOK")));
+        assert_eq!(
+            find_record(&with_type, 113).as_deref(),
+            Some(b"22cb9524-8a52-4b75-b5cb-c4fdf9ba169c".as_slice()),
+            "EXTH 113 must be written alongside 501"
+        );
+        assert!(
+            find_record(&parse_exth_records(&build(None)), 113).is_none(),
+            "EXTH 113 must not appear without a 501 to pair with"
+        );
+        println!("  \u{2713} EXTH 113 written with a doc type, omitted without one");
     }
 
     #[test]
@@ -693,6 +878,7 @@ mod tests {
             None,
             false,
             Some("EBOK"),
+            None, // asin
             None,
             None,
             0, // resource_count
@@ -725,6 +911,7 @@ mod tests {
             None,
             false,
             None,
+            None,                               // asin
             Some("Luffy begins his adventure"), // description (103)
             Some("Manga, Adventure"),           // subject (105),
             0,                                  // resource_count
@@ -766,6 +953,7 @@ mod tests {
             None,
             false,
             Some("EBOK"),
+            None, // asin
             Some("A test book"),
             Some("Fiction"),
             0, // resource_count
