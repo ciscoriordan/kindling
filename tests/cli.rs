@@ -786,6 +786,106 @@ mod validate {
     }
 
     #[test]
+    fn thumbnail_installs_under_the_exth_113_501_filename() {
+        // The firmware looks for system/thumbnails/thumbnail_<113>_<501>_
+        // portrait.jpg, so the filename is the whole contract: get it wrong
+        // and the file is simply never read. Verified on a PW5 that writing
+        // the book's own thumbnail there replaces Amazon's "No image
+        // available" tile and leaves the lock screen cover working (issue #26).
+        let (tmp, opf) = stage_fixture("clean_book", "clean_book.opf");
+        let built = run_build(&["--doc-type", "ebok", opf.to_str().unwrap()]);
+        assert!(built.status.success(), "ebok build\n{}", dump(&built));
+        let azw3 = tmp.path().join("clean_book.azw3");
+
+        // A directory only counts as a Kindle if it looks like one.
+        let fake = tmp.path().join("kindle");
+        std::fs::create_dir_all(fake.join("documents")).unwrap();
+
+        let out = Command::new(kindling_bin())
+            .arg("thumbnail")
+            .arg(&azw3)
+            .arg("--kindle")
+            .arg(&fake)
+            .output()
+            .expect("failed to spawn kindling-cli thumbnail");
+        assert!(out.status.success(), "thumbnail install\n{}", dump(&out));
+
+        let dir = fake.join("system/thumbnails");
+        let written: Vec<_> = std::fs::read_dir(&dir)
+            .expect("system/thumbnails should exist")
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(written.len(), 1, "expected one thumbnail, got {written:?}");
+        let name = &written[0];
+        assert!(
+            name.starts_with("thumbnail_") && name.ends_with("_EBOK_portrait.jpg"),
+            "filename {name} does not match what the firmware looks for"
+        );
+
+        // The identifier in the name has to be the book's own EXTH 113, or
+        // the device reads a file belonging to nothing.
+        let dumped = Command::new(kindling_bin())
+            .arg("dump")
+            .arg(&azw3)
+            .output()
+            .expect("failed to spawn kindling-cli dump");
+        let text = String::from_utf8_lossy(&dumped.stdout);
+        let asin = text
+            .lines()
+            .find(|l| l.contains("exth[113].value ="))
+            .and_then(|l| l.split('"').nth(1))
+            .expect("the book must carry EXTH 113");
+        assert_eq!(
+            name.as_str(),
+            format!("thumbnail_{asin}_EBOK_portrait.jpg"),
+            "the installed filename must be built from the book's own EXTH 113 and 501"
+        );
+
+        // And a restore copy, the way calibre keeps one.
+        assert!(
+            fake.join("amazon-cover-bug").join(name).exists(),
+            "expected a backup copy for restoring after a sync"
+        );
+    }
+
+    #[test]
+    fn thumbnail_refuses_a_book_with_no_doc_type() {
+        // Without --doc-type there is no 113/501 pair, so there is no
+        // filename to install under. Say so instead of writing a file the
+        // device will never look at.
+        let (tmp, opf) = stage_fixture("clean_book", "clean_book.opf");
+        let built = run_build(&[opf.to_str().unwrap()]);
+        assert!(built.status.success(), "default build\n{}", dump(&built));
+        let azw3 = tmp.path().join("clean_book.azw3");
+
+        let fake = tmp.path().join("kindle");
+        std::fs::create_dir_all(fake.join("documents")).unwrap();
+
+        let out = Command::new(kindling_bin())
+            .arg("thumbnail")
+            .arg(&azw3)
+            .arg("--kindle")
+            .arg(&fake)
+            .output()
+            .expect("failed to spawn kindling-cli thumbnail");
+        assert!(
+            !out.status.success(),
+            "a book with no doc type must not install\n{}",
+            dump(&out)
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("--doc-type ebok"),
+            "the error should say how to fix it\n{}",
+            dump(&out)
+        );
+        assert!(
+            !fake.join("system/thumbnails").exists(),
+            "must not create the directory for a book it refused"
+        );
+    }
+
+    #[test]
     fn rewrite_metadata_retitles_both_sections_of_a_dual_mobi() {
         // A dual-format .mobi carries two MOBI headers, and Kindle reads the
         // library title from the KF8 one. rewrite-metadata used to rebuild

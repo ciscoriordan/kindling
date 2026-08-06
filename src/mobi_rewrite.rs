@@ -69,8 +69,12 @@ const EXTH_DESCRIPTION: u32 = 103;
 const EXTH_ISBN: u32 = 104;
 const EXTH_SUBJECT: u32 = 105;
 const EXTH_PUBLICATION_DATE: u32 = 106;
+/// EXTH 113. The standard record map calls this the ASIN; kindling writes a
+/// UUID there so the firmware can file a cover under it (issue #26).
+const EXTH_ASIN_IDENTIFIER: u32 = 113;
 const EXTH_KF8_BOUNDARY: u32 = 121;
 const EXTH_COVER_OFFSET: u32 = 201;
+const EXTH_THUMB_OFFSET: u32 = 202;
 const EXTH_DRM_SERVER_ID: u32 = 401;
 const EXTH_DRM_COMMERCE_ID: u32 = 402;
 const EXTH_DRM_EBOOKBASE_BOOK_ID: u32 = 403;
@@ -180,6 +184,9 @@ pub enum RewriteError {
     NoCoverRecord,
     /// Cover image bytes did not look like a supported image format.
     UnsupportedCoverFormat,
+    /// The book carries no EXTH 113 / 501 pair (or no EXTH 202 thumbnail), so
+    /// the firmware has no filename to file a device-side cover under.
+    NoDeviceCoverKey,
 }
 
 impl fmt::Display for RewriteError {
@@ -187,6 +194,11 @@ impl fmt::Display for RewriteError {
         match self {
             RewriteError::Io(e) => write!(f, "I/O error: {}", e),
             RewriteError::NotAMobi(s) => write!(f, "not a MOBI file: {}", s),
+            RewriteError::NoDeviceCoverKey => write!(
+                f,
+                "no EXTH 113/501 pair and thumbnail to build a device cover from; \
+                 rebuild the book with --doc-type ebok"
+            ),
             RewriteError::DrmEncrypted => write!(f, "file is DRM-encrypted; refusing to rewrite"),
             RewriteError::MalformedHeader(s) => write!(f, "malformed MOBI header: {}", s),
             RewriteError::NoCoverRecord => write!(
@@ -292,6 +304,71 @@ pub fn rewrite_mobi_metadata(
     })
 }
 
+/// The three things `kindling thumbnail` needs out of a built book.
+pub struct DeviceThumbnail {
+    /// EXTH 113. Half of the filename the firmware keys a cover on.
+    pub asin: String,
+    /// EXTH 501, e.g. `EBOK`. The other half.
+    pub cde_type: String,
+    /// The image bytes from the record EXTH 202 points at.
+    pub image: Vec<u8>,
+}
+
+/// Pull the device-side cover thumbnail out of a built MOBI/AZW3.
+///
+/// Fails when the book carries no EXTH 113 / 501 pair, because without it the
+/// firmware has no filename to look under and there is nothing to write.
+pub fn extract_device_thumbnail(input: &Path) -> Result<DeviceThumbnail, RewriteError> {
+    let bytes = fs::read(input)?;
+    let parsed = parse_mobi(&bytes)?;
+
+    let exth_string = |t: u32| -> Option<String> {
+        parsed
+            .primary
+            .exth_records
+            .iter()
+            .find(|(rt, _)| *rt == t)
+            .and_then(|(_, d)| String::from_utf8(d.clone()).ok())
+            .filter(|s| !s.is_empty())
+    };
+
+    let asin = exth_string(EXTH_ASIN_IDENTIFIER).ok_or(RewriteError::NoDeviceCoverKey)?;
+    let cde_type = exth_string(EXTH_CDE_TYPE).ok_or(RewriteError::NoDeviceCoverKey)?;
+
+    // A path separator in either half would let the filename escape
+    // system/thumbnails. Both come from a file we did not necessarily build.
+    if [asin.as_str(), cde_type.as_str()]
+        .iter()
+        .any(|s| s.contains(['/', '\\']) || s == &".." || s.is_empty())
+    {
+        return Err(RewriteError::MalformedHeader(format!(
+            "EXTH 113/501 are {asin:?}/{cde_type:?}, which cannot form a filename"
+        )));
+    }
+
+    let idx = parsed
+        .thumb_record_idx
+        .ok_or(RewriteError::NoDeviceCoverKey)?;
+    let start = parsed.record_offsets[idx] as usize;
+    let end = if idx + 1 < parsed.record_offsets.len() {
+        parsed.record_offsets[idx + 1] as usize
+    } else {
+        bytes.len()
+    };
+    let image = bytes
+        .get(start..end)
+        .ok_or_else(|| {
+            RewriteError::MalformedHeader(format!("thumbnail record {idx} is out of bounds"))
+        })?
+        .to_vec();
+
+    Ok(DeviceThumbnail {
+        asin,
+        cde_type,
+        image,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Parsing
 // ---------------------------------------------------------------------------
@@ -335,6 +412,8 @@ struct ParsedMobi {
     is_drm_encrypted: bool,
     /// Current cover image PalmDB record index, if the file has EXTH 201.
     cover_record_idx: Option<usize>,
+    /// Library thumbnail PalmDB record index, if the file has EXTH 202.
+    thumb_record_idx: Option<usize>,
 }
 
 fn parse_mobi(data: &[u8]) -> Result<ParsedMobi, RewriteError> {
@@ -442,18 +521,22 @@ fn parse_mobi(data: &[u8]) -> Result<ParsedMobi, RewriteError> {
     // (0-based) relative to first_image_record (MOBI header offset 0x5C =
     // record0 offset 0x6C = 108).
     let first_image_record = read_u32_be(record0, 108).unwrap_or(0xFFFFFFFF) as usize;
-    let cover_record_idx = exth_records
-        .iter()
-        .find(|(t, _)| *t == EXTH_COVER_OFFSET)
-        .and_then(|(_, d)| {
-            if d.len() == 4 {
-                let off = u32::from_be_bytes([d[0], d[1], d[2], d[3]]) as usize;
-                let idx = first_image_record + off;
-                if idx < num_records { Some(idx) } else { None }
-            } else {
-                None
-            }
-        });
+    let image_record_idx = |exth_type: u32| -> Option<usize> {
+        exth_records
+            .iter()
+            .find(|(t, _)| *t == exth_type)
+            .and_then(|(_, d)| {
+                if d.len() == 4 {
+                    let off = u32::from_be_bytes([d[0], d[1], d[2], d[3]]) as usize;
+                    let idx = first_image_record + off;
+                    if idx < num_records { Some(idx) } else { None }
+                } else {
+                    None
+                }
+            })
+    };
+    let cover_record_idx = image_record_idx(EXTH_COVER_OFFSET);
+    let thumb_record_idx = image_record_idx(EXTH_THUMB_OFFSET);
 
     Ok(ParsedMobi {
         record_offsets,
@@ -463,6 +546,7 @@ fn parse_mobi(data: &[u8]) -> Result<ParsedMobi, RewriteError> {
         kf8,
         is_drm_encrypted,
         cover_record_idx,
+        thumb_record_idx,
     })
 }
 

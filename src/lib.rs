@@ -23,6 +23,7 @@ pub mod ordt;
 pub mod profile;
 pub mod repair;
 pub mod stardict;
+pub mod thumbnail;
 pub mod validate;
 
 // Internal implementation modules, visible inside the crate only.

@@ -200,6 +200,7 @@ kindling-cli comic input/ --no-split --crop 0                   # disable smart 
 kindling-cli comic input.cbz --title "My Comic" --language ja   # metadata overrides
 kindling-cli comic input.cbz --doc-type ebok                    # appear under Books on Kindle (default: no shelf)
 kindling-cli build book.epub --doc-type ebok                    # Books shelf + a lock screen cover (issue #26)
+kindling-cli thumbnail book.azw3 --kindle /Volumes/Kindle       # fix the library tile that --doc-type ebok costs you
 kindling-cli comic input.cbz --cover 3                          # use page 3 as cover
 kindling-cli comic input.cbz --legacy-mobi                      # opt into legacy dual MOBI7+KF8 (.mobi)
 kindling-cli comic input.cbz --legacy-mobi                      # dual MOBI7+KF8 .mobi so sideloaded covers show (issue #20)
@@ -237,8 +238,16 @@ Kindle library field mapping (what the Kindle actually displays for sideloaded c
 - **Document type** (books and comics): `--doc-type pdoc` for the Documents shelf or `--doc-type ebok` for Books (default: `none`, no shelf assignment). Comics used to default to `pdoc`; they now omit the record like reflowable books do, because its presence hides the back-to-library button on some firmware and leaves no way out of the book (issue #21). Asking for a shelf is opt-in, and an unrecognized value is now an error rather than a silent fallback to `pdoc`.
 - **Lock screen covers**: with "Display book cover on lock screen" turned on, a sideloaded book shows its cover only if it carries both EXTH 113 and EXTH 501. Neither is written by default, so the wallpaper shows instead. `--doc-type ebok` writes both: it fills EXTH 113 with a UUID the EPUB already publishes, or derives a stable one from the metadata so rebuilds do not churn the identifier. This is the same combination calibre writes. Verified on a Paperwhite 5 (5.19.2) against two builds of one EPUB, with and without the pair.
 
-  It is a tradeoff, not a free win. The firmware treats EXTH 113 as a real ASIN: it asks the store, finds nothing for a sideloaded UUID, and caches an Amazon "No image available" image at `system/thumbnails/thumbnail_<113>_<501>_portrait.jpg`. On the same Paperwhite 5 that gained the lock screen cover, the library tile became that placeholder. So `--doc-type ebok` trades a blank shelf tile for a placeholder one and gains the lock screen cover; the lock screen keeps working because it draws on the book's own cover, not on that cached file. This is the long-standing disappearing-cover complaint that calibre works around by keeping backups in an `amazon-cover-bug/` directory and restoring them, and the same workaround fixes the tile here: overwrite that cached file with the book's own thumbnail (the record EXTH 202 points at) while the Kindle is mounted, and the shelf shows real art again with the lock screen cover still working. Also note issue #15: EXTH 501 is what hides the back-to-library toolbar on some firmware, though a reflowable book with 501 = EBOK navigated fine on 5.19.2.
+  It is a tradeoff, not a free win. The firmware treats EXTH 113 as a real ASIN: it asks the store, finds nothing for a sideloaded UUID, and caches an Amazon "No image available" image at `system/thumbnails/thumbnail_<113>_<501>_portrait.jpg`. On the same Paperwhite 5 that gained the lock screen cover, the library tile became that placeholder. So `--doc-type ebok` trades a blank shelf tile for a placeholder one and gains the lock screen cover; the lock screen keeps working because it draws on the book's own cover, not on that cached file. This is the long-standing disappearing-cover complaint that calibre works around by keeping backups in an `amazon-cover-bug/` directory. `kindling thumbnail book.azw3 --kindle /Volumes/Kindle` does the same thing: it writes the book's own thumbnail over that cached file, which restores the tile and leaves the lock screen cover working, and drops a restore copy in `amazon-cover-bug/` for the next time a sync clobbers it. Also note issue #15: EXTH 501 is what hides the back-to-library toolbar on some firmware, though a reflowable book with 501 = EBOK navigated fine on 5.19.2.
 - **KF8-only by default**: comics output `.azw3` with only the KF8 section (no MOBI7); pass `--legacy-mobi` for the old dual-format behavior on pre-2012 Kindles
+
+### Library tiles for `--doc-type ebok` books
+
+```bash
+kindling-cli thumbnail book.azw3 --kindle /Volumes/Kindle
+```
+
+Only relevant to books built with `--doc-type ebok`. That flag gets a lock screen cover, and the cost is the library tile: the firmware reads EXTH 113 as a real ASIN, asks the Amazon store, and caches a "No image available" image as the shelf art. This writes the book's own thumbnail over that cached file, which fixes the tile and leaves the lock screen cover alone, and keeps a restore copy in `amazon-cover-bug/` because a later sync can put the placeholder back. It refuses a path with no `system/` or `documents/` directory, and refuses a book with no EXTH 113/501 pair, since there would be no filename for the firmware to look under.
 
 ### Validation
 

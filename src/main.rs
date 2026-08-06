@@ -552,6 +552,27 @@ enum Commands {
         dictionary: Option<Vec<String>>,
     },
 
+    /// Install a book's cover thumbnail onto a mounted Kindle so the library
+    /// tile shows real art.
+    ///
+    /// Only useful for books built with `--doc-type ebok`. That flag buys a
+    /// lock screen cover, but it also makes the firmware treat EXTH 113 as a
+    /// real ASIN: it queries the Amazon store, finds nothing for a sideloaded
+    /// identifier, and caches a "No image available" image as the library
+    /// tile. This overwrites that cached file with the book's own thumbnail,
+    /// which fixes the tile and leaves the lock screen cover working. A copy
+    /// also goes to `amazon-cover-bug/` so it can be restored after a sync
+    /// clobbers it, the same convention calibre uses.
+    #[command(version)]
+    Thumbnail {
+        /// Built MOBI/AZW3 to take the thumbnail from
+        input: PathBuf,
+
+        /// Mounted Kindle volume root, e.g. /Volumes/Kindle
+        #[arg(long)]
+        kindle: PathBuf,
+    },
+
     /// Dump the structural contents of a MOBI/AZW3 file to stdout.
     ///
     /// Emits one line per parsed field in `section.field = value` form so
@@ -1414,12 +1435,45 @@ fn main() {
                     Some(dict_mode),
                 );
             }
+            Commands::Thumbnail { input, kindle } => {
+                do_thumbnail(&input, &kindle);
+            }
             Commands::Dump { input } => {
                 do_dump(&input);
             }
             Commands::Lookup { input, word } => {
                 do_lookup(&input, &word);
             }
+        }
+    }
+}
+
+/// Install a book's own thumbnail over the store placeholder the firmware
+/// cached, so the library tile shows the cover instead of "No image
+/// available". See `src/thumbnail.rs` for why this cannot be done from inside
+/// the book.
+fn do_thumbnail(input: &PathBuf, kindle: &PathBuf) {
+    match kindling::thumbnail::install(input, kindle) {
+        Ok(installed) => {
+            println!(
+                "{} {} ({} bytes)",
+                if installed.replaced {
+                    "Replaced"
+                } else {
+                    "Wrote"
+                },
+                installed.thumbnail.display(),
+                installed.bytes
+            );
+            println!("Backup copy: {}", installed.backup.display());
+            println!(
+                "Eject the Kindle to see the tile update. If a later sync puts the Amazon \
+                 placeholder back, copy the backup over it again."
+            );
+        }
+        Err(e) => {
+            eprintln!("Error: {e}");
+            process::exit(1);
         }
     }
 }
