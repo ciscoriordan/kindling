@@ -2008,23 +2008,54 @@ fn build_text_content_by_letter(
 ) -> (Vec<u8>, Vec<Box<[u8]>>) {
     // Collect non-dictionary spine items (front matter) and extract styles
     let mut front_matter_sections: Vec<String> = Vec::new();
-    let mut first_style: Option<String> = None;
+    let mut dict_styles: Vec<String> = Vec::new();
+    let mut seen_style_blocks: HashSet<String> = HashSet::new();
+    let mut seen_css_paths: HashSet<std::path::PathBuf> = HashSet::new();
     let mut has_frameset = false;
     let body_re = Regex::new(r"(?s)<body[^>]*>(.*?)</body>").unwrap();
     let style_re = Regex::new(r"(?s)<style[^>]*>.*?</style>").unwrap();
+    // `<head profile="...">` is legal and used in the wild; the old bare-tag
+    // pattern matched neither it nor anything inside it, so such a dictionary
+    // shipped with no CSS at all (issue #40).
+    let head_re = Regex::new(r"(?s)<head\b[^>]*>.*?</head>").unwrap();
+    let link_re = Regex::new(r"(?i)<link\b[^>]*>").unwrap();
+    let href_re = Regex::new(r#"(?i)\bhref\s*=\s*["']([^"']+)["']"#).unwrap();
     for html_path in opf.get_content_html_paths() {
         if let Ok(content) = std::fs::read_to_string(&html_path) {
             if content.contains("<idx:entry") {
-                // Dictionary file - extract style from first dictionary file if available
-                if first_style.is_none() {
-                    let head_re = Regex::new(r"(?s)<head>.*?</head>").unwrap();
-                    if let Some(head_match) = head_re.find(&content) {
-                        let styles: Vec<String> = style_re
-                            .find_iter(head_match.as_str())
-                            .map(|m| m.as_str().to_string())
-                            .collect();
-                        if !styles.is_empty() {
-                            first_style = Some(styles.join(""));
+                // Collect styles from EVERY dictionary file, not just the first.
+                // A dictionary split across files used to lose every sheet after
+                // the first one (issue #40).
+                if let Some(head_match) = head_re.find(&content) {
+                    let head = head_match.as_str();
+                    for m in style_re.find_iter(head) {
+                        let block = m.as_str().to_string();
+                        if seen_style_blocks.insert(block.clone()) {
+                            dict_styles.push(block);
+                        }
+                    }
+                    // External stylesheets never reached this path at all, so a
+                    // dictionary keeping its CSS in a file got nothing.
+                    for link in link_re.find_iter(head) {
+                        let tag = link.as_str();
+                        if !tag.to_ascii_lowercase().contains("stylesheet") {
+                            continue;
+                        }
+                        let Some(href) = href_re.captures(tag).map(|c| c[1].to_string()) else {
+                            continue;
+                        };
+                        // kindle: URIs are resource references, not files.
+                        if href.starts_with("kindle:") {
+                            continue;
+                        }
+                        let decoded = percent_decode(&href);
+                        let css_path = opf.base_dir.join(&decoded);
+                        let key = css_path.canonicalize().unwrap_or_else(|_| css_path.clone());
+                        if !seen_css_paths.insert(key) {
+                            continue;
+                        }
+                        if let Ok(css) = std::fs::read_to_string(&css_path) {
+                            dict_styles.push(format!("<style type=\"text/css\">{css}</style>"));
                         }
                     }
                 }
@@ -2115,7 +2146,7 @@ fn build_text_content_by_letter(
         format!("{}<mbp:pagebreak/>{}", fm_body, dict_body)
     };
 
-    let style_block = defer_escaped_colon_rules(&first_style.unwrap_or_default());
+    let style_block = defer_escaped_colon_rules(&dict_styles.concat());
     let combined = format!(
         "<html><head>{}<guide></guide></head><body>{}  <mbp:pagebreak/></body></html>",
         style_block, merged_body
@@ -2363,7 +2394,7 @@ fn strip_idx_markup(html: &str) -> String {
     let xml_decl = XML_DECL.get_or_init(|| Regex::new(r"<\?xml[^?]*\?>\s*").unwrap());
     let xmlns = XMLNS.get_or_init(|| Regex::new(r#"\s+xmlns:\w+="[^"]*""#).unwrap());
     let style_re = STYLE_RE.get_or_init(|| Regex::new(r"(?s)<style[^>]*>.*?</style>").unwrap());
-    let head_re = HEAD_RE.get_or_init(|| Regex::new(r"(?s)<head>.*?</head>").unwrap());
+    let head_re = HEAD_RE.get_or_init(|| Regex::new(r"(?s)<head\b[^>]*>.*?</head>").unwrap());
     let iform = IFORM.get_or_init(|| Regex::new(r"<idx:iform[^/]*/>\s*").unwrap());
     let infl_empty = INFL_EMPTY.get_or_init(|| Regex::new(r"<idx:infl>\s*</idx:infl>\s*").unwrap());
     let infl_full =

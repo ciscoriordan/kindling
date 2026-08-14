@@ -162,6 +162,33 @@ mod tests {
         opf_path
     }
 
+    /// Build a dictionary through the by-letter assembler, which is what a
+    /// real `kindling build` uses. `build_mobi_bytes` passes kindle_limits =
+    /// false and so exercises the fallback path instead.
+    fn build_dict_mobi_bytes(opf_path: &Path, output_dir: &Path) -> Vec<u8> {
+        let output_path = output_dir.join("dict_output.mobi");
+        mobi::build_mobi(
+            opf_path,
+            &output_path,
+            true,  // no_compress
+            false, // headwords_only
+            None,  // srcs_data
+            false, // include_cmet
+            false, // no_hd_images
+            false, // creator_tag
+            false, // kf8_only
+            None,  // doc_type
+            true,  // kindle_limits ON: the by-letter dictionary assembler
+            false, // self_check
+            false, // kindlegen_parity
+            false, // strict_accents
+            false, // fold_accents
+            false, // force_user_fonts
+        )
+        .expect("build_mobi failed");
+        fs::read(&output_path).expect("could not read output MOBI")
+    }
+
     /// Create a minimal book OPF + HTML in a temp dir. If `image_data` is Some,
     /// include an image in the manifest.
     fn create_book_fixture(dir: &Path, include_image: Option<&[u8]>) -> PathBuf {
@@ -9414,6 +9441,132 @@ mod tests {
              not the cover offset {cover_offset}"
         );
         println!("  \u{2713} EXTH 129 = {uri} = EXTH 202 offset {thumb_offset}");
+    }
+
+    /// A dictionary must keep its CSS however the CSS arrives (issue #40).
+    ///
+    /// Three ways it used to vanish: an attribute on `<head>` meant the head
+    /// regex matched nothing, an external `<link rel="stylesheet">` never
+    /// reached the dictionary path, and in a multi-file dictionary only the
+    /// first file's `<style>` survived. None of them warned.
+    #[test]
+    fn dictionary_stylesheets_survive_every_route() {
+        /// Build a one-entry dictionary file with the given head markup.
+        fn dict_html(head_open: &str, head_extra: &str, word: &str) -> String {
+            format!(
+                r#"<html xmlns:idx="idx">{head_open}<title>D</title>{head_extra}</head>
+<body><mbp:frameset><idx:entry><idx:orth value="{word}"><b>{word}</b></idx:orth>
+<p>def</p></idx:entry></mbp:frameset></body></html>"#
+            )
+        }
+        fn dict_opf(items: &str, spine: &str) -> String {
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf">
+  <metadata>
+    <dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">D</dc:title>
+    <dc:language xmlns:dc="http://purl.org/dc/elements/1.1/">en</dc:language>
+    <x-metadata><DictionaryInLanguage>en</DictionaryInLanguage>
+    <DictionaryOutLanguage>en</DictionaryOutLanguage></x-metadata>
+  </metadata>
+  <manifest>{items}</manifest>
+  <spine>{spine}</spine>
+</package>"#
+            )
+        }
+
+        // 1. An attribute on <head> must not hide the stylesheet.
+        {
+            let dir = TempDir::new("css_head_profile");
+            fs::write(
+                dir.path().join("c.html"),
+                dict_html(
+                    r#"<head profile="http://example.invalid/">"#,
+                    r#"<style type="text/css">p { margin: 7px; }</style>"#,
+                    "alpha",
+                ),
+            )
+            .unwrap();
+            let opf = dir.path().join("content.opf");
+            fs::write(
+                &opf,
+                dict_opf(
+                    r#"<item id="c" href="c.html" media-type="application/xhtml+xml"/>"#,
+                    r#"<itemref idref="c"/>"#,
+                ),
+            )
+            .unwrap();
+            let data = build_dict_mobi_bytes(&opf, dir.path());
+            let text = String::from_utf8_lossy(&data);
+            assert!(
+                text.contains("margin: 7px"),
+                "<head profile=...> must not swallow the stylesheet"
+            );
+        }
+
+        // 2. An external stylesheet must be inlined.
+        {
+            let dir = TempDir::new("css_external");
+            fs::write(
+                dir.path().join("c.html"),
+                dict_html(
+                    "<head>",
+                    r#"<link rel="stylesheet" type="text/css" href="style.css"/>"#,
+                    "alpha",
+                ),
+            )
+            .unwrap();
+            fs::write(dir.path().join("style.css"), "p { color: red; }").unwrap();
+            let opf = dir.path().join("content.opf");
+            fs::write(
+                &opf,
+                dict_opf(
+                    r#"<item id="c" href="c.html" media-type="application/xhtml+xml"/>
+    <item id="s" href="style.css" media-type="text/css"/>"#,
+                    r#"<itemref idref="c"/>"#,
+                ),
+            )
+            .unwrap();
+            let data = build_dict_mobi_bytes(&opf, dir.path());
+            let text = String::from_utf8_lossy(&data);
+            assert!(
+                text.contains("color: red"),
+                "an external <link rel=stylesheet> must reach the dictionary"
+            );
+        }
+
+        // 3. Every file's styles survive, not just the first file's.
+        {
+            let dir = TempDir::new("css_multi");
+            for (i, word) in [(1, "alpha"), (2, "bravo")] {
+                fs::write(
+                    dir.path().join(format!("part{i}.html")),
+                    dict_html(
+                        "<head>",
+                        &format!(r#"<style type="text/css">.part{i} {{ margin: {i}px; }}</style>"#),
+                        word,
+                    ),
+                )
+                .unwrap();
+            }
+            let opf = dir.path().join("content.opf");
+            fs::write(
+                &opf,
+                dict_opf(
+                    r#"<item id="p1" href="part1.html" media-type="application/xhtml+xml"/>
+    <item id="p2" href="part2.html" media-type="application/xhtml+xml"/>"#,
+                    r#"<itemref idref="p1"/><itemref idref="p2"/>"#,
+                ),
+            )
+            .unwrap();
+            let data = build_dict_mobi_bytes(&opf, dir.path());
+            let text = String::from_utf8_lossy(&data);
+            assert!(text.contains(".part1"), "first file's styles must survive");
+            assert!(
+                text.contains(".part2"),
+                "a later file's styles must survive too"
+            );
+        }
     }
 
     /// The EPUB 3 cover property is `cover-image`; kindling only matched the
