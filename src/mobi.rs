@@ -1606,6 +1606,19 @@ fn encode_kindle_embed_base32(recindex: usize) -> String {
 /// 131,072 bytes, moving each original into the HD container.
 pub(crate) const LD_IMAGE_MAX_BYTES: usize = 128 * 1024;
 
+/// JFIF density written into every JPEG kindling encodes itself.
+///
+/// Source images get their APP0 units byte patched from 0 (aspect ratio) to 1
+/// (DPI) on the way in, but anything kindling re-encodes goes back out through
+/// the `image` crate, whose default is `PixelAspectRatio`. That silently threw
+/// the patch away for re-encoded covers and for every generated thumbnail.
+/// kindlegen writes units=1 with a 1x1 density on the images it generates, so
+/// match it exactly rather than inventing a DPI figure.
+const JFIF_DPI: image::codecs::jpeg::PixelDensity = image::codecs::jpeg::PixelDensity {
+    density: (1, 1),
+    unit: image::codecs::jpeg::PixelDensityUnit::Inches,
+};
+
 /// Re-encode an oversized image so it fits `LD_IMAGE_MAX_BYTES`.
 ///
 /// Returns `None` when `data` already fits or cannot be decoded, in which case
@@ -1662,9 +1675,14 @@ pub(crate) fn fit_ld_image(data: &[u8]) -> Option<Vec<u8>> {
 /// JPEG-encode `img` at `quality`, returning it only if it fits the LD cap.
 fn encode_under_cap(img: &image::DynamicImage, quality: u8) -> Option<Vec<u8>> {
     let mut buf: Vec<u8> = Vec::with_capacity(LD_IMAGE_MAX_BYTES);
-    let cursor = std::io::Cursor::new(&mut buf);
-    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(cursor, quality);
-    img.write_with_encoder(encoder).ok()?;
+    {
+        let cursor = std::io::Cursor::new(&mut buf);
+        let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(cursor, quality);
+        // The encoder defaults to PixelAspectRatio (JFIF units=0), which would
+        // silently undo the units=1 patch applied to the source bytes above.
+        encoder.set_pixel_density(JFIF_DPI);
+        img.write_with_encoder(encoder).ok()?;
+    }
     (buf.len() <= LD_IMAGE_MAX_BYTES).then_some(buf)
 }
 
@@ -1690,7 +1708,8 @@ fn build_thumbnail_record(cover_bytes: &[u8]) -> Option<Vec<u8>> {
     let mut buf: Vec<u8> = Vec::with_capacity(16 * 1024);
     {
         let cursor = std::io::Cursor::new(&mut buf);
-        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(cursor, THUMB_QUALITY);
+        let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(cursor, THUMB_QUALITY);
+        encoder.set_pixel_density(JFIF_DPI);
         thumb.write_with_encoder(encoder).ok()?;
     }
     Some(buf)

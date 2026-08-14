@@ -9416,6 +9416,94 @@ mod tests {
         println!("  \u{2713} EXTH 129 = {uri} = EXTH 202 offset {thumb_offset}");
     }
 
+    /// Every JPEG kindling encodes itself must carry JFIF units=1, not just the
+    /// ones it copies through and patches in place.
+    ///
+    /// `test_jfif_density_units_patched` and `test_cover_image_jfif_density_dpi`
+    /// both assert the units byte already, but their fixtures are a few hundred
+    /// bytes, so the cover is never re-encoded and the generated thumbnail is
+    /// never checked. Both of those paths went out through the `image` crate's
+    /// default `PixelAspectRatio`, which threw the patch away again: a cover
+    /// over the 128 KB LD cap and every EXTH 202 record shipped units=0.
+    /// kindlegen writes units=1 density=1x1 on the images it generates.
+    #[test]
+    fn test_reencoded_cover_and_thumbnail_carry_dpi_units() {
+        /// JFIF layout: FF D8 FF E0 [len:2] "JFIF\0" [ver:2] [units:1] ...
+        fn jfif_units(rec: &[u8]) -> u8 {
+            assert!(rec.len() > 13, "image record too short for a JFIF header");
+            assert!(
+                rec[0] == 0xFF && rec[1] == 0xD8 && rec[2] == 0xFF && rec[3] == 0xE0,
+                "expected a JPEG opening with an APP0 segment"
+            );
+            assert_eq!(&rec[6..11], b"JFIF\0", "expected a JFIF identifier");
+            rec[13]
+        }
+
+        let dir = TempDir::new("jfif_dpi_reencode");
+
+        // Noise does not compress, so this clears the 128 KB cap comfortably
+        // and forces fit_ld_image to re-encode rather than pass through.
+        let mut seed: u32 = 0x1234_5678;
+        let noisy = image::RgbImage::from_fn(900, 1200, |_, _| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let b = seed.to_le_bytes();
+            image::Rgb([b[0], b[1], b[2]])
+        });
+        let mut cover = Vec::new();
+        image::DynamicImage::ImageRgb8(noisy)
+            .write_to(
+                &mut std::io::Cursor::new(&mut cover),
+                image::ImageFormat::Jpeg,
+            )
+            .unwrap();
+        assert!(
+            cover.len() > mobi::LD_IMAGE_MAX_BYTES,
+            "fixture cover must exceed the LD cap to exercise the re-encode, got {} bytes",
+            cover.len()
+        );
+
+        let opf = create_book_fixture(dir.path(), Some(&cover));
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let exth = parse_exth_records(rec0);
+        let first_img = read_u32_be(rec0, 108) as usize;
+
+        let offset_of = |tag: u32| -> usize {
+            u32::from_be_bytes(
+                exth.get(&tag)
+                    .unwrap_or_else(|| panic!("EXTH {tag} must be present"))[0][..4]
+                    .try_into()
+                    .unwrap(),
+            ) as usize
+        };
+
+        let cover_rec = get_record(&data, &offsets, first_img + offset_of(201));
+        assert!(
+            cover_rec.len() <= mobi::LD_IMAGE_MAX_BYTES,
+            "cover record must have been re-encoded under the cap, got {} bytes",
+            cover_rec.len()
+        );
+        assert_eq!(
+            jfif_units(cover_rec),
+            0x01,
+            "a re-encoded cover must keep JFIF units=1 (DPI); the encoder default \
+             PixelAspectRatio silently discards the patch applied to the source"
+        );
+
+        let thumb_rec = get_record(&data, &offsets, first_img + offset_of(202));
+        assert_eq!(
+            jfif_units(thumb_rec),
+            0x01,
+            "the generated library thumbnail must carry JFIF units=1 (DPI) like kindlegen's"
+        );
+        println!(
+            "  \u{2713} re-encoded cover ({} B) and thumbnail ({} B) both JFIF units=1",
+            cover_rec.len(),
+            thumb_rec.len()
+        );
+    }
+
     #[test]
     fn test_book_images_between_text_and_flis() {
         let dir = TempDir::new("book_img_order");
