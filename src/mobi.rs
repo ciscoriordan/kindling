@@ -272,10 +272,14 @@ fn build_dictionary_mobi(
 
     // Build the text content (stripped HTML for all spine items)
     eprintln!("Building text content...");
-    let text_content = if kindle_limits {
+    // The by-letter assembler hands back the opening bytes of every entry it
+    // emitted, which is what find_entry_positions anchors on. build_text_content
+    // does not track entries, so that path falls back to the markup-shape
+    // heuristics (issue #27).
+    let (text_content, entry_needles) = if kindle_limits {
         build_text_content_by_letter(&opf, &all_entries)
     } else {
-        build_text_content(&opf, true)
+        (build_text_content(&opf, true), Vec::new())
     };
 
     // Insert the guide reference tag
@@ -347,7 +351,7 @@ fn build_dictionary_mobi(
 
     // Find entry positions in the stripped text
     eprintln!("Finding entry positions...");
-    let entry_positions = find_entry_positions(&text_content, &all_entries)?;
+    let entry_positions = find_entry_positions(&text_content, &all_entries, &entry_needles)?;
 
     // Build lookup terms + separate infl INDX data.
     //
@@ -1991,7 +1995,10 @@ fn build_text_content(opf: &OPFData, strip_idx: bool) -> Vec<u8> {
 /// before the dictionary entries so that front matter is preserved. The
 /// `<mbp:frameset>` wrapper from the source dictionary HTML is also preserved,
 /// as it is required for Kindle dictionary rendering.
-fn build_text_content_by_letter(opf: &OPFData, entries: &[DictionaryEntry]) -> Vec<u8> {
+fn build_text_content_by_letter(
+    opf: &OPFData,
+    entries: &[DictionaryEntry],
+) -> (Vec<u8>, Vec<Box<[u8]>>) {
     // Collect non-dictionary spine items (front matter) and extract styles
     let mut front_matter_sections: Vec<String> = Vec::new();
     let mut first_style: Option<String> = None;
@@ -2040,6 +2047,15 @@ fn build_text_content_by_letter(opf: &OPFData, entries: &[DictionaryEntry]) -> V
     let stripped_entries: Vec<String> = entries
         .par_iter()
         .map(|entry| strip_idx_markup(&entry.html_content))
+        .collect();
+
+    // Keep the opening bytes of each entry's own contribution to the blob.
+    // These are what `find_entry_positions` anchors on: the exact byte string
+    // this entry put into the text, rather than a guess at which markup shape
+    // its headword ended up wearing (issue #27).
+    let entry_needles: Vec<Box<[u8]>> = stripped_entries
+        .par_iter()
+        .map(|s| entry_needle(s))
         .collect();
 
     let mut dict_sections: Vec<String> = Vec::new();
@@ -2097,7 +2113,22 @@ fn build_text_content_by_letter(opf: &OPFData, entries: &[DictionaryEntry]) -> V
         "<html><head>{}<guide></guide></head><body>{}  <mbp:pagebreak/></body></html>",
         style_block, merged_body
     );
-    combined.into_bytes()
+    (combined.into_bytes(), entry_needles)
+}
+
+/// Longest prefix of an entry's stripped HTML that is safe to search for.
+///
+/// Truncated to a UTF-8 boundary so the needle is always a valid slice of what
+/// landed in the blob. 48 bytes is enough to separate two entries that merely
+/// start alike while staying cheap to hold for a 500k-entry dictionary, and
+/// short enough that `pad_text_for_chunking` rarely lands a space inside it.
+fn entry_needle(stripped: &str) -> Box<[u8]> {
+    const NEEDLE_MAX: usize = 48;
+    let mut end = stripped.len().min(NEEDLE_MAX);
+    while end > 0 && !stripped.is_char_boundary(end) {
+        end -= 1;
+    }
+    stripped.as_bytes()[..end].into()
 }
 
 /// Number the `<li>` items of every `<ol>` with an explicit `value="N"`
@@ -3202,23 +3233,110 @@ fn scan_wrappers_at_boundary(
     None
 }
 
+/// An entry's span, from `block_start` to the `<hr/>` that `strip_idx_markup`
+/// writes in place of `</idx:entry>`, searching from `after` so a separator
+/// belonging to the previous entry is not picked up.
+///
+/// Returns the span length and the offset just past the separator, which is
+/// where the next entry begins.
+fn entry_span(text_bytes: &[u8], block_start: usize, after: usize) -> (usize, usize) {
+    match find_bytes_from(text_bytes, b"<hr/>", after) {
+        Some(hr) => (hr - block_start, hr + b"<hr/>".len()),
+        None => {
+            let end =
+                find_bytes_from(text_bytes, b"<mbp:pagebreak/>", after).unwrap_or(text_bytes.len());
+            (end - block_start, end)
+        }
+    }
+}
+
+/// Locate an entry by the opening bytes it contributed.
+///
+/// `pad_text_for_chunking` runs before this and inserts a run of spaces between
+/// a `>` and the `<` that follows it, so roughly one entry per PalmDOC record
+/// no longer matches byte for byte. Padding can only ever appear at those
+/// junctions, so split the needle there and allow a space run between the
+/// pieces; the segments themselves are guaranteed padding-free.
+fn find_entry_anchor(text_bytes: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+    let mut segments: Vec<&[u8]> = Vec::new();
+    let mut seg_start = 0usize;
+    for i in 0..needle.len().saturating_sub(1) {
+        if needle[i] == b'>' && needle[i + 1] == b'<' {
+            segments.push(&needle[seg_start..=i]);
+            seg_start = i + 1;
+        }
+    }
+    segments.push(&needle[seg_start..]);
+
+    // Every segment after the first opens with `<` by construction, so skipping
+    // spaces ahead of it can never swallow whitespace the segment needs.
+    let mut cursor = from;
+    loop {
+        let start = find_bytes_from(text_bytes, segments[0], cursor)?;
+        let mut pos = start + segments[0].len();
+        let mut matched = true;
+        for segment in &segments[1..] {
+            while text_bytes.get(pos) == Some(&b' ') {
+                pos += 1;
+            }
+            if text_bytes.len() < pos + segment.len()
+                || &text_bytes[pos..pos + segment.len()] != *segment
+            {
+                matched = false;
+                break;
+            }
+            pos += segment.len();
+        }
+        if matched {
+            return Some(start);
+        }
+        cursor = start + 1;
+    }
+}
+
 /// Find the byte position of each dictionary entry in the stripped text.
 ///
-/// Searches for `<b>headword</b>` at entry boundaries to avoid matching
-/// headword text inside etymologies, definitions, example sentences, or
-/// cross-reference links. Entry headings always follow `<hr/>` (or are at
-/// the start of the text body). If a `<b>headword</b>` match is inside
-/// an example sentence or other content, it is skipped.
+/// When `needles` is populated (the by-letter assembler path) each entry is
+/// anchored on the opening bytes of its own contribution to the blob, which is
+/// exact whatever markup the entry wears.
 ///
-/// Falls back to bare headword search if no bold match is found.
+/// Otherwise this falls back to searching for `<b>headword</b>` at entry
+/// boundaries, which only ever worked for entries whose text opens with their
+/// own headword in a wrapper kindling recognises. Anything else, a headword
+/// inside `<p>`/`<h1>`/`<span>`, an entry leading with an image, a body that
+/// never repeats its own title, was stored as `(0, 0)` and popped up blank,
+/// and each miss cost two scans of the whole blob, which is what made large
+/// builds quadratic (issue #27).
 fn find_entry_positions(
     text_bytes: &[u8],
     entries: &[DictionaryEntry],
+    needles: &[Box<[u8]>],
 ) -> Result<Vec<(usize, usize)>, String> {
     let mut positions = Vec::with_capacity(entries.len());
     let mut search_start: usize = 0;
+    let mut anchored = 0usize;
 
-    for entry in entries {
+    for (idx, entry) in entries.iter().enumerate() {
+        // Exact anchor: the entry's own opening bytes. Entries are concatenated
+        // into the blob in this order, so the first occurrence at or after the
+        // cursor is this entry's, including when two entries share byte-for-byte
+        // identical text. That case used to hand both to the same offset.
+        if let Some(needle) = needles.get(idx).filter(|n| !n.is_empty()) {
+            if let Some(block_start) = find_entry_anchor(text_bytes, needle, search_start) {
+                // Search the separator from the entry's own first byte: a 48-byte
+                // needle overruns a short entry, so starting at the end of the
+                // needle would find the NEXT entry's separator instead.
+                let (text_len, next) = entry_span(text_bytes, block_start, block_start);
+                positions.push((block_start, text_len));
+                // Park the cursor past this entry's separator: the next entry
+                // starts there, so its own anchor matches immediately instead
+                // of scanning forward through this entry's body.
+                search_start = next;
+                anchored += 1;
+                continue;
+            }
+        }
+
         // HTML-escape the headword to match the text blob, which retains entities
         // like &#x27; for apostrophes. The headword was unescaped during parsing,
         // so we need to re-escape for searching.
@@ -3309,19 +3427,17 @@ fn find_entry_positions(
             }
         };
 
-        // Find the end of the definition
-        let hr_pos = find_bytes_from(text_bytes, b"<hr/>", pos);
-        let text_len = match hr_pos {
-            Some(hr) => hr - block_start,
-            None => {
-                let block_end = find_bytes_from(text_bytes, b"<mbp:pagebreak/>", pos)
-                    .unwrap_or(text_bytes.len());
-                block_end - block_start
-            }
-        };
-
-        positions.push((block_start, text_len));
+        positions.push((block_start, entry_span(text_bytes, block_start, pos).0));
         search_start = pos + headword_bytes.len();
+    }
+
+    if !needles.is_empty() && anchored < entries.len() {
+        eprintln!(
+            "Note: {} of {} entries fell back to headword search (the blob no longer \
+             opens with the bytes the entry contributed)",
+            entries.len() - anchored,
+            entries.len()
+        );
     }
 
     let unfound: Vec<_> = entries
@@ -4637,6 +4753,129 @@ fn rfind_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 #[cfg(test)]
+mod entry_anchor_tests {
+    use super::*;
+
+    fn entry(headword: &str, html: &str) -> DictionaryEntry {
+        DictionaryEntry {
+            headword: headword.to_string(),
+            inflections: Vec::new(),
+            html_content: html.to_string(),
+        }
+    }
+
+    /// Concatenate the stripped bodies the way `build_text_content_by_letter`
+    /// does, and return the blob alongside the needles and the true offsets.
+    fn assemble(bodies: &[&str]) -> (Vec<u8>, Vec<Box<[u8]>>, Vec<usize>) {
+        let mut blob = String::from("<html><head></head><body>");
+        let mut truth = Vec::new();
+        for body in bodies {
+            truth.push(blob.len());
+            blob.push_str(body);
+        }
+        blob.push_str("</body></html>");
+        let needles = bodies.iter().map(|b| entry_needle(b)).collect();
+        (blob.into_bytes(), needles, truth)
+    }
+
+    /// An entry is located by the bytes it contributed, whatever markup it wears.
+    ///
+    /// Every shape below except the first was stored as `(0, 0)` and popped up
+    /// blank, because the old search only accepted a headword wrapped in `<b>`
+    /// or `<big>` sitting at the start of the entry (issue #27).
+    #[test]
+    fn entries_are_located_whatever_markup_they_wear() {
+        let bodies = [
+            "<b>alpha</b><p>the blessed shape</p><hr/>",
+            "<p><b>beta</b></p><p>headword inside a paragraph</p><hr/>",
+            "<h1>gamma</h1><p>headword in a heading</p><hr/>",
+            "<span>delta</span><p>headword in a span</p><hr/>",
+            "<img src=\"x.jpg\"/><p>epsilon</p><hr/>",
+            "<p>see the main article</p><hr/>",
+        ];
+        let headwords = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"];
+        let entries: Vec<_> = headwords
+            .iter()
+            .zip(bodies.iter())
+            .map(|(h, b)| entry(h, b))
+            .collect();
+        let (blob, needles, truth) = assemble(&bodies);
+
+        let positions = find_entry_positions(&blob, &entries, &needles).unwrap();
+        for (i, (&(start, len), &want)) in positions.iter().zip(truth.iter()).enumerate() {
+            assert_eq!(
+                start, want,
+                "entry {i} ({}) anchored at {start}, should be {want}",
+                headwords[i]
+            );
+            assert!(len > 0, "entry {i} ({}) has an empty span", headwords[i]);
+        }
+    }
+
+    /// Two entries with byte-identical bodies get two distinct spans.
+    ///
+    /// The reporter on issue #27 had to inject each title into its own body to
+    /// make every blob globally unique; deduping 231 identical bodies took his
+    /// on-device lookup failures from 289 to 48.
+    #[test]
+    fn identical_bodies_get_distinct_spans() {
+        let shared = "<p>redirects to the disambiguation page</p><hr/>";
+        let bodies = [shared, "<b>between</b><p>a real entry</p><hr/>", shared];
+        let entries: Vec<_> = ["1994", "between", "1995"]
+            .iter()
+            .zip(bodies.iter())
+            .map(|(h, b)| entry(h, b))
+            .collect();
+        let (blob, needles, truth) = assemble(&bodies);
+
+        let positions = find_entry_positions(&blob, &entries, &needles).unwrap();
+        assert_eq!(positions[0].0, truth[0]);
+        assert_eq!(positions[2].0, truth[2]);
+        assert_ne!(
+            positions[0].0, positions[2].0,
+            "identical bodies must not collapse onto one offset"
+        );
+    }
+
+    /// `pad_text_for_chunking` runs first and inserts spaces between a `>` and
+    /// the `<` after it, so roughly one entry per PalmDOC record no longer
+    /// matches its needle byte for byte.
+    #[test]
+    fn anchor_survives_record_boundary_padding() {
+        let body = "<p><b>padded</b></p><p>definition</p><hr/>";
+        let needle = entry_needle(body);
+        // Split the way the padder does: after a `>`, before the next `<`.
+        let junction = body.find("></p>").unwrap() + 1;
+        let padded = format!(
+            "<html><body>{}{}{}</body></html>",
+            &body[..junction],
+            " ".repeat(37),
+            &body[junction..]
+        );
+        let want = "<html><body>".len();
+
+        let found = find_entry_anchor(padded.as_bytes(), &needle, 0);
+        assert_eq!(
+            found,
+            Some(want),
+            "a needle straddling a padded junction must still anchor"
+        );
+    }
+
+    /// Without needles (the `--no-kindle-limits` path) the old markup-shape
+    /// search is still what runs.
+    #[test]
+    fn falls_back_to_headword_search_without_needles() {
+        let bodies = ["<b>alpha</b><p>definition</p><hr/>"];
+        let entries = vec![entry("alpha", bodies[0])];
+        let (blob, _, truth) = assemble(&bodies);
+
+        let positions = find_entry_positions(&blob, &entries, &[]).unwrap();
+        assert_eq!(positions[0].0, truth[0]);
+    }
+}
+
+#[cfg(test)]
 mod unfound_entry_policy_tests {
     use super::*;
 
@@ -4670,7 +4909,7 @@ mod unfound_entry_policy_tests {
             })
             .collect();
 
-        let positions = find_entry_positions(blob, &entries)
+        let positions = find_entry_positions(blob, &entries, &[])
             .expect("must not abort: the caller still needs an output file");
 
         assert_eq!(positions.len(), entries.len());

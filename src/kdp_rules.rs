@@ -427,11 +427,12 @@ pub const RULES: &[Rule] = &[
         id: "R15.6",
         section: "15",
         level: Severity::Error,
-        title: "idx:orth must have a non-empty value attribute",
+        title: "idx:orth must carry a headword",
         pdf_page: 60,
-        description: "Every <idx:orth> element must have a non-empty value=\"...\" attribute. \
-                      An empty orth leaves a blank lookup entry and crashes lookup on \
-                      Paperwhite firmware.",
+        description: "Every <idx:orth> must name its headword, either as value=\"...\" or as \
+                      the element's own text. Both forms are accepted; an orth carrying \
+                      neither leaves a blank lookup entry and crashes lookup on Paperwhite \
+                      firmware.",
         profile_mask: Profile::Dict.as_bit(),
     },
     Rule {
