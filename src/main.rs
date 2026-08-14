@@ -408,6 +408,17 @@ enum Commands {
         #[arg(long)]
         asin: Option<String>,
 
+        /// Stamp the device content type (EXTH 501), and the matching
+        /// identifier (EXTH 113) when the file has none.
+        ///
+        /// "ebok" is what lets a sideloaded book show its own cover on the
+        /// lock screen; the pair is what the firmware gates on. Use this on
+        /// books built before 0.30.0 instead of rebuilding them from source.
+        /// Follow it with `kindling thumbnail` so the library tile does not
+        /// become Amazon's placeholder (issue #35).
+        #[arg(long, value_name = "TYPE")]
+        doc_type: Option<String>,
+
         /// New publication date (EXTH 106).
         #[arg(long = "publication-date")]
         publication_date: Option<String>,
@@ -1344,6 +1355,7 @@ fn main() {
                 language,
                 isbn,
                 asin,
+                doc_type,
                 publication_date,
                 subjects,
                 series,
@@ -1362,6 +1374,7 @@ fn main() {
                     language,
                     isbn,
                     asin,
+                    doc_type,
                     publication_date,
                     subjects,
                     series,
@@ -1838,6 +1851,7 @@ fn do_rewrite_metadata(
     language: Option<String>,
     isbn: Option<String>,
     asin: Option<String>,
+    doc_type: Option<String>,
     publication_date: Option<String>,
     subjects: Vec<String>,
     series: Option<String>,
@@ -1893,6 +1907,16 @@ fn do_rewrite_metadata(
         None => None,
     };
 
+    // Same spellings the build path accepts. "none" is meaningless here,
+    // because rewrite-metadata only ever adds or replaces a record.
+    let doc_type = doc_type.map(|raw| match parse_doc_type(&raw) {
+        Some(t) => t,
+        None => {
+            eprintln!("Error: --doc-type none has nothing to write; omit the flag instead");
+            process::exit(1);
+        }
+    });
+
     let updates = mobi_rewrite::MetadataUpdates {
         title,
         authors: if authors.is_empty() {
@@ -1905,6 +1929,7 @@ fn do_rewrite_metadata(
         language,
         isbn,
         asin,
+        doc_type,
         publication_date,
         subjects: if subjects.is_empty() {
             None

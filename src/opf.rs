@@ -53,7 +53,7 @@ pub struct OPFData {
     pub manifest_items: Vec<ManifestItem>,
     /// Raw itemref list in spine order, including dangling or duplicated idrefs.
     pub raw_itemrefs: Vec<SpineItemRef>,
-    /// Manifest item id with properties="coverimage" (EPUB 3 cover method).
+    /// Manifest item id with `properties="cover-image"` (EPUB 3 cover method).
     pub coverimage_id: Option<String>,
     /// True if the OPF declares fixed-layout (pre-paginated) rendering.
     pub is_fixed_layout: bool,
@@ -240,8 +240,15 @@ impl OPFData {
                                 }
                             }
                             if !id.is_empty() {
-                                // EPUB 3 cover method: properties="coverimage"
-                                if properties.split_whitespace().any(|p| p == "coverimage") {
+                                // EPUB 3 cover method. The spec spells the
+                                // property `cover-image`; kindling only matched
+                                // the unhyphenated form, so a standards-clean
+                                // EPUB3 with no <meta name="cover"> fallback
+                                // built with no cover records at all (issue #30).
+                                if properties
+                                    .split_whitespace()
+                                    .any(|p| p == "cover-image" || p == "coverimage")
+                                {
                                     self.coverimage_id = Some(id.clone());
                                 }
                                 self.manifest
@@ -469,7 +476,7 @@ impl OPFData {
     /// Returns the OPF manifest item `id` attribute for the cover image, which
     /// picks the record EXTH 201 points at and the image the library
     /// thumbnail is downscaled from. Mirrors `get_cover_image_href`: prefers
-    /// `properties="coverimage"` (EPUB 3) and falls back to
+    /// `properties="cover-image"` (EPUB 3) and falls back to
     /// `<meta name="cover" content="...">`.
     pub fn get_cover_image_id(&self) -> Option<String> {
         if let Some(ref cover_id) = self.coverimage_id {
@@ -550,13 +557,13 @@ impl OPFData {
     /// Find the cover image href from OPF metadata.
     ///
     /// Supports three cover image methods:
-    /// - Method 1 (preferred, EPUB 3): `<item ... properties="coverimage"/>`
+    /// - Method 1 (preferred, EPUB 3): `<item ... properties="cover-image"/>`
     /// - Method 2 (OPF 2.0): `<meta name="cover" content="..."/>` pointing to a manifest id
     /// - Method 3 (OEB 1.x legacy, kindlegen-compatible):
     ///   `<x-metadata><EmbeddedCover>cover.png</EmbeddedCover>` naming a
     ///   manifest item by href. PyGlossary and other OEB 1.x tools emit this.
     pub fn get_cover_image_href(&self) -> Option<String> {
-        // Method 1: check for properties="coverimage" captured during manifest parsing
+        // Method 1: check for the cover-image property captured during manifest parsing
         if let Some(ref cover_id) = self.coverimage_id {
             if let Some((href, media_type)) = self.manifest.get(cover_id) {
                 if media_type.starts_with("image/") {

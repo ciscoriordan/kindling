@@ -463,14 +463,31 @@ pub fn build_comic_with_options(
     // unsupported tags) before they ship in a MOBI.
     match crate::validate::validate_opf(&opf_path) {
         Ok(report) => {
+            // --kindlegen-parity exists to reproduce kindlegen's output, and
+            // kindlegen writes no viewport meta on a comic page (checked
+            // against the reference fixture). R11.2 and R11.7 demand one for
+            // pre-paginated content, so in parity mode they fail the build on
+            // the repo's own fixture for doing exactly what the flag asks
+            // (issue #31). Report them, do not fail on them.
+            let parity_exempt = |finding: &crate::validate::Finding| {
+                options.kindlegen_parity && matches!(finding.rule_id, Some("R11.2") | Some("R11.7"))
+            };
             for finding in &report.findings {
                 // Only show warnings and errors; comic OPFs always emit an
                 // info about marketing cover which is noise here.
                 if !matches!(finding.level, crate::validate::Level::Info) {
-                    eprintln!("  {}", finding);
+                    if parity_exempt(finding) {
+                        eprintln!("  (kindlegen parity, not fatal) {}", finding);
+                    } else {
+                        eprintln!("  {}", finding);
+                    }
                 }
             }
-            let errors = report.error_count();
+            let errors = report
+                .findings
+                .iter()
+                .filter(|f| matches!(f.level, crate::validate::Level::Error) && !parity_exempt(f))
+                .count();
             if errors > 0 {
                 if temp_dir.exists() {
                     let _ = fs::remove_dir_all(&temp_dir);
@@ -942,19 +959,49 @@ fn extract_cbz(cbz_path: &Path) -> Result<(Vec<PathBuf>, PathBuf), Box<dyn std::
 ///
 /// Returns one or two JPEG byte vectors (two if the image was a double-page spread
 /// and splitting is enabled).
+/// Composite any alpha channel onto a white background.
+///
+/// Returns the image untouched when it has no alpha to begin with, so the
+/// common case costs nothing.
+fn flatten_alpha_onto_white(img: DynamicImage) -> DynamicImage {
+    match img {
+        DynamicImage::ImageRgba8(_) | DynamicImage::ImageLumaA8(_) => {
+            let rgba = img.to_rgba8();
+            let (w, h) = rgba.dimensions();
+            let mut rgb = image::RgbImage::new(w, h);
+            for (x, y, px) in rgba.enumerate_pixels() {
+                let a = px[3] as u32;
+                let blend = |c: u8| (((c as u32 * a) + 255 * (255 - a)) / 255) as u8;
+                rgb.put_pixel(x, y, image::Rgb([blend(px[0]), blend(px[1]), blend(px[2])]));
+            }
+            DynamicImage::ImageRgb8(rgb)
+        }
+        other => other,
+    }
+}
+
 fn process_image_pipeline(
     path: &Path,
     profile: &DeviceProfile,
     options: &ComicOptions,
     cover_fill: bool,
 ) -> Result<Vec<Vec<u8>>, Box<dyn std::error::Error>> {
-    let mut img = image::open(path)?;
+    let img = image::open(path)?;
 
     // Check for zero-dimension images
     let (w, h) = img.dimensions();
     if w == 0 || h == 0 {
         return Err(format!("zero dimensions ({}x{})", w, h).into());
     }
+
+    // Flatten transparency onto white before anything else looks at the pixels.
+    // JPEG has no alpha, and the later to_rgb8()/to_luma8() calls drop the
+    // channel without compositing, which leaves a fully transparent pixel at
+    // its stored RGB, usually black. A scanned page with a transparent margin
+    // came out with a black margin. mobi::fit_ld_image already blends onto
+    // white for the same reason, so a PNG took one of two answers depending on
+    // which path it went down (issue #34).
+    let mut img = flatten_alpha_onto_white(img);
 
     // Step 0: Moire correction for grayscale source images on color devices.
     // Color e-ink screens (Colorsoft, Fire) use a CFA overlay that produces
@@ -2925,5 +2972,51 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod alpha_flatten_tests {
+    use super::*;
+
+    /// JPEG has no alpha, and to_rgb8()/to_luma8() drop the channel without
+    /// compositing, so a transparent pixel kept its stored RGB (black). The
+    /// writer already flattens onto white, so the same PNG got two different
+    /// answers depending on its path (issue #34).
+    #[test]
+    fn transparent_pixels_flatten_onto_white() {
+        let mut rgba = image::RgbaImage::new(2, 1);
+        rgba.put_pixel(0, 0, image::Rgba([0, 0, 0, 0])); // fully transparent
+        rgba.put_pixel(1, 0, image::Rgba([255, 0, 0, 255])); // opaque red
+        let out = flatten_alpha_onto_white(DynamicImage::ImageRgba8(rgba)).to_rgb8();
+        assert_eq!(
+            out.get_pixel(0, 0).0,
+            [255, 255, 255],
+            "transparent must become white"
+        );
+        assert_eq!(
+            out.get_pixel(1, 0).0,
+            [255, 0, 0],
+            "opaque pixels must be untouched"
+        );
+    }
+
+    /// Half-transparent black over white lands mid-grey rather than black.
+    #[test]
+    fn partial_alpha_blends_rather_than_snapping() {
+        let mut rgba = image::RgbaImage::new(1, 1);
+        rgba.put_pixel(0, 0, image::Rgba([0, 0, 0, 128]));
+        let out = flatten_alpha_onto_white(DynamicImage::ImageRgba8(rgba)).to_rgb8();
+        let v = out.get_pixel(0, 0).0[0];
+        assert!((120..=135).contains(&v), "expected a mid grey, got {v}");
+    }
+
+    /// An image with no alpha is returned as-is, so the common path costs
+    /// nothing.
+    #[test]
+    fn opaque_images_are_returned_unchanged() {
+        let rgb = image::RgbImage::from_pixel(2, 2, image::Rgb([10, 20, 30]));
+        let out = flatten_alpha_onto_white(DynamicImage::ImageRgb8(rgb.clone()));
+        assert_eq!(out.to_rgb8(), rgb);
     }
 }

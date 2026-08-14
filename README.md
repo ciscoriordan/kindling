@@ -29,7 +29,7 @@ Pre-built binaries for Mac (Apple Silicon, Intel), Linux (x86_64), and Windows (
 - **StarDict export**: `kindling stardict` builds a four-file StarDict bundle (`.ifo` / `.idx` / `.dict` / `.syn`) from the same OPF or EPUB dictionary input as `kindling build`, for use with GoldenDict, GoldenDict-ng, KOReader, sdcv, and other non-Kindle dictionary readers (see [StarDict export](#stardict-export))
 - **EPUB export**: `kindling epub2` and `kindling epub3` build a reflowable EPUB from the same OPF or EPUB input, conformant to EPUB 2.0.1 and EPUB 3.3 respectively (epubcheck-clean). EPUB2 is always a plain book; EPUB3 is a plain book by default and emits an EPUB Dictionaries and Glossaries layer (Search Key Map, `dc:type=dictionary`, `epub:type` semantics) when the input is a dictionary (see [EPUB export](#epub-export))
 - **EPUB repair**: `kindling repair` applies a small, byte-stable, idempotent set of structural fixes to an EPUB for cleaner Send-to-Kindle ingest (see [Repair](#repair))
-- **Metadata rewrite**: `kindling rewrite-metadata` updates title, authors, publisher, description, language, ISBN, ASIN, publication date, tags, and cover image on an existing MOBI/AZW3 in place without rebuilding from source. Byte-stable on no-op, idempotent, refuses DRM files (see [Rewrite metadata](#rewrite-metadata))
+- **Metadata rewrite**: `kindling rewrite-metadata` updates title, authors, publisher, description, language, ISBN, ASIN, publication date, tags, cover image, and the device content type on an existing MOBI/AZW3 in place without rebuilding from source. Byte-stable on no-op, idempotent, refuses DRM files (see [Rewrite metadata](#rewrite-metadata))
 - **Structural dump**: `kindling dump` prints the parsed structure of a MOBI/AZW3 (PalmDB, MOBI header, EXTH, INDX/ORDT tables, entry labels) as line-oriented `section.field = value` output, so two dumps can be compared with `diff` (see [Dump](#dump))
 - **Lookup simulator**: `kindling lookup <dict.mobi> <word>` reproduces the on-device dictionary search against a built MOBI (accent/case folding for Latin and Greek, literal matching for CJK/Arabic, query-side case folding for Cyrillic) and reports which stored form resolves. It is a build-side regression check, not a hardware oracle (see [Lookup simulator](#lookup-simulator))
 - **Build-time HTML self-check**: every `build` runs a two-pass HTML balance check on the assembled MOBI text blob and on each individual PalmDB text record after splitting, catching regressions like dangling tags, `<hr/` corruption, and bold/italic state leaking across record boundaries (see [Build-time self-check](#build-time-self-check))
@@ -154,7 +154,7 @@ Persian (`fa`), Urdu (`ur`), Pashto (`ps`), Uyghur (`ug`), Sindhi (`sd`), and Ce
 
 Each language in the table has a committed fixture under `tests/fixtures/langs/<code>/` with a dictionary source, a kindling build, a kindlegen build, and a sideloadable test book (regenerate with `tests/fixtures/langs/generate.py`). `tests/dict_languages.rs` builds each dictionary with kindling and checks the language ids and locale, that every entry has a real text pointer, that the headwords round-trip through the on-disk labels, and the per-language collation; for the generated-ORDT scripts it also asserts byte parity of the ORDT table and headword labels against the committed kindlegen build (identical for the all-literal scripts, value-equivalent for Japanese). Languages not listed still build with the UTF-16BE layout and correct ids. The MOBI locale field maps Ancient Greek (`grc`) and a broad set of Latin- and Cyrillic-script languages to their own neutral Windows LCID rather than defaulting to English, so the firmware applies script-appropriate normalization; codes with no mapping still fall back to English. Unlike kindlegen, which aborts on a language it does not know, kindling builds a dictionary for any `dc:language`. If you ship a dictionary in one and lookups misbehave on device, please open an issue.
 
-If the OPF references a cover image (Method 1 `<item properties="coverimage"/>` or Method 2 `<meta name="cover">`), Kindling embeds it in the dictionary MOBI via EXTH 201 so it shows up on the Kindle home screen next to regular books and comics.
+If the OPF references a cover image (Method 1 `<item properties="cover-image"/>` or Method 2 `<meta name="cover">`), Kindling embeds it in the dictionary MOBI via EXTH 201 so it shows up on the Kindle home screen next to regular books and comics.
 
 Images referenced from entry HTML via `<img src="..."/>` but not declared in the OPF manifest are also embedded automatically. PyGlossary and other OEB 1.x-era tools commonly emit manifests that omit inline glyph GIFs referenced from within `<idx:entry>` blocks; kindlegen silently picks these up, and kindling matches that behavior so the glyphs render on device.
 
@@ -262,7 +262,7 @@ Validation also runs automatically as a pre-flight step inside every `kindling b
 
 Runs 117 pre-flight checks against the [Amazon Kindle Publishing Guidelines](http://kindlegen.s3.amazonaws.com/AmazonKindlePublishingGuidelines.pdf) (version 2026.1). Most rules are ports of the corresponding w3c/epubcheck checks; the rest are KDP-specific rules kindling adds on top. Rules are grouped by KPG section:
 
-- **4 Cover image** (5 rules): internal cover must exist via Method 1 (`<item properties="coverimage"/>`) or Method 2 (`<meta name="cover">`), file must exist on disk, shortest side >= 500 px, no duplicate HTML cover page in the spine (`R4.1.1`-`R4.2.4`)
+- **4 Cover image** (5 rules): internal cover must exist via Method 1 (`<item properties="cover-image"/>`, the unhyphenated `coverimage` is also accepted) or Method 2 (`<meta name="cover">`), file must exist on disk, shortest side >= 500 px, no duplicate HTML cover page in the spine (`R4.1.1`-`R4.2.4`)
 - **5 Navigation** (13 rules): NCX declared in manifest and referenced from `<spine toc>`, NCX and guide targets must resolve to manifest items, TOC recommended for books > 20 pages, NCX `dtb:uid` must match the OPF unique-identifier, page-list required when `epub:type="pagebreak"` is used, nav entries in spine order, no remote links in nav or NCX (`R5.1`-`R5.11`, epubcheck `NAV_003/010/011`, `NCX_001/004/006`, `OPF_032/050`)
 - **6 HTML, CSS, and encoding** (19 rules): well-formed XHTML, no `<script>`, no nested `<p>`, filename case must match, XML 1.0 only, no external entities, `epub:` namespace URI must be correct (Vader Down bug), UTF-8 required for HTML and CSS, no forbidden `position` values, `@import`/`url()`/`@font-face` targets must resolve through the manifest, `@namespace` and unsupported `@media` features flagged (`R6.1`-`R6.17`, `R6.e1`, `R6.e2`, epubcheck `CSS_005`-`CSS_027`)
 - **7 Manifest and spine integrity** (13 rules): declared media-types must match file bytes, every spine `itemref` must have a linear target, no duplicate `idref` or `href`, fallback chains must terminate at a renderable resource, deprecated media-types flagged, manifest cannot point at the OPF itself (`R7.1`-`R7.13`, epubcheck `OPF_003/013/029/033/034/035/037/040/041/042/043/074/099`)
@@ -341,6 +341,12 @@ kindling-cli rewrite-metadata input.azw3 -o output.azw3 --title "New Title" --au
 kindling-cli rewrite-metadata input.mobi --publisher "ACME" --language en --isbn 9780000000000
 kindling-cli rewrite-metadata input.azw3 --cover new_cover.jpg
 kindling-cli rewrite-metadata input.azw3 --title "New Title" --dry-run
+
+# Stamp the lock screen cover pair (EXTH 501, plus EXTH 113 when the file has
+# none) onto a book built before 0.30.0, instead of rebuilding it from source.
+# Follow with `kindling thumbnail` so the library tile keeps the book's own art.
+kindling-cli rewrite-metadata old_book.azw3 -o fixed.azw3 --doc-type ebok
+kindling-cli thumbnail fixed.azw3 --kindle /Volumes/Kindle
 kindling-cli rewrite-metadata input.azw3 --title "New Title" --report-json
 ```
 

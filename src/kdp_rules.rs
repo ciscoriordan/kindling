@@ -87,7 +87,7 @@ pub const RULES: &[Rule] = &[
         title: "Cover image required",
         pdf_page: 16,
         description: "No internal content cover image declared. Add either \
-                      <item properties=\"coverimage\" ...> (Method 1, preferred) or \
+                      <item properties=\"cover-image\" ...> (Method 1, preferred) or \
                       <meta name=\"cover\" content=\"<id>\"/> (Method 2) to the OPF.",
         profile_mask: ALL_PROFILES,
     },

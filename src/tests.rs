@@ -9416,6 +9416,56 @@ mod tests {
         println!("  \u{2713} EXTH 129 = {uri} = EXTH 202 offset {thumb_offset}");
     }
 
+    /// The EPUB 3 cover property is `cover-image`; kindling only matched the
+    /// unhyphenated spelling, so a standards-clean EPUB3 with no
+    /// `<meta name="cover">` fallback built with no EXTH 201/202/129 and no
+    /// thumbnail record at all (issue #30).
+    #[test]
+    fn epub3_cover_image_property_is_recognized() {
+        for spelling in ["cover-image", "coverimage"] {
+            let dir = TempDir::new("cover_prop");
+            let jpeg = make_test_jpeg();
+            fs::write(dir.path().join("cover.jpg"), &jpeg).unwrap();
+            fs::write(
+                dir.path().join("c.html"),
+                "<html><head><title>T</title></head><body><p>x</p></body></html>",
+            )
+            .unwrap();
+            let opf_path = dir.path().join("content.opf");
+            fs::write(
+                &opf_path,
+                format!(
+                    r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="3.0" unique-identifier="uid" xmlns="http://www.idpf.org/2007/opf">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>T</dc:title><dc:language>en</dc:language>
+    <dc:identifier id="uid">urn:uuid:11111111-2222-3333-4444-555555555555</dc:identifier>
+  </metadata>
+  <manifest>
+    <item id="c" href="c.html" media-type="application/xhtml+xml"/>
+    <item id="img" href="cover.jpg" media-type="image/jpeg" properties="{spelling}"/>
+  </manifest>
+  <spine><itemref idref="c"/></spine>
+</package>"#
+                ),
+            )
+            .unwrap();
+
+            let data = build_mobi_bytes(&opf_path, dir.path(), true, false, None);
+            let (_, _, offsets) = parse_palmdb(&data);
+            let rec0 = get_record(&data, &offsets, 0);
+            let exth = parse_exth_records(rec0);
+            assert!(
+                exth.contains_key(&201),
+                "properties=\"{spelling}\" must yield an EXTH 201 cover offset"
+            );
+            assert!(
+                exth.contains_key(&202),
+                "properties=\"{spelling}\" must yield an EXTH 202 thumbnail offset"
+            );
+        }
+    }
+
     /// Every JPEG kindling encodes itself must carry JFIF units=1, not just the
     /// ones it copies through and patches in place.
     ///

@@ -1079,6 +1079,13 @@ fn build_book_mobi(
             text_content
         };
 
+        // Drop KF8-only stylesheet links from the KF7 half. `kindle:flow:` is a
+        // KF8 URI scheme and the KF7 stream carries no flows, so a MOBI6
+        // renderer has nothing to resolve it against. It reached every
+        // --legacy-mobi comic, whose whole reason for existing is the old
+        // devices that would have to parse it (issue #33).
+        let text_content = strip_kf8_flow_links(&text_content);
+
         // Build KF7 text records
         let (text_records, text_length) = if no_compress {
             eprintln!("Splitting KF7 text into uncompressed records...");
@@ -2108,12 +2115,117 @@ fn build_text_content_by_letter(
         format!("{}<mbp:pagebreak/>{}", fm_body, dict_body)
     };
 
-    let style_block = first_style.unwrap_or_default();
+    let style_block = defer_escaped_colon_rules(&first_style.unwrap_or_default());
     let combined = format!(
         "<html><head>{}<guide></guide></head><body>{}  <mbp:pagebreak/></body></html>",
         style_block, merged_body
     );
     (combined.into_bytes(), entry_needles)
+}
+
+/// Remove `<link ... href="kindle:flow:...">` elements from KF7 text.
+///
+/// The KF7 stream has no flow records, so the link can only ever be dead. It is
+/// dropped rather than rewritten because the CSS it points at lives in the KF8
+/// half, which a MOBI6 device does not read.
+fn strip_kf8_flow_links(text: &[u8]) -> Vec<u8> {
+    use std::sync::OnceLock;
+    static FLOW_LINK: OnceLock<Regex> = OnceLock::new();
+    let re = FLOW_LINK.get_or_init(|| Regex::new(r#"(?i)<link\b[^>]*kindle:flow:[^>]*>"#).unwrap());
+    let Ok(as_str) = std::str::from_utf8(text) else {
+        return text.to_vec();
+    };
+    if !as_str.contains("kindle:flow:") {
+        return text.to_vec();
+    }
+    re.replace_all(as_str, "").into_owned().into_bytes()
+}
+
+/// Replace Unicode space separators with a plain ASCII space.
+///
+/// Covers the no-break space and its narrow sibling, the fixed-width en/em
+/// spaces, the thin and hair spaces, and the zero-width no-break space, which
+/// is what a scraped headword picks up in place of a normal word gap.
+fn normalize_exotic_spaces(label: &str) -> String {
+    label
+        .chars()
+        .map(|c| match c {
+            '\u{00A0}'
+            | '\u{2007}'
+            | '\u{202F}'
+            | '\u{2000}'..='\u{200A}'
+            | '\u{205F}'
+            | '\u{3000}' => ' ',
+            '\u{FEFF}' | '\u{200B}' => ' ',
+            other => other,
+        })
+        .collect()
+}
+
+/// Move any CSS rule whose selector carries an escaped colon to the end of the
+/// `<style>` block.
+///
+/// The Kindle popup renderer's CSS parser stops at `\:` in a selector and
+/// silently drops every rule after it, so an `idx\:orth { ... }` rule sitting
+/// near the top of a stylesheet takes the whole rest of the sheet down with it
+/// on device (issue #39, reported with device evidence on #27). Putting those
+/// rules last is the reporter's own verified workaround.
+///
+/// Nothing is lost by doing this: `strip_idx_markup` removes the `idx:` tags
+/// before the text blob is built, so a selector targeting one can never match
+/// anything kindling emits. The rules are kept rather than dropped in case a
+/// firmware ever fixes the parser.
+fn defer_escaped_colon_rules(style_block: &str) -> String {
+    if !style_block.contains("\\:") {
+        return style_block.to_string();
+    }
+    // Only the innards of the <style> element are reordered; the open and close
+    // tags stay put.
+    let Some(open_end) = style_block.find('>') else {
+        return style_block.to_string();
+    };
+    let Some(close_start) = style_block.rfind("</style>") else {
+        return style_block.to_string();
+    };
+    if close_start <= open_end {
+        return style_block.to_string();
+    }
+    let (head, body, tail) = (
+        &style_block[..=open_end],
+        &style_block[open_end + 1..close_start],
+        &style_block[close_start..],
+    );
+
+    // Split into top-level rules on brace depth, so a nested block such as
+    // @media stays with its own rule.
+    let mut kept = String::new();
+    let mut deferred = String::new();
+    let mut depth = 0usize;
+    let mut rule = String::new();
+    for ch in body.chars() {
+        rule.push(ch);
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    let selector = rule.split('{').next().unwrap_or("");
+                    if selector.contains("\\:") {
+                        deferred.push_str(&rule);
+                    } else {
+                        kept.push_str(&rule);
+                    }
+                    rule.clear();
+                }
+            }
+            _ => {}
+        }
+    }
+    // Trailing text that never closed a rule (comments, whitespace, or a
+    // malformed tail) is left where it was.
+    kept.push_str(&rule);
+
+    format!("{head}{kept}{deferred}{tail}")
 }
 
 /// Longest prefix of an entry's stripped HTML that is safe to search for.
@@ -3750,6 +3862,29 @@ fn build_lookup_terms(
         }
     }
 
+    // Non-breaking and other exotic spaces (issue #36). A scraped headword
+    // picks these up easily: "A&nbsp;B" indexes as U+00A0 while a reader who
+    // taps the phrase sends U+0020, and nothing folds the two, so the entry is
+    // simply unreachable. Add a plain-space spelling of every affected label,
+    // pointing at the same definition. Additive, like the Cyrillic pass above,
+    // so a source that already ships both forms just dedupes.
+    {
+        let mut added = 0usize;
+        let snapshot: Vec<String> = ordered_labels.clone();
+        for label in snapshot {
+            let alias = normalize_exotic_spaces(&label);
+            if alias != label && !alias.trim().is_empty() && !terms.contains_key(&alias) {
+                let target = terms[&label];
+                ordered_labels.push(alias.clone());
+                terms.insert(alias, target);
+                added += 1;
+            }
+        }
+        if added > 0 {
+            eprintln!("  Added {added} plain-space lookup aliases");
+        }
+    }
+
     eprintln!("Encoding {} unique lookup terms...", terms.len());
     // Is this a Latin-script dictionary? Latin headwords need folded
     // collation, because the firmware folds Latin diacritics at lookup and a
@@ -4750,6 +4885,79 @@ fn rfind_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         return None;
     }
     memchr::memmem::rfind(haystack, needle)
+}
+
+#[cfg(test)]
+mod low_hanging_fixes_tests {
+    use super::*;
+
+    /// The popup CSS parser stops at an escaped colon and drops the rest of the
+    /// sheet, so those rules go last (issue #39, device-reported on #27).
+    #[test]
+    fn escaped_colon_rules_move_to_the_end() {
+        let block = "<style type=\"text/css\">\n  p { font-size: 0.95em; }\n                       idx\\:orth { display: block; }\n  .other { margin-bottom: 6px; }\n</style>";
+        let out = defer_escaped_colon_rules(block);
+        let orth = out.find("idx\\:orth").expect("escaped rule kept");
+        let other = out.find(".other").expect("plain rule kept");
+        assert!(
+            other < orth,
+            "the plain rule must now precede the escaped one:\n{out}"
+        );
+        assert!(out.starts_with("<style type=\"text/css\">"));
+        assert!(out.ends_with("</style>"));
+    }
+
+    /// A sheet with nothing to reorder comes back untouched.
+    #[test]
+    fn plain_stylesheet_is_left_alone() {
+        let block = "<style>p { margin: 0; }</style>";
+        assert_eq!(defer_escaped_colon_rules(block), block);
+    }
+
+    /// A nested block stays with its own rule rather than being split at the
+    /// inner brace.
+    #[test]
+    fn nested_at_rules_survive_the_split() {
+        let block = "<style>@media all { p { margin: 0; } }\nidx\\:orth { display: block; }\n.z { color: red; }</style>";
+        let out = defer_escaped_colon_rules(block);
+        assert!(out.contains("@media all { p { margin: 0; } }"));
+        assert!(out.find(".z").unwrap() < out.find("idx\\:orth").unwrap());
+    }
+
+    /// A headword carrying a non-breaking space is unreachable without an
+    /// alias, because the reader's query carries a plain one (issue #36).
+    #[test]
+    fn exotic_spaces_normalize_to_plain_ones() {
+        assert_eq!(normalize_exotic_spaces("A\u{00A0}B"), "A B");
+        assert_eq!(normalize_exotic_spaces("A\u{202F}B"), "A B");
+        assert_eq!(normalize_exotic_spaces("A\u{2009}B"), "A B");
+        assert_eq!(normalize_exotic_spaces("A\u{3000}B"), "A B");
+        assert_eq!(normalize_exotic_spaces("plain text"), "plain text");
+    }
+
+    /// `kindle:flow:` is a KF8 scheme and the KF7 stream has no flows to
+    /// resolve it against (issue #33).
+    #[test]
+    fn kf8_flow_links_are_dropped_from_kf7() {
+        let html = b"<html><head>\n<title>Page 1</title>\n<link href=\"kindle:flow:0001?mime=text/css\" type=\"text/css\" rel=\"stylesheet\"/>\n</head><body>x</body></html>";
+        let out = strip_kf8_flow_links(html);
+        let out = String::from_utf8(out).unwrap();
+        assert!(
+            !out.contains("kindle:flow:"),
+            "flow link should be gone:\n{out}"
+        );
+        assert!(
+            out.contains("<title>Page 1</title>"),
+            "the rest of the head must survive"
+        );
+    }
+
+    /// Text with no flow link is returned unchanged.
+    #[test]
+    fn text_without_flow_links_is_untouched() {
+        let html = b"<html><head><title>x</title></head><body>y</body></html>";
+        assert_eq!(strip_kf8_flow_links(html), html.to_vec());
+    }
 }
 
 #[cfg(test)]

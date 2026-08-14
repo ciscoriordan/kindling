@@ -120,6 +120,10 @@ pub struct MetadataUpdates {
     pub publication_date: Option<String>,
     pub subjects: Option<Vec<String>>,
     pub cover_image: Option<Vec<u8>>,
+    /// EXTH 501 content type, e.g. `EBOK`. Writing it also fills EXTH 113,
+    /// because the firmware needs the pair before it will draw a sideloaded
+    /// book's cover on the lock screen (issue #35).
+    pub doc_type: Option<String>,
 }
 
 impl MetadataUpdates {
@@ -136,6 +140,7 @@ impl MetadataUpdates {
             && self.publication_date.is_none()
             && self.subjects.is_none()
             && self.cover_image.is_none()
+            && self.doc_type.is_none()
     }
 }
 
@@ -799,6 +804,42 @@ fn plan_changes(
     plan_single(EXTH_ISBN, updates.isbn.as_deref());
     plan_single(EXTH_ASIN, updates.asin.as_deref());
     plan_single(EXTH_PUBLICATION_DATE, updates.publication_date.as_deref());
+
+    // Doc type is really the 113 + 501 pair. 501 alone does nothing: the
+    // firmware wants an identifier to key the cover on as well, and a book
+    // built before 0.30.0 carries neither (issue #35). Keep an existing 113 so
+    // a device that has already cached a thumbnail under it keeps matching,
+    // and otherwise derive the same stable UUID the build path would.
+    if let Some(doc_type) = updates.doc_type.as_deref() {
+        plan_single(EXTH_CDE_TYPE, Some(doc_type));
+
+        let existing_identifier = existing
+            .get(&EXTH_ASIN_IDENTIFIER)
+            .and_then(|v| v.first())
+            .and_then(|b| std::str::from_utf8(b).ok())
+            .map(str::to_owned)
+            .filter(|s| !s.is_empty());
+
+        let identifier = existing_identifier.unwrap_or_else(|| {
+            let title = updates
+                .title
+                .clone()
+                .or_else(|| {
+                    existing
+                        .get(&EXTH_UPDATED_TITLE)
+                        .and_then(|v| v.first())
+                        .and_then(|b| String::from_utf8(b.to_vec()).ok())
+                })
+                .unwrap_or_default();
+            let author = existing
+                .get(&EXTH_CREATOR)
+                .and_then(|v| v.first())
+                .and_then(|b| String::from_utf8(b.to_vec()).ok())
+                .unwrap_or_default();
+            crate::exth::book_asin(&[], &title, &author)
+        });
+        plan_single(EXTH_ASIN_IDENTIFIER, Some(identifier.as_str()));
+    }
 
     // Title: EXTH 503 (updated title), EXTH 542 (4-byte md5-derived hash of
     // the title bytes, kindlegen and kindling both write this), AND the
@@ -1551,6 +1592,62 @@ mod tests {
                 .unwrap()
                 .1,
             b"9780000000000"
+        );
+    }
+
+    /// `--doc-type` writes the 113 + 501 pair the lock screen gates on, so a
+    /// book built before 0.30.0 can be stamped instead of rebuilt (issue #35).
+    #[test]
+    fn doc_type_writes_the_identifier_pair() {
+        let bytes = build_synthetic_mobi("T", &default_exth(), 0, make_jpeg(0));
+        let input = write_tmp("doctype_in", &bytes);
+        let output = tmp_path("doctype_out");
+        let updates = MetadataUpdates {
+            doc_type: Some("EBOK".to_string()),
+            ..Default::default()
+        };
+        rewrite_mobi_metadata(&input, &output, &updates).unwrap();
+        let parsed = parse_mobi(&fs::read(&output).unwrap()).unwrap();
+        let get = |t: u32| {
+            parsed
+                .primary
+                .exth_records
+                .iter()
+                .find(|(rt, _)| *rt == t)
+                .map(|(_, d)| d.clone())
+        };
+        assert_eq!(get(EXTH_CDE_TYPE).as_deref(), Some(&b"EBOK"[..]));
+        let identifier = get(EXTH_ASIN_IDENTIFIER).expect("EXTH 113 must be written too");
+        assert!(
+            !identifier.is_empty(),
+            "501 without 113 does not gate anything; the pair is the point"
+        );
+    }
+
+    /// Stamping twice must not churn the identifier, or a device that has
+    /// already cached a thumbnail under it stops matching.
+    #[test]
+    fn doc_type_keeps_an_existing_identifier() {
+        let mut exth = default_exth();
+        exth.push((EXTH_ASIN_IDENTIFIER, b"keep-me-1234".to_vec()));
+        let bytes = build_synthetic_mobi("T", &exth, 0, make_jpeg(0));
+        let input = write_tmp("doctype_keep_in", &bytes);
+        let output = tmp_path("doctype_keep_out");
+        let updates = MetadataUpdates {
+            doc_type: Some("EBOK".to_string()),
+            ..Default::default()
+        };
+        rewrite_mobi_metadata(&input, &output, &updates).unwrap();
+        let parsed = parse_mobi(&fs::read(&output).unwrap()).unwrap();
+        assert_eq!(
+            parsed
+                .primary
+                .exth_records
+                .iter()
+                .find(|(t, _)| *t == EXTH_ASIN_IDENTIFIER)
+                .unwrap()
+                .1,
+            b"keep-me-1234"
         );
     }
 
