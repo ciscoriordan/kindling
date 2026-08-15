@@ -4134,12 +4134,30 @@ fn build_record0(
 
     // PalmDOC header (16 bytes)
     let compression_type: u16 = if no_compress { 1 } else { 2 };
-    let mut record_size = RECORD_SIZE;
-    let mut text_rec_count = text_record_count;
-    if text_rec_count > 65000 {
-        record_size = std::cmp::max(RECORD_SIZE, (text_length / 65000) + 1);
-        text_rec_count = std::cmp::min(text_rec_count, 65535);
-    }
+    // Declare the chunk size the splitter actually used. `compute_chunk_size`
+    // scales past 4096 once the text would otherwise need more than 65000
+    // records, and it is the same function `compress_text` /
+    // `split_text_uncompressed` chunk with, so this always agrees with the
+    // bytes on disk.
+    //
+    // The old code recomputed a size from the record count instead, guarded on
+    // `count > 65000`. That guard is unreachable: the scaling exists precisely
+    // to hold the count at or under 65000, so it never fired and the header
+    // always claimed 4096. A 300 MB dictionary therefore shipped 8192-byte
+    // records described as 4096, and firmware routes popup lookups by
+    // `byte_offset / record_size`, so everything past the first record
+    // resolved to the wrong entry (issue #32).
+    let record_size = compute_chunk_size(text_length);
+    let text_rec_count = if text_record_count > 65535 {
+        eprintln!(
+            "Warning: {} text records exceeds the 65535 the PalmDOC header can \
+             count; the file will be truncated on device",
+            text_record_count
+        );
+        65535
+    } else {
+        text_record_count
+    };
 
     let mut palmdoc = Vec::with_capacity(16);
     palmdoc.extend_from_slice(&compression_type.to_be_bytes());
@@ -4342,12 +4360,21 @@ fn build_kf8_record0(
 
     // PalmDOC header (16 bytes)
     let compression_type: u16 = if no_compress { 1 } else { 2 };
-    let mut record_size = RECORD_SIZE;
-    let mut text_rec_count = text_record_count;
-    if text_rec_count > 65000 {
-        record_size = std::cmp::max(RECORD_SIZE, (text_length / 65000) + 1);
-        text_rec_count = std::cmp::min(text_rec_count, 65535);
-    }
+    // KF8 text is always split at exactly RECORD_SIZE (see compress_text_kf8
+    // and split_text_uncompressed_kf8), so that is what the header declares.
+    // The old guard here would have scaled it once the count passed 65000,
+    // describing records the splitter never produces (issue #32).
+    let record_size = RECORD_SIZE;
+    let text_rec_count = if text_record_count > 65535 {
+        eprintln!(
+            "Warning: KF8 section has {} text records, more than the 65535 the \
+             PalmDOC header can count; the file will be truncated on device",
+            text_record_count
+        );
+        65535
+    } else {
+        text_record_count
+    };
 
     let mut palmdoc = Vec::with_capacity(16);
     palmdoc.extend_from_slice(&compression_type.to_be_bytes());
@@ -4916,6 +4943,118 @@ fn rfind_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         return None;
     }
     memchr::memmem::rfind(haystack, needle)
+}
+
+#[cfg(test)]
+mod record_size_header_tests {
+    use super::*;
+
+    /// What the old header guard, `if text_rec_count > 65000`, actually did.
+    ///
+    /// It is dead for every size where the chunk scaled, because the scaling
+    /// exists precisely to hold the record count under 65000. It fires only in
+    /// a 4095-byte-wide band just past 65000 * 4096, where the chunk has not
+    /// scaled yet but the count has ticked over, and there it computes 4097 for
+    /// records that are 4096. So above 65000 * 4096 the header was wrong either
+    /// way (issue #32).
+    #[test]
+    fn the_old_header_guard_was_wrong_above_the_threshold() {
+        // Reproduces the formula this commit replaced.
+        fn old_declared_size(text_length: usize) -> usize {
+            let chunk = compute_chunk_size(text_length);
+            let records = text_length.div_ceil(chunk);
+            if records > 65000 {
+                std::cmp::max(RECORD_SIZE, (text_length / 65000) + 1)
+            } else {
+                RECORD_SIZE
+            }
+        }
+
+        const THRESHOLD: usize = 65_000 * RECORD_SIZE;
+
+        // At or below the threshold nothing scales and the old value was right.
+        for len in [1_000_000usize, THRESHOLD] {
+            assert_eq!(old_declared_size(len), compute_chunk_size(len));
+        }
+
+        // The narrow band where the guard does fire, and gets it wrong.
+        for len in [THRESHOLD + 1, 65_001 * RECORD_SIZE - 1] {
+            assert_eq!(compute_chunk_size(len), RECORD_SIZE);
+            assert_eq!(len.div_ceil(RECORD_SIZE), 65_001, "the count ticks over");
+            assert_eq!(
+                old_declared_size(len),
+                4097,
+                "declares 4097 for 4096-byte records"
+            );
+        }
+
+        // Everywhere above that the guard is dead: the count is back under
+        // 65000 while the records are 8192 or larger, and the header said 4096.
+        for len in [
+            65_001 * RECORD_SIZE,
+            300_000_000,
+            532_480_001,
+            1_000_000_000,
+        ] {
+            let chunk = compute_chunk_size(len);
+            assert!(
+                chunk > RECORD_SIZE,
+                "len {len} should have scaled, got {chunk}"
+            );
+            assert!(
+                len.div_ceil(chunk) <= 65000,
+                "the scaling keeps the count under the guard, so it never runs"
+            );
+            assert_eq!(old_declared_size(len), RECORD_SIZE);
+            assert_ne!(
+                old_declared_size(len),
+                chunk,
+                "header claimed {} for {chunk}-byte records",
+                RECORD_SIZE
+            );
+        }
+    }
+
+    /// Above the threshold the header must stop saying 4096, because the
+    /// records genuinely are not 4096 any more. Firmware divides a byte offset
+    /// by this number to pick a record.
+    #[test]
+    fn declared_record_size_tracks_the_real_chunk_size() {
+        assert_eq!(compute_chunk_size(1_000_000), RECORD_SIZE);
+        assert_eq!(compute_chunk_size(65_000 * RECORD_SIZE), RECORD_SIZE);
+        for len in [300_000_000usize, 532_480_001, 1_000_000_000] {
+            let chunk = compute_chunk_size(len);
+            assert!(
+                chunk > RECORD_SIZE,
+                "len {len} must scale past {RECORD_SIZE}, got {chunk}"
+            );
+            assert!(
+                chunk.is_power_of_two(),
+                "chunk {chunk} should be a power of two"
+            );
+        }
+    }
+
+    /// Whatever the chunk size, the splitter must actually produce records of
+    /// it, so the header value describes the bytes on disk. Records may be a
+    /// few bytes short where a chunk boundary lands mid-character.
+    #[test]
+    fn splitter_records_never_exceed_the_declared_size() {
+        // Multi-byte characters so the UTF-8 backoff is exercised.
+        let text: Vec<u8> = "aé漢字z".repeat(4000).into_bytes();
+        let chunk = compute_chunk_size(text.len());
+        let ranges = split_on_utf8_boundaries(&text, chunk);
+        assert!(!ranges.is_empty());
+        for (start, end) in &ranges {
+            assert!(
+                end - start <= chunk,
+                "a record of {} bytes exceeds the declared {chunk}",
+                end - start
+            );
+        }
+        let covered: usize = ranges.iter().map(|(s, e)| e - s).sum();
+        assert_eq!(covered, text.len(), "the split must cover the whole text");
+    }
 }
 
 #[cfg(test)]

@@ -9443,6 +9443,44 @@ mod tests {
         println!("  \u{2713} EXTH 129 = {uri} = EXTH 202 offset {thumb_offset}");
     }
 
+    /// The PalmDOC header's record size must describe the records actually
+    /// written, because firmware picks a record with `byte_offset / record_size`
+    /// (issue #32).
+    ///
+    /// This pins the ordinary case. The scaled case starts above 266 MB of
+    /// text, which is too big to build in a test; the arithmetic for it is
+    /// covered by `mobi::record_size_header_tests`.
+    #[test]
+    fn palmdoc_header_record_size_matches_the_records_written() {
+        let dir = TempDir::new("record_size_header");
+        let entries: &[(&str, &[&str])] = &[
+            ("alpha", &["alphas"]),
+            ("bravo", &["bravos"]),
+            ("charlie", &["charlies"]),
+        ];
+        let opf_path = create_dict_fixture(dir.path(), entries);
+        // no_compress so a text record's stored length is its real length.
+        let data = build_dict_mobi_bytes(&opf_path, dir.path());
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+
+        let declared = read_u16_be(rec0, 10) as usize;
+        let text_record_count = read_u16_be(rec0, 8) as usize;
+        assert!(text_record_count > 0, "expected at least one text record");
+        assert_eq!(declared, 4096, "small dictionaries stay at the base size");
+
+        // Every text record must fit the declared size. Records carry trailing
+        // bytes (a multibyte flag and a TBS byte) on top of the text.
+        for i in 1..=text_record_count {
+            let rec = get_record(&data, &offsets, i);
+            assert!(
+                rec.len() <= declared + 8,
+                "text record {i} is {} bytes against a declared {declared}",
+                rec.len()
+            );
+        }
+    }
+
     /// A dictionary must keep its CSS however the CSS arrives (issue #40).
     ///
     /// Three ways it used to vanish: an attribute on `<head>` meant the head

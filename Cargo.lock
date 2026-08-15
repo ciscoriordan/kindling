@@ -434,7 +434,7 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
 name = "cssparser"
-version = "0.34.0"
+version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9be934d936a0fbed5bcdc01042b770de1398bf79d0e192f49fa7faea0e99281e"
 dependencies = [
@@ -890,7 +890,7 @@ dependencies = [
 
 [[package]]
 name = "kindling-mobi"
-version = "0.34.0"
+version = "0.35.0"
 dependencies = [
  "clap",
  "ego-tree",
