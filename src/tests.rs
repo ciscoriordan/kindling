@@ -162,9 +162,11 @@ mod tests {
         opf_path
     }
 
-    /// Build a dictionary through the by-letter assembler, which is what a
-    /// real `kindling build` uses. `build_mobi_bytes` passes kindle_limits =
-    /// false and so exercises the fallback path instead.
+    /// Build a dictionary with the 30 MB section split enabled.
+    ///
+    /// Since issue #41 both settings use the same assembler, so this differs
+    /// from `build_mobi_bytes` only in whether the split and its messages run.
+    /// Kept because a few tests care about that specifically.
     fn build_dict_mobi_bytes(opf_path: &Path, output_dir: &Path) -> Vec<u8> {
         let output_path = output_dir.join("dict_output.mobi");
         mobi::build_mobi(
@@ -6897,11 +6899,15 @@ mod tests {
         entries: &[(&str, &[&str])],
         image_data: &[u8],
     ) -> PathBuf {
-        // Build HTML content with idx:entry markup and an img tag for the cover
-        let mut html_body = String::from(r#"<img src="cover.jpg"/>"#);
+        // Build HTML content with idx:entry markup and an img tag for the cover.
+        // The img goes INSIDE the first entry: markup sitting outside every
+        // <idx:entry> never reaches the text blob (issue #42), so a cover image
+        // parked before the first entry would vanish and this fixture would be
+        // asserting against a path no dictionary build takes.
+        let mut html_body = String::new();
         for (hw, iforms) in entries {
             html_body.push_str(&format!(
-                "<idx:entry><idx:orth value=\"{hw}\">{hw}</idx:orth>",
+                "<idx:entry><img src=\"cover.jpg\"/><idx:orth value=\"{hw}\">{hw}</idx:orth>",
                 hw = hw
             ));
             for iform in *iforms {
@@ -9479,6 +9485,63 @@ mod tests {
                 rec.len()
             );
         }
+    }
+
+    /// `--no-kindle-limits` must change nothing but the splitting.
+    ///
+    /// It used to swap the whole text assembler, which silently cost the build
+    /// its per-entry index offsets and its stylesheets (issue #41). Below the
+    /// 30 MB threshold there is nothing to split, so the two settings must now
+    /// produce identical text. This is the canary for the two paths drifting
+    /// apart again.
+    #[test]
+    fn kindle_limits_only_changes_the_splitting() {
+        let dir = TempDir::new("limits_canary");
+        // Shapes that only the anchoring path gets right, so a regression to the
+        // old assembler shows up as a difference rather than as a silent pass.
+        let html = r#"<html xmlns:idx="idx"><head><title>D</title>
+<style type="text/css">p { margin: 3px; }</style></head><body><mbp:frameset>
+<idx:entry><idx:orth value="alpha"><b>alpha</b></idx:orth><p>first</p></idx:entry>
+<idx:entry><idx:orth value="beta"/><p>no headword in this body at all</p></idx:entry>
+<idx:entry><idx:orth value="gamma"/><h1>gamma</h1><p>headword in a heading</p></idx:entry>
+</mbp:frameset></body></html>"#;
+        fs::write(dir.path().join("content.html"), html).unwrap();
+        let opf_path = dir.path().join("content.opf");
+        fs::write(
+            &opf_path,
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf">
+  <metadata>
+    <dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">D</dc:title>
+    <dc:language xmlns:dc="http://purl.org/dc/elements/1.1/">en</dc:language>
+    <x-metadata><DictionaryInLanguage>en</DictionaryInLanguage>
+    <DictionaryOutLanguage>en</DictionaryOutLanguage></x-metadata>
+  </metadata>
+  <manifest><item id="c" href="content.html" media-type="application/xhtml+xml"/></manifest>
+  <spine><itemref idref="c"/></spine>
+</package>"#,
+        )
+        .unwrap();
+
+        let with_split = build_dict_mobi_bytes(&opf_path, dir.path());
+        let without_split = build_mobi_bytes(&opf_path, dir.path(), true, false, None);
+
+        let text_of = |data: &[u8]| extract_text_from_uncompressed_mobi(data);
+        let a = text_of(&with_split);
+        let b = text_of(&without_split);
+        assert_eq!(
+            a, b,
+            "below the split threshold the flag must not change the text blob"
+        );
+        assert!(
+            a.contains("margin: 3px"),
+            "the stylesheet must survive at both settings, got: {}",
+            &a[..a.len().min(300)]
+        );
+        assert!(
+            a.contains("no headword in this body at all"),
+            "every entry must reach the blob at both settings"
+        );
     }
 
     /// A dictionary must keep its CSS however the CSS arrives (issue #40).

@@ -88,13 +88,15 @@ enum Commands {
         #[arg(long, hide = true)]
         kf8_only: bool,
 
-        /// Enforce Kindle publishing limits: split HTML chunks >30MB at entry/paragraph
-        /// boundaries, warn if >300 HTML files. ON by default for dictionaries, OFF for books.
-        /// Use --no-kindle-limits to disable for dictionaries, --kindle-limits to enable for books.
+        /// Enforce Kindle publishing limits: split HTML sections >30MB at entry
+        /// boundaries, warn if >300 HTML sections. ON by default. Turning it off
+        /// skips the splitting and the warnings only; entry indexing and CSS
+        /// collection are unaffected.
         #[arg(long, overrides_with = "no_kindle_limits")]
         kindle_limits: bool,
 
-        /// Disable Kindle publishing limits enforcement (see --kindle-limits)
+        /// Skip the 30MB section split and the section-count warning
+        /// (see --kindle-limits)
         #[arg(long, overrides_with = "kindle_limits")]
         no_kindle_limits: bool,
 

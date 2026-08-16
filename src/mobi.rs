@@ -272,15 +272,17 @@ fn build_dictionary_mobi(
 
     // Build the text content (stripped HTML for all spine items)
     eprintln!("Building text content...");
-    // The by-letter assembler hands back the opening bytes of every entry it
-    // emitted, which is what find_entry_positions anchors on. build_text_content
-    // does not track entries, so that path falls back to the markup-shape
-    // heuristics (issue #27).
-    let (text_content, entry_needles) = if kindle_limits {
-        build_text_content_by_letter(&opf, &all_entries)
-    } else {
-        (build_text_content(&opf, true), Vec::new())
-    };
+    // Dictionaries always use the by-letter assembler. It is the only one that
+    // records where it put each entry, and those offsets are what
+    // find_entry_positions anchors on; it is also the only one that collects
+    // stylesheets properly. `--no-kindle-limits` used to swap in
+    // build_text_content instead, which silently reintroduced blank popups,
+    // quadratic builds (issue #27) and dropped CSS (issue #40) for a flag whose
+    // help text only ever promised to skip the 30 MB split and the file-count
+    // warning. `kindle_limits` now controls exactly that and nothing else
+    // (issue #41).
+    let (text_content, entry_needles) =
+        build_text_content_by_letter(&opf, &all_entries, kindle_limits);
 
     // Insert the guide reference tag
     let text_content = insert_guide_reference(&text_content);
@@ -2005,6 +2007,7 @@ fn build_text_content(opf: &OPFData, strip_idx: bool) -> Vec<u8> {
 fn build_text_content_by_letter(
     opf: &OPFData,
     entries: &[DictionaryEntry],
+    split: bool,
 ) -> (Vec<u8>, Vec<Box<[u8]>>) {
     // Collect non-dictionary spine items (front matter) and extract styles
     let mut front_matter_sections: Vec<String> = Vec::new();
@@ -2100,7 +2103,8 @@ fn build_text_content_by_letter(
     let mut current_chunk = String::new();
 
     for stripped in stripped_entries {
-        if !current_chunk.is_empty()
+        if split
+            && !current_chunk.is_empty()
             && current_chunk.len() + stripped.len() > KINDLE_HTML_SIZE_LIMIT
         {
             dict_sections.push(current_chunk);
@@ -2112,15 +2116,17 @@ fn build_text_content_by_letter(
         dict_sections.push(current_chunk);
     }
 
-    eprintln!(
-        "Kindle limits: split {} entries into {} sections",
-        entries.len(),
-        dict_sections.len()
-    );
+    if split {
+        eprintln!(
+            "Kindle limits: split {} entries into {} sections",
+            entries.len(),
+            dict_sections.len()
+        );
+    }
 
     // Check total section count
     let total_sections = front_matter_sections.len() + dict_sections.len();
-    if total_sections > KINDLE_HTML_FILE_LIMIT {
+    if split && total_sections > KINDLE_HTML_FILE_LIMIT {
         eprintln!(
             "Warning: {} total HTML sections exceeds the Kindle limit of {} files",
             total_sections, KINDLE_HTML_FILE_LIMIT
@@ -5240,8 +5246,13 @@ mod entry_anchor_tests {
         );
     }
 
-    /// Without needles (the `--no-kindle-limits` path) the old markup-shape
-    /// search is still what runs.
+    /// With no needles the old markup-shape search still runs.
+    ///
+    /// No production caller passes an empty slice any more: dictionaries always
+    /// go through the by-letter assembler, which always returns one needle per
+    /// entry (issue #41). The fallback is kept as a backstop, so it needs tests
+    /// of its own or it rots. The three below are what stands between
+    /// HEADWORD_WRAPPERS and silent deletion.
     #[test]
     fn falls_back_to_headword_search_without_needles() {
         let bodies = ["<b>alpha</b><p>definition</p><hr/>"];
@@ -5250,6 +5261,84 @@ mod entry_anchor_tests {
 
         let positions = find_entry_positions(&blob, &entries, &[]).unwrap();
         assert_eq!(positions[0].0, truth[0]);
+    }
+
+    /// A cross-reference in one entry's body must not steal the next entry's
+    /// anchor.
+    ///
+    /// This is the half of issue #27 that prints nothing and exits 0. The old
+    /// search looked for `<b>headword</b>` after a separator, so an entry whose
+    /// body contained `<hr/><b>Beta</b>` as a cross reference matched before the
+    /// real Beta entry and the popup opened on the wrong text. Anchoring on each
+    /// entry's own bytes makes it structurally impossible, and this pins it.
+    #[test]
+    fn a_cross_reference_does_not_steal_the_next_entrys_anchor() {
+        let bodies = [
+            "<b>Alpha</b><p>see also</p><hr/><b>Beta</b><p>cross reference inside Alpha</p><hr/>",
+            "<b>Beta</b><p>THE REAL DEFINITION</p><hr/>",
+        ];
+        let entries: Vec<_> = ["Alpha", "Beta"]
+            .iter()
+            .zip(bodies.iter())
+            .map(|(h, b)| entry(h, b))
+            .collect();
+        let (blob, needles, truth) = assemble(&bodies);
+
+        let positions = find_entry_positions(&blob, &entries, &needles).unwrap();
+        assert_eq!(positions[0].0, truth[0], "Alpha anchors on itself");
+        assert_eq!(
+            positions[1].0, truth[1],
+            "Beta must anchor on its own entry, not on the cross reference in Alpha's body"
+        );
+        let beta = &blob[positions[1].0..positions[1].0 + positions[1].1];
+        let beta = std::str::from_utf8(beta).unwrap();
+        assert!(
+            beta.contains("THE REAL DEFINITION"),
+            "Beta's span should cover the real definition, got {beta:?}"
+        );
+    }
+
+    /// `<big>`-wrapped headwords must stay in HEADWORD_WRAPPERS.
+    ///
+    /// This is the issue #22 fix (Korean dictionaries whose headwords are
+    /// wrapped in `<big>` rather than `<b>`). It used to be guarded by a full
+    /// build through `build_mobi_bytes`, which passed kindle_limits = false and
+    /// so exercised this fallback. That build now gets needles like every other,
+    /// so the guard has to live here or deleting `<big>` support passes CI.
+    #[test]
+    fn fallback_finds_big_wrapped_headwords() {
+        let bodies = [
+            "<big>\u{BB3C}</big><p>water</p><hr/>",
+            "<big>\u{BD88}</big><p>fire</p><hr/>",
+        ];
+        let entries: Vec<_> = ["\u{BB3C}", "\u{BD88}"]
+            .iter()
+            .zip(bodies.iter())
+            .map(|(h, b)| entry(h, b))
+            .collect();
+        let (blob, _, truth) = assemble(&bodies);
+
+        let positions = find_entry_positions(&blob, &entries, &[]).unwrap();
+        for (i, (&(start, len), &want)) in positions.iter().zip(truth.iter()).enumerate() {
+            assert_eq!(start, want, "entry {i} must be found via its <big> wrapper");
+            assert!(len > 0, "entry {i} must not be a blank span");
+        }
+    }
+
+    /// The bare-headword leg of the fallback, for entries with no wrapper.
+    #[test]
+    fn fallback_finds_bare_headwords() {
+        let bodies = ["alpha<p>first</p><hr/>", "beta<p>second</p><hr/>"];
+        let entries: Vec<_> = ["alpha", "beta"]
+            .iter()
+            .zip(bodies.iter())
+            .map(|(h, b)| entry(h, b))
+            .collect();
+        let (blob, _, truth) = assemble(&bodies);
+
+        let positions = find_entry_positions(&blob, &entries, &[]).unwrap();
+        assert_eq!(positions[0].0, truth[0]);
+        assert_eq!(positions[1].0, truth[1]);
     }
 }
 

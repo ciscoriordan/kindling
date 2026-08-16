@@ -108,7 +108,7 @@ The examples below assume `kindling-cli` is on your PATH (see [Installation](#in
 kindling-cli build input.opf -o output.mobi
 kindling-cli build input.opf -o output.mobi --no-compress    # skip compression for fast dev builds
 kindling-cli build input.opf -o output.mobi --headwords-only  # index headwords only (no inflections)
-kindling-cli build input.opf -o output.mobi --no-kindle-limits  # skip per-letter HTML grouping
+kindling-cli build input.opf -o output.mobi --no-kindle-limits  # skip the 30 MB section split
 kindling-cli build input.opf -o output.mobi --no-validate     # skip KDP pre-flight validation
 kindling-cli build input.opf -o output.mobi --fold-accents    # kindlegen-style accent folding (Latin default is exact, see below)
 kindling-cli build input.opf -o output.mobi --strict-accents  # force exact accent match for any script
@@ -160,7 +160,7 @@ If the OPF references a cover image (Method 1 `<item properties="cover-image"/>`
 
 Images referenced from entry HTML via `<img src="..."/>` but not declared in the OPF manifest are also embedded automatically. PyGlossary and other OEB 1.x-era tools commonly emit manifests that omit inline glyph GIFs referenced from within `<idx:entry>` blocks; kindlegen silently picks these up, and kindling matches that behavior so the glyphs render on device.
 
-By default, dictionaries enforce Kindle publishing limits (`--kindle-limits`): entries are grouped by first letter to keep individual HTML sections under 30 MB, and a warning is printed if the total exceeds 300 sections. Use `--no-kindle-limits` to disable this and produce a single flat HTML blob.
+By default, dictionaries enforce Kindle publishing limits (`--kindle-limits`): entries are split into HTML sections under 30 MB each, and a warning is printed if the total exceeds 300 sections. `--no-kindle-limits` turns off the splitting and the warning, and nothing else. Until 0.36.0 it also swapped in a different text assembler, which silently cost the build its per-entry index offsets and its stylesheets (issue #41).
 
 Every `build` also runs the Kindle Publishing Guidelines validator as an automatic pre-flight step before writing the MOBI. If validation reports any errors, the build is aborted with exit code 1; warnings are printed but do not block the build. Pass `--no-validate` to skip the check. See [Validation](#validation) for the full list of rules.
 
