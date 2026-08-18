@@ -1061,8 +1061,8 @@ fn process_image_pipeline(
             page
         };
 
-        // Resize to fit device dimensions while maintaining aspect ratio
-        let page = page.resize(profile.width, profile.height, FilterType::Lanczos3);
+        // Shrink to fit the device box, but never enlarge (issue #37)
+        let page = resize_to_fit(page, profile.width, profile.height);
 
         // Convert to grayscale if the device profile requires it
         let page = if profile.grayscale {
@@ -1081,6 +1081,28 @@ fn process_image_pipeline(
     }
 
     Ok(results)
+}
+
+/// Shrink an image to fit inside the device box, never enlarging it.
+///
+/// `DynamicImage::resize` takes the smaller of the two ratios with no clamp at
+/// 1, so it scales a small page up as readily as it scales an oversized one
+/// down. Enlarging adds no detail the source did not have, costs bytes against
+/// the 128 KB record cap, and can push a page that already fit over it, where
+/// `fit_ld_image` then grinds the quality back down to claw the bytes back
+/// (issues #37 and #38).
+///
+/// Leaving the page alone is also what kindlegen does: its reference build of
+/// the 400x600 `simple_comic` fixture ships those pages untouched at 400x600,
+/// where kindling used to emit 965x1448. The device scales the page itself,
+/// and the per-page viewport is written from the real JPEG dimensions, so a
+/// small page still fills the screen.
+fn resize_to_fit(img: DynamicImage, max_width: u32, max_height: u32) -> DynamicImage {
+    let (w, h) = img.dimensions();
+    if w <= max_width && h <= max_height {
+        return img;
+    }
+    img.resize(max_width, max_height, FilterType::Lanczos3)
 }
 
 /// Center-crop an image to match the target aspect ratio.
@@ -2490,7 +2512,7 @@ fn write_fixed_layout_epub_v2(
         } else {
             cover_img
         };
-        let cover_resized = cover_img.resize(profile.width, profile.height, FilterType::Lanczos3);
+        let cover_resized = resize_to_fit(cover_img, profile.width, profile.height);
         let cover_jpeg = encode_jpeg(&cover_resized, options.jpeg_quality)?;
         fs::write(images_dir.join(cover_filename), &cover_jpeg)?;
         Some(cover_filename.to_string())
@@ -2507,9 +2529,21 @@ fn write_fixed_layout_epub_v2(
     );
 
     // Write OPF
+    // original-resolution describes the canvas the pages actually ship at,
+    // which is no longer the profile box now that small pages are left alone
+    // (issue #37). kindlegen writes the source resolution here too.
+    let canvas = pages
+        .iter()
+        .fold((0u32, 0u32), |(w, h), p| (w.max(p.width), h.max(p.height)));
+    let canvas = if canvas == (0, 0) {
+        (profile.width, profile.height)
+    } else {
+        canvas
+    };
+
     let opf = build_comic_opf_v2(
         pages.len(),
-        profile,
+        canvas,
         rtl,
         metadata,
         any_panels,
@@ -2530,7 +2564,7 @@ fn write_fixed_layout_epub_v2(
 /// Build the OPF manifest for the comic.
 fn build_comic_opf_v2(
     num_pages: usize,
-    profile: &DeviceProfile,
+    canvas: (u32, u32),
     rtl: bool,
     metadata: Option<&ComicMetadata>,
     panel_view: bool,
@@ -2692,8 +2726,8 @@ fn build_comic_opf_v2(
         title = escape_xml(&title),
         language = escape_xml(language),
         uid = uid,
-        width = profile.width,
-        height = profile.height,
+        width = canvas.0,
+        height = canvas.1,
         cover_meta = cover_meta,
         cover_manifest_entry = cover_manifest_entry,
         creator_entries = creator_entries,

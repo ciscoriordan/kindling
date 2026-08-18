@@ -5466,11 +5466,25 @@ mod tests {
         let cover_img = image::load_from_memory(cover_rec).expect("Failed to decode cover JPEG");
         let (w, h) = (cover_img.width(), cover_img.height());
 
-        // The cover should have been resized to the device dimensions exactly.
-        // With cover_fill, the image is center-cropped to the device aspect ratio
-        // first, so resize produces exact device dimensions (no letterboxing).
-        assert_eq!(w, profile.width, "Cover width should match device width");
-        assert_eq!(h, profile.height, "Cover height should match device height");
+        // cover_fill center-crops to the device aspect ratio so the cover fills
+        // the screen with no letterboxing. It does not enlarge: this 400x400
+        // source crops to 296x400 and ships at that size, because upscaling adds
+        // no detail and the device scales the page itself (issue #37). What has
+        // to hold is the ratio, and that the crop never grew the source.
+        assert!(
+            w <= profile.width && h <= profile.height,
+            "Cover {}x{} should fit inside the device box {}x{}",
+            w,
+            h,
+            profile.width,
+            profile.height
+        );
+        assert!(
+            w <= 400 && h <= 400,
+            "Cover {}x{} should not have been enlarged past its 400x400 source",
+            w,
+            h
+        );
 
         // Verify the aspect ratio matches the device (within rounding tolerance)
         let device_ratio = profile.width as f64 / profile.height as f64;
@@ -5486,6 +5500,78 @@ mod tests {
             "  \u{2713} cover_fill: cover is {}x{} (matches device {}x{})",
             w, h, profile.width, profile.height
         );
+    }
+
+    /// Issue #37: a page smaller than the device profile used to be enlarged to
+    /// fill it, because `DynamicImage::resize` takes the smaller of the two
+    /// ratios with no clamp at 1. A 600x800 CBZ at `--device paperwhite` came
+    /// back 1072x1429, and the 400x600 parity fixture came back 965x1448 where
+    /// kindlegen leaves it at 400x600.
+    ///
+    /// Both directions are asserted here: a sub-profile page ships untouched,
+    /// an oversized one still shrinks. Without the clamp in `resize_to_fit` the
+    /// first half fails.
+    #[test]
+    fn small_comic_pages_are_not_enlarged_to_the_profile() {
+        use crate::comic;
+
+        let profile = comic::get_profile("paperwhite").unwrap();
+        assert!(profile.width > 600 && profile.height > 800);
+
+        for (src_w, src_h, want_w, want_h, what) in [
+            (600u32, 800u32, 600u32, 800u32, "smaller than the profile"),
+            (400, 600, 400, 600, "the parity fixture size"),
+            (3000, 4000, 1072, 1429, "larger than the profile"),
+        ] {
+            let dir = TempDir::new("no_upscale");
+            let images_dir = dir.path().join("images");
+            fs::create_dir_all(&images_dir).unwrap();
+            let img =
+                image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(src_w, src_h, |x, y| {
+                    image::Rgb([(x % 256) as u8, (y % 256) as u8, 200])
+                }));
+            img.save(images_dir.join("page_001.png")).unwrap();
+
+            let output_path = dir.path().join("out.mobi");
+            let options = comic::ComicOptions {
+                crop: 0,
+                enhance: false,
+                split: false,
+                panel_view: false,
+                jpeg_quality: 90,
+                ..Default::default()
+            };
+            comic::build_comic_with_options(&images_dir, &output_path, &profile, &options)
+                .expect("comic build failed");
+
+            let data = fs::read(&output_path).unwrap();
+            let (_, _, offsets) = parse_palmdb(&data);
+            let rec0 = get_record(&data, &offsets, 0);
+            let first_img_idx = read_u32_be(rec0, 108) as usize;
+            let page = get_record(&data, &offsets, first_img_idx);
+            let decoded = image::load_from_memory(page).expect("page is not a decodable JPEG");
+
+            assert_eq!(
+                (decoded.width(), decoded.height()),
+                (want_w, want_h),
+                "a {}x{} page ({}) should ship at {}x{}, got {}x{}",
+                src_w,
+                src_h,
+                what,
+                want_w,
+                want_h,
+                decoded.width(),
+                decoded.height()
+            );
+            println!(
+                "  \u{2713} {}x{} ({}) ships at {}x{}",
+                src_w,
+                src_h,
+                what,
+                decoded.width(),
+                decoded.height()
+            );
+        }
     }
 
     // =======================================================================

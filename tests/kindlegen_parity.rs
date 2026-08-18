@@ -402,21 +402,17 @@ fn reconstruct_kindlegen_simple_comic() {
 /// its "better than kindlegen" pretty-printed output which is not
 /// expected to match.
 ///
-/// The test is `#[ignore]`'d because one unavoidable delta remains for
-/// the simple_comic fixture: the per-page images are 400x600 in the
-/// source, but kindling's image pipeline resizes them up to the
-/// 1072x1448 device profile before JPEG-encoding. The `width="N"
-/// height="M"` attributes reflect the real JPEG bytes in the rawml,
-/// so kindling honestly emits 1072/1448 vs kindlegen's 400/600. For
-/// real-world comics (Vader Down) the source images are already at or
-/// above the device profile, so this delta disappears.
+/// This was `#[ignore]`'d for a long time over one delta that the comment
+/// here called unavoidable: the fixture's pages are 400x600 in the source,
+/// and kindling's pipeline enlarged them to the device profile before
+/// encoding, so the `width="N" height="M"` attributes came out 965/1448
+/// against kindlegen's 400/600. That was issue #37, not a fact of life.
+/// `resize_to_fit` shrinks but no longer enlarges, so the pages ship at
+/// 400x600 like kindlegen's and the delta is gone.
 ///
-/// Run with:
-///   cargo test --test kindlegen_parity \
-///     reconstruct_simple_comic_kindling_vs_kindlegen \
-///     -- --ignored --nocapture
+/// Which makes this the regression test for #37 at the format level: put
+/// the upscale back and the page dimensions diverge again.
 #[test]
-#[ignore]
 fn reconstruct_simple_comic_kindling_vs_kindlegen() {
     let kindlegen = load_reference("simple_comic");
     let kindling = kindling_comic_parsed_parity("simple_comic", "simple_comic.cbz", "azw3");
