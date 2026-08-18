@@ -1000,6 +1000,67 @@ mod validate {
             dump(&out)
         );
     }
+
+    /// Issue #38: a page the 128 KB record cap re-encodes has to say so and
+    /// name the page. The comic path used to throw the outcome away with an
+    /// `unwrap_or`, and the book path's aggregate message can never fire for
+    /// comics because the pages arrive already fitted, so a page silently
+    /// dropped from the requested quality, or silently halved, printed nothing
+    /// at all.
+    #[test]
+    fn the_cap_names_the_comic_page_it_re_encoded() {
+        let tmp = TempDir::new("cap_reports");
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).expect("create pages dir");
+
+        // Incompressible noise, so the page cannot fit the cap at any quality
+        // and the geometry fallback has to run too. A deterministic LCG keeps
+        // the test from depending on a random source.
+        let (w, h) = (900u32, 1200u32);
+        let mut seed: u32 = 0x1234_5678;
+        let img = image::RgbImage::from_fn(w, h, |_, _| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let v = (seed >> 16) as u8;
+            image::Rgb([v, v.wrapping_add(37), v.wrapping_add(113)])
+        });
+        img.save(pages.join("screentone_page.png"))
+            .expect("write noise page");
+
+        let out = run_comic(&[
+            pages.to_str().unwrap(),
+            "-o",
+            tmp.path().join("out.azw3").to_str().unwrap(),
+            "--device",
+            "paperwhite",
+            "--crop",
+            "0",
+            "--no-enhance",
+            "--jpeg-quality",
+            "100",
+        ]);
+        assert!(
+            out.status.success(),
+            "comic build should succeed\n{}",
+            dump(&out)
+        );
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("screentone_page.png"),
+            "the cap must name the page it altered\n{}",
+            dump(&out)
+        );
+        assert!(
+            stderr.contains("128 KB") && stderr.contains("quality"),
+            "the message must say what the cap did\n{}",
+            dump(&out)
+        );
+        assert!(
+            stderr.contains("instead of 100"),
+            "the message must say the requested quality was not the one used\n{}",
+            dump(&out)
+        );
+    }
 }
 
 mod repair {

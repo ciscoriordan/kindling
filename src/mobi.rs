@@ -243,7 +243,13 @@ fn build_dictionary_mobi(
             // Dictionaries carry no HD container, so an oversized image has
             // nowhere else to live; re-encoding it into the LD cap is the only
             // way the reader can decode it at all (issue #25).
-            image_records.push(fit_ld_image(&data).unwrap_or(data));
+            match fit_ld_image(&data, LD_DEFAULT_QUALITY) {
+                Some(fit) => {
+                    eprintln!("{}: {}", href, fit.describe(LD_DEFAULT_QUALITY));
+                    image_records.push(fit.data);
+                }
+                None => image_records.push(data),
+            }
 
             if let Some(ref cover) = cover_href {
                 if href == cover {
@@ -582,6 +588,7 @@ fn build_book_mobi(
     let mut cover_offset: Option<u32> = None;
     let mut total_image_bytes: usize = 0;
     let mut shrunk_count: usize = 0;
+    let mut scaled_count: usize = 0;
     let mut oversize_kept: Vec<String> = Vec::new();
 
     for (idx, (href, _media_type)) in image_items.iter().enumerate() {
@@ -612,10 +619,14 @@ fn build_book_mobi(
             total_image_bytes += data.len();
             href_to_recindex.insert(href.clone(), recindex);
             // Cap the LD record; the original moves to the HD container.
-            match fit_ld_image(&data) {
-                Some(fitted) => {
+            match fit_ld_image(&data, LD_DEFAULT_QUALITY) {
+                Some(fit) => {
+                    eprintln!("{}: {}", href, fit.describe(LD_DEFAULT_QUALITY));
+                    if fit.scaled_to.is_some() {
+                        scaled_count += 1;
+                    }
                     hd_originals.insert(idx, data);
-                    image_records.push(fitted);
+                    image_records.push(fit.data);
                     shrunk_count += 1;
                 }
                 None => {
@@ -651,10 +662,19 @@ fn build_book_mobi(
         );
     }
     if shrunk_count > 0 {
+        let scaled_note = match scaled_count {
+            0 => String::new(),
+            n => format!(
+                ", {} of which had to be scaled down as well because quality alone \
+                 could not get under the cap",
+                n
+            ),
+        };
         eprintln!(
-            "Re-encoded {} image(s) over {} KB so the reader can decode them; {} (issue #25)",
+            "Re-encoded {} image(s) over {} KB so the reader can decode them{}; {} (issue #25)",
             shrunk_count,
             LD_IMAGE_MAX_BYTES / 1024,
+            scaled_note,
             if hd_images {
                 "originals kept in the HD container"
             } else {
@@ -1632,14 +1652,81 @@ const JFIF_DPI: image::codecs::jpeg::PixelDensity = image::codecs::jpeg::PixelDe
     unit: image::codecs::jpeg::PixelDensityUnit::Inches,
 };
 
+/// The default quality the cap re-encodes at when the caller has no setting of
+/// its own. The book and dictionary paths take images as they find them, so
+/// there is no user-requested quality to honor there.
+pub(crate) const LD_DEFAULT_QUALITY: u8 = 85;
+
+/// The lowest quality the cap will grind an image down to before it gives up on
+/// quality and starts halving geometry instead.
+const LD_QUALITY_FLOOR: u8 = 25;
+
+/// What the 128 KB cap did to one image.
+///
+/// The point of returning this rather than bare bytes is that the caller can
+/// say so. An image silently re-encoded from quality 100 to quality 35, or
+/// silently halved to a quarter of its area, used to leave no trace anywhere in
+/// the output (issue #38).
+pub(crate) struct LdFit {
+    pub data: Vec<u8>,
+    /// The quality it actually came out at, which is not necessarily the one
+    /// that was asked for.
+    pub quality: u8,
+    /// Set only when quality alone could not get under the cap and the
+    /// geometry had to shrink too.
+    pub scaled_to: Option<(u32, u32)>,
+}
+
+impl LdFit {
+    /// A one-line description of what happened, for the caller to print next to
+    /// whatever it calls the image.
+    pub fn describe(&self, requested: u8) -> String {
+        let mut s = format!(
+            "over {} KB, re-encoded at quality {}",
+            LD_IMAGE_MAX_BYTES / 1024,
+            self.quality
+        );
+        if self.quality != requested {
+            s.push_str(&format!(" instead of {}", requested));
+        }
+        if let Some((w, h)) = self.scaled_to {
+            s.push_str(&format!(" and scaled down to {}x{}", w, h));
+        }
+        s
+    }
+}
+
+/// The quality rungs to try, highest first, for a caller that asked for
+/// `requested`.
+///
+/// The walk used to start at a hardcoded 85 no matter what, so `--jpeg-quality
+/// 100` on a page one byte over the cap dropped straight to 85 when 99 would
+/// have fit, and everything above 85 was unreachable. Starting at the requested
+/// quality fixes that; the rungs below it are unchanged, so the default of 85
+/// walks exactly as it always did.
+fn quality_ladder(requested: u8) -> Vec<u8> {
+    let requested = requested.clamp(LD_QUALITY_FLOOR, 100);
+    let mut rungs = vec![requested];
+    rungs.extend(
+        [95u8, 90, 85, 75, 65, 55, 45, 35, LD_QUALITY_FLOOR]
+            .into_iter()
+            .filter(|&q| q < requested),
+    );
+    rungs
+}
+
 /// Re-encode an oversized image so it fits `LD_IMAGE_MAX_BYTES`.
 ///
 /// Returns `None` when `data` already fits or cannot be decoded, in which case
-/// the caller keeps the original bytes. Dimensions are preserved and only JPEG
-/// quality is lowered, matching kindlegen (a 596x800 / 180 KB source comes back
-/// 596x800 / 107 KB). The full-resolution original belongs in the HD container
-/// so a high-DPI device still gets the good copy.
-pub(crate) fn fit_ld_image(data: &[u8]) -> Option<Vec<u8>> {
+/// the caller keeps the original bytes. Dimensions are preserved wherever
+/// quality alone can get under the cap, matching kindlegen (a 596x800 / 180 KB
+/// source comes back 596x800 / 107 KB). The full-resolution original belongs in
+/// the HD container so a high-DPI device still gets the good copy.
+///
+/// `requested_quality` is the quality the caller wanted, and the walk starts
+/// there rather than at a fixed rung. Pass `LD_DEFAULT_QUALITY` when there is
+/// no user setting to honor.
+pub(crate) fn fit_ld_image(data: &[u8], requested_quality: u8) -> Option<LdFit> {
     if data.len() <= LD_IMAGE_MAX_BYTES {
         return None;
     }
@@ -1660,12 +1747,16 @@ pub(crate) fn fit_ld_image(data: &[u8]) -> Option<Vec<u8>> {
         }
         other => other,
     };
-    // Walk quality down until it fits. Starting at 85 lands most photographic
-    // sources in one pass; the floor keeps a pathological source from being
-    // ground into mush.
-    for quality in [85u8, 75, 65, 55, 45, 35, 25] {
-        if let Some(buf) = encode_under_cap(&flattened, quality) {
-            return Some(buf);
+    // Walk quality down from what the caller asked for until it fits. The floor
+    // keeps a pathological source from being ground into mush.
+    let ladder = quality_ladder(requested_quality);
+    for &quality in &ladder {
+        if let Some(data) = encode_under_cap(&flattened, quality) {
+            return Some(LdFit {
+                data,
+                quality,
+                scaled_to: None,
+            });
         }
     }
     // Quality alone was not enough (very large or very noisy source). Halve
@@ -1676,9 +1767,13 @@ pub(crate) fn fit_ld_image(data: &[u8]) -> Option<Vec<u8>> {
         w /= 2;
         h /= 2;
         let scaled = flattened.resize(w, h, image::imageops::FilterType::Lanczos3);
-        for quality in [75u8, 55, 35] {
-            if let Some(buf) = encode_under_cap(&scaled, quality) {
-                return Some(buf);
+        for &quality in &ladder {
+            if let Some(data) = encode_under_cap(&scaled, quality) {
+                return Some(LdFit {
+                    data,
+                    quality,
+                    scaled_to: Some((w, h)),
+                });
             }
         }
     }

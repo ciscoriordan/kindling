@@ -37,6 +37,11 @@ scraper = "0.26"
 lightningcss = "1.0.0-alpha.71"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
+[dev-dependencies]
+# Same version the library already pulls in, so this adds no crate to the
+# build; integration tests are separate crates and cannot borrow it otherwise.
+image = "0.25"
+
 [profile.release]
 opt-level = 3
 lto = true

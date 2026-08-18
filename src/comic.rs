@@ -1046,6 +1046,7 @@ fn process_image_pipeline(
     };
 
     // Step 3-4: Process each page (enhance, resize, encode)
+    let page_count = pages.len();
     let mut results = Vec::new();
     for (page_idx, page) in pages.into_iter().enumerate() {
         let page = if options.enhance && profile.grayscale {
@@ -1075,8 +1076,29 @@ fn process_image_pipeline(
         // overshoots what the reader can decode in one record gets re-encoded
         // down: comics have no HD container to park the original in, so the
         // page has to fit or the reading app closes on it (issue #25).
+        //
+        // Say so when it happens. This used to be an `unwrap_or` that dropped
+        // the outcome on the floor, and the aggregate message on the book path
+        // can never fire for comics because the pages arrive already fitted, so
+        // a page quietly re-encoded from quality 100 down to 35, or halved to a
+        // quarter of its area, left no trace at all (issue #38).
         let jpeg_buf = encode_jpeg(&page, options.jpeg_quality)?;
-        let jpeg_buf = crate::mobi::fit_ld_image(&jpeg_buf).unwrap_or(jpeg_buf);
+        let jpeg_buf = match crate::mobi::fit_ld_image(&jpeg_buf, options.jpeg_quality) {
+            Some(fit) => {
+                let label = path
+                    .file_name()
+                    .unwrap_or(path.as_os_str())
+                    .to_string_lossy();
+                let half = if page_count > 1 {
+                    format!(" (half {})", page_idx + 1)
+                } else {
+                    String::new()
+                };
+                eprintln!("{}{}: {}", label, half, fit.describe(options.jpeg_quality));
+                fit.data
+            }
+            None => jpeg_buf,
+        };
         results.push(jpeg_buf);
     }
 
@@ -2514,6 +2536,13 @@ fn write_fixed_layout_epub_v2(
         };
         let cover_resized = resize_to_fit(cover_img, profile.width, profile.height);
         let cover_jpeg = encode_jpeg(&cover_resized, options.jpeg_quality)?;
+        let cover_jpeg = match crate::mobi::fit_ld_image(&cover_jpeg, options.jpeg_quality) {
+            Some(fit) => {
+                eprintln!("{}: {}", path.display(), fit.describe(options.jpeg_quality));
+                fit.data
+            }
+            None => cover_jpeg,
+        };
         fs::write(images_dir.join(cover_filename), &cover_jpeg)?;
         Some(cover_filename.to_string())
     } else {

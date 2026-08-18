@@ -985,38 +985,89 @@ mod tests {
 
     #[test]
     fn fit_ld_image_shrinks_only_oversized_and_keeps_dimensions() {
+        let q = mobi::LD_DEFAULT_QUALITY;
         let small = make_test_jpeg();
         assert!(
-            mobi::fit_ld_image(&small).is_none(),
+            mobi::fit_ld_image(&small, q).is_none(),
             "an image already under the cap must be passed through untouched"
         );
 
         let big = make_oversized_jpeg(16);
-        let fitted = mobi::fit_ld_image(&big).expect("oversized JPEG should be re-encoded");
+        let fitted = mobi::fit_ld_image(&big, q).expect("oversized JPEG should be re-encoded");
         assert!(
-            fitted.len() <= mobi::LD_IMAGE_MAX_BYTES,
+            fitted.data.len() <= mobi::LD_IMAGE_MAX_BYTES,
             "re-encoded image is still {} bytes",
-            fitted.len()
+            fitted.data.len()
         );
         // kindlegen lowers quality but never resizes, so a page laid out
         // against the original geometry still renders identically.
         let before = image::load_from_memory(&big).unwrap();
-        let after = image::load_from_memory(&fitted).unwrap();
+        let after = image::load_from_memory(&fitted.data).unwrap();
         assert_eq!(
             image::GenericImageView::dimensions(&before),
             image::GenericImageView::dimensions(&after),
             "re-encode must preserve dimensions"
+        );
+        assert!(
+            fitted.scaled_to.is_none(),
+            "quality alone was enough here, so nothing should report a scale-down"
         );
 
         // An incompressible page cannot fit at any quality, so geometry has to
         // give. Shipping a smaller page beats shipping a record that closes
         // the reader.
         let noisy = make_oversized_jpeg(4);
-        let squeezed = mobi::fit_ld_image(&noisy).expect("must always produce something that fits");
+        let squeezed =
+            mobi::fit_ld_image(&noisy, q).expect("must always produce something that fits");
         assert!(
-            squeezed.len() <= mobi::LD_IMAGE_MAX_BYTES,
+            squeezed.data.len() <= mobi::LD_IMAGE_MAX_BYTES,
             "noisy image is still {} bytes",
-            squeezed.len()
+            squeezed.data.len()
+        );
+        assert!(
+            squeezed.scaled_to.is_some(),
+            "a page that had to be halved must say so, not report a clean re-encode"
+        );
+    }
+
+    /// Issue #38: the quality walk was a hardcoded `[85, 75, 65, ...]` no matter
+    /// what the caller asked for, so `--jpeg-quality 100` on a page one byte
+    /// over the cap dropped straight to 85 when 99 would have fit, and nothing
+    /// above 85 was reachable at all.
+    #[test]
+    fn the_cap_starts_its_walk_at_the_quality_that_was_asked_for() {
+        // A gently oversized page: quality 95 gets it under the cap, so a walk
+        // that honors the request should stop there rather than at 85.
+        let big = make_oversized_jpeg(64);
+        let fit = mobi::fit_ld_image(&big, 100).expect("oversized JPEG should be re-encoded");
+        assert!(
+            fit.data.len() <= mobi::LD_IMAGE_MAX_BYTES,
+            "re-encoded image is still {} bytes",
+            fit.data.len()
+        );
+        assert!(
+            fit.quality > mobi::LD_DEFAULT_QUALITY,
+            "asked for 100 and got quality {}; the walk is still starting at {}",
+            fit.quality,
+            mobi::LD_DEFAULT_QUALITY
+        );
+
+        // And the request is a ceiling, not just a starting point: asking for
+        // less must not quietly encode at more.
+        let low = mobi::fit_ld_image(&big, 45).expect("oversized JPEG should be re-encoded");
+        assert!(
+            low.quality <= 45,
+            "asked for 45 and got quality {}",
+            low.quality
+        );
+
+        // The description is what the caller prints, so it has to carry both
+        // the quality that was used and the fact that it was not the one asked
+        // for.
+        let described = fit.describe(100);
+        assert!(
+            described.contains(&fit.quality.to_string()) && described.contains("100"),
+            "message should name the quality used and the one requested: {described}"
         );
     }
 
