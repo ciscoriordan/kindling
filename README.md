@@ -735,6 +735,12 @@ Thanks to the ebook-tooling community whose public documentation and reverse-eng
 
 - [Lemma](https://github.com/ciscoriordan/lemma) - Greek-English Kindle dictionary built with Kindling
 
+## Reporting bugs
+
+The [issue tracker](https://github.com/ciscoriordan/kindling/issues) is the list of what is currently wrong with kindling and what is planned. [`.github/issue-policy.md`](.github/issue-policy.md) says what gets an issue, what the labels mean, and when one gets closed. The short version: a file that reproduces the problem is worth more than a description of it, and an issue closes when the behavior is confirmed fixed on a real device, not when the code lands.
+
+Include the kindling version, the device and firmware if it is a device behavior, and whether the same thing happens with kindlegen or calibre output.
+
 ## AI policy
 
 AI-assisted contributions are welcome: issues, investigations, and pull requests drafted with AI tools are all fine, and several of this project's own features were built that way. The one hard rule is that AI-generated code must be reviewed by a human before it is submitted. Read the diff, understand what it does, and be ready to answer questions about it in review. "The model wrote it" is not a substitute for a contributor who understands their own patch.

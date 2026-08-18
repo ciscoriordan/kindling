@@ -1,0 +1,52 @@
+name: Bug report
+description: kindling produces something wrong
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please read [the issue policy](https://github.com/ciscoriordan/kindling/blob/main/.github/issue-policy.md)
+        first. It says what gets an issue and when one gets closed. Search open
+        and closed issues before filing; several questions here have already
+        been settled with device evidence.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: >
+        The exact command, and a file that reproduces it if you can attach one.
+        A file is worth more than a description.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: kindling version
+      description: Output of `kindling --version`.
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device and firmware
+      description: >
+        e.g. "Paperwhite 5, 5.19.2". Leave blank if this is not a
+        device behavior. Settings then Device Options then Device Info.
+  - type: dropdown
+    id: others
+    attributes:
+      label: Does it happen with other tools?
+      options:
+        - Haven't checked
+        - Only kindling
+        - kindlegen too
+        - calibre too
+        - Both kindlegen and calibre

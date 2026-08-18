@@ -1,0 +1,30 @@
+name: Feature request
+description: kindling does not do a thing that it should
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please read [the issue policy](https://github.com/ciscoriordan/kindling/blob/main/.github/issue-policy.md)
+        first, and search open and closed issues before filing.
+  - type: textarea
+    id: what
+    attributes:
+      label: What you want kindling to do
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: What you are doing now instead
+      description: >
+        The workaround, if you have one, and where it falls down.
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device
+      description: >
+        Which Kindle this is for, if it matters. Some requests turn on
+        hardware nobody here owns.

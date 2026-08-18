@@ -32,6 +32,16 @@ An unverified fix leaves the issue open with a note saying what needs checking.
 The closing comment says what makes it true: which device, which firmware, and
 what was observed. "Fixed in 0.29.2" is not a closing comment.
 
+Write the closing comment first, then close. If writing it turns up a caveat
+that starts "needs a device check", that is the issue telling you it is not
+ready. #40 and #41 were both closed and then given a closing comment admitting
+they were premature, minutes apart, which is how this rule got written down.
+
+There is one carve-out, and it is narrow: a defect that only appears at a scale
+nobody here can build. #32 needed a 266 MB dictionary. Close those on the
+arithmetic, say in the comment that no device was involved and why, and leave
+the door open.
+
 Close as not-planned when the answer is that kindling will not do the thing,
 and say why in enough detail that the next person does not reopen it. Issue #22
 (Korean lookup) is the model: the verdict, the evidence, and what to use
@@ -42,12 +52,18 @@ instead.
 Deliberately few, because a label nobody sets is worse than no label.
 
 - `bug` - kindling produces something wrong
+- `enhancement` - kindling does not do a thing that it should; a feature
+  request rather than a defect
 - `device-verified` - the behavior was reproduced or the fix confirmed on
   hardware, with the model and firmware in a comment
 - `needs-device-check` - a fix is believed correct but nobody has opened it on
-  a Kindle yet
+  a Kindle yet. This one means a fix exists and is waiting on hardware. Do not
+  put it on an issue with no fix in the tree; there is nothing to check.
 - `upstream` - the cause is Kindle firmware or another tool, not kindling
 - `not-planned` - closed by decision rather than by fix
+
+Nothing else is installed. GitHub's default set was removed rather than left
+sitting unused.
 
 ## Reporting
 
