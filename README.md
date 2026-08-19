@@ -633,6 +633,31 @@ The suite currently contains over 810 tests spanning unit tests in `src/tests.rs
 - **kindlegen byte/field parity tests** (`tests/kindlegen_parity.rs`): build the same inputs with `kindling-cli` and diff the output field-by-field against a committed kindlegen reference `.mobi`. Timestamp/UID fields (EXTH 112, 113, 204-207, etc.) are compared by presence only; core metadata (EXTH 100, 101, 524) must match exactly. Divergences are reported in a readable table via `cargo test -- --nocapture`.
 - **Per-language dictionary tests** (`tests/dict_languages.rs`): build a dictionary for each supported language from its `tests/fixtures/langs/<code>/` fixture and assert the INDX/MOBI language ids and locale, that every entry has a non-empty text pointer (the first-entry white-page guard), that headwords round-trip through the labels, and the per-language collation. For the generated-ORDT languages (ja, zh, ko, ar) decode every per-character label back to its headword and assert byte parity with the committed kindlegen build: the ORDT table and orth headword labels are identical for the all-literal scripts, and the literal code points plus collation order match for Japanese.
 
+### On-device checks
+
+Some things only a Kindle can answer. Issues carrying `needs-device-check` have a
+fix in the tree that nobody has watched run on hardware yet, and the tracker
+holds them open until someone has. `tests/fixtures/device/generate.py` builds a
+whole round of those checks in one go:
+
+```bash
+KINDLING=./target/release/kindling-cli python3 tests/fixtures/device/generate.py
+cp tests/fixtures/device/build/ship/*.mobi /Volumes/Kindle/documents/
+```
+
+It writes five dictionaries, five books, three comics and a probe book listing
+every word to tap. Every dictionary declares `en` to `en` and the probe
+book is tagged `en`, because the lookup popup's picker only lists dictionaries
+whose input language matches the book's language tag; that is what lets one book
+drive all five. The output is gitignored and rebuilt from source each run.
+
+These are deliberately not the repo's own fixtures. `clean_book` is a single
+432-byte page, so "it opens but won't turn pages" looks like a bug and is just a
+one-screen book, and the parity comic pages are flat color rectangles that read
+as a rendering failure on e-ink. Both wasted a device round. The fixtures here
+are built to be looked at, and each one is checked against a pre-fix binary
+first so a test that cannot fail never reaches the hardware.
+
 ### Git hooks
 
 The repo ships two optional hooks in `.githooks/` that run the CI checks before they can turn a build red. Enable them once per clone:

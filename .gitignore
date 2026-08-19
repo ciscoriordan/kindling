@@ -13,3 +13,9 @@ decompiled_*/
 # builds; these must ship too (the kindling builds and books are regenerated
 # by generate.py, so only the references are tracked).
 !tests/fixtures/langs/**/*-kindlegen.mobi
+
+# Built by tests/fixtures/device/generate.py for a hardware round.
+tests/fixtures/device/build/
+
+# Python bytecode from the device fixture generator.
+__pycache__/
