@@ -24,7 +24,7 @@ pub fn extract_epub(epub_path: &Path) -> Result<(PathBuf, PathBuf), Box<dyn std:
         .to_string_lossy()
         .to_string();
     let parent = epub_path.parent().unwrap_or(Path::new("."));
-    let temp_dir = parent.join(format!(".kindling_epub_{}", stem));
+    let temp_dir = parent.join(format!(".kindling_epub_{}_{}", stem, std::process::id()));
 
     // Clean up any previous extraction
     if temp_dir.exists() {

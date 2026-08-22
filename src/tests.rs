@@ -2686,10 +2686,11 @@ mod tests {
 
         // Verify the extraction dir was cleaned up on error.
         let stem = staged.file_stem().unwrap().to_string_lossy();
-        let leftover = staged
-            .parent()
-            .unwrap()
-            .join(format!(".kindling_cbr_{}", stem));
+        let leftover =
+            staged
+                .parent()
+                .unwrap()
+                .join(format!(".kindling_cbr_{}_{}", stem, std::process::id()));
         assert!(
             !leftover.exists(),
             "extraction dir should be removed on encryption error"
@@ -2751,10 +2752,11 @@ mod tests {
         // The sibling extraction dir should have been cleaned up by the
         // build_comic_with_options finalizer.
         let stem = staged.file_stem().unwrap().to_string_lossy();
-        let leftover = staged
-            .parent()
-            .unwrap()
-            .join(format!(".kindling_cbr_{}", stem));
+        let leftover =
+            staged
+                .parent()
+                .unwrap()
+                .join(format!(".kindling_cbr_{}_{}", stem, std::process::id()));
         assert!(
             !leftover.exists(),
             "CBR extraction dir should be cleaned up after build"

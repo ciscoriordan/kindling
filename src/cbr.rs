@@ -195,7 +195,7 @@ pub fn extract_cbr(cbr_path: &Path) -> Result<(Vec<PathBuf>, PathBuf), Box<dyn s
         .to_string_lossy()
         .into_owned();
     let parent = cbr_path.parent().unwrap_or_else(|| Path::new("."));
-    let extract_dir = parent.join(format!(".kindling_cbr_{}", stem));
+    let extract_dir = parent.join(format!(".kindling_cbr_{}_{}", stem, std::process::id()));
 
     if extract_dir.exists() {
         fs::remove_dir_all(&extract_dir)?;

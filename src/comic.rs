@@ -896,7 +896,11 @@ fn extract_cbz(cbz_path: &Path) -> Result<(Vec<PathBuf>, PathBuf), Box<dyn std::
 
     let stem = cbz_path.file_stem().unwrap_or_default().to_string_lossy();
     let parent = cbz_path.parent().unwrap_or(Path::new("."));
-    let extract_dir = parent.join(format!(".kindling_cbz_{}", stem));
+    // The process id keeps two kindling runs over the same archive from
+    // clearing each other's extraction out from under them: the directory
+    // sits next to the input, so without it every concurrent invocation on
+    // one .cbz shares a scratch dir and one of them loses its images.
+    let extract_dir = parent.join(format!(".kindling_cbz_{}_{}", stem, std::process::id()));
 
     if extract_dir.exists() {
         fs::remove_dir_all(&extract_dir)?;
@@ -2471,7 +2475,7 @@ pub fn parse_comic_info_xml(xml: &str) -> Result<ComicMetadata, Box<dyn std::err
 fn create_temp_dir(output: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let stem = output.file_stem().unwrap_or_default().to_string_lossy();
     let parent = output.parent().unwrap_or(Path::new("."));
-    let temp_dir = parent.join(format!(".kindling_comic_{}", stem));
+    let temp_dir = parent.join(format!(".kindling_comic_{}_{}", stem, std::process::id()));
 
     if temp_dir.exists() {
         fs::remove_dir_all(&temp_dir)?;
