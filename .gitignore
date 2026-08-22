@@ -14,6 +14,11 @@ decompiled_*/
 # by generate.py, so only the references are tracked).
 !tests/fixtures/langs/**/*-kindlegen.mobi
 
+# Huffdic read-path fixtures. kindling never writes HUFF/CDIC, and the macOS
+# kindlegen segfaults on -c2, so these are transcoded from the kindlegen
+# references by `cargo run --example gen_huffdic_fixture` and committed.
+!tests/fixtures/huffdic/*.mobi
+
 # Built by tests/fixtures/device/generate.py for a hardware round.
 tests/fixtures/device/build/
 

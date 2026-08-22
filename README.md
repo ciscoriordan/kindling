@@ -32,6 +32,7 @@ Pre-built binaries for Mac (Apple Silicon, Intel), Linux (x86_64), and Windows (
 - **Metadata rewrite**: `kindling rewrite-metadata` updates title, authors, publisher, description, language, ISBN, ASIN, publication date, tags, cover image, and the device content type on an existing MOBI/AZW3 in place without rebuilding from source. Byte-stable on no-op, idempotent, refuses DRM files (see [Rewrite metadata](#rewrite-metadata))
 - **Structural dump**: `kindling dump` prints the parsed structure of a MOBI/AZW3 (PalmDB, MOBI header, EXTH, INDX/ORDT tables, entry labels) as line-oriented `section.field = value` output, so two dumps can be compared with `diff` (see [Dump](#dump))
 - **Lookup simulator**: `kindling lookup <dict.mobi> <word>` reproduces the on-device dictionary search against a built MOBI (accent/case folding for Latin and Greek, literal matching for CJK/Arabic, query-side case folding for Cyrillic) and reports which stored form resolves. It is a build-side regression check, not a hardware oracle (see [Lookup simulator](#lookup-simulator))
+- **Reads huffdic (`-c2`) files**: text compressed with HUFF/CDIC (PalmDOC compression type 17480), which is what `kindlegen -c2` and every Amazon store dictionary use, is decompressed by [`src/huffcdic.rs`](src/huffcdic.rs), so `dump` reports the compression model and the bytes it decodes to instead of treating those records as opaque. kindling still writes PalmDOC only, and `-c2` in kindlegen compat mode says so (issue #49)
 - **Build-time HTML self-check**: every `build` runs a two-pass HTML balance check on the assembled MOBI text blob and on each individual PalmDB text record after splitting, catching regressions like dangling tags, `<hr/` corruption, and bold/italic state leaking across record boundaries (see [Build-time self-check](#build-time-self-check))
 - **UTF-8 and tag-safe record splitter**: text records end on HTML `<hr/>` entry boundaries where possible, otherwise back off past any unclosed `<` tag and any incomplete UTF-8 multi-byte character, so multi-byte characters are never truncated and chunks never end mid-tag
 - Drop-in *kindlegen* replacement (same CLI flags, same status codes)
@@ -379,9 +380,10 @@ kindling-cli input.epub                          # same as kindlegen
 kindling-cli input.epub -dont_append_source      # flag accepted
 kindling-cli input.epub -o output.mobi           # explicit output path
 kindling-cli input.opf  -no_validate             # skip KDP pre-flight validation
+kindling-cli input.opf  -c2                      # accepted; output is PalmDOC, see below
 ```
 
-Drop-in replacement. Same CLI syntax, same status codes (`:I1036:` on success, `:E23026:` on failure). The KDP pre-flight validator runs by default in kindlegen-compat mode too; pass `-no_validate` (or `--no-validate`) to skip it.
+Drop-in replacement. Same CLI syntax, same status codes (`:I1036:` on success, `:E23026:` on failure). The KDP pre-flight validator runs by default in kindlegen-compat mode too; pass `-no_validate` (or `--no-validate`) to skip it. `-c0`, `-c1` and `-c2` are all accepted; `-c2` asks for huffdic compression, which kindling reads but does not write, so it prints a note and produces PalmDOC output instead of failing.
 
 ### Dump
 
@@ -390,7 +392,7 @@ kindling-cli dump input.mobi      # structural dump to stdout
 kindling-cli dump input.azw3
 ```
 
-`kindling dump` prints the parsed structure of a MOBI/AZW3 file one `section.field = value` line at a time: PalmDB and MOBI header fields, every EXTH record, the INDX and ORDT2 tables, and entry labels. Text and image records are summarized by length and magic only. The line-oriented output is designed so `diff -u` between two dumps surfaces semantic differences without drowning in absolute-offset noise, which is how the kindlegen parity work is done. It is a read-only inspection tool and never writes to the input.
+`kindling dump` prints the parsed structure of a MOBI/AZW3 file one `section.field = value` line at a time: PalmDB and MOBI header fields, every EXTH record, the INDX and ORDT2 tables, and entry labels. Text and image records are summarized by length and magic only. The line-oriented output is designed so `diff -u` between two dumps surfaces semantic differences without drowning in absolute-offset noise, which is how the kindlegen parity work is done. It is a read-only inspection tool and never writes to the input. On a huffdic file the dump also names the HUFF and CDIC records, the size of the phrase dictionary, and the total number of bytes the text records decompress to, which is the line that shows the compression model was understood rather than merely detected. It flags an orth index pointer that does not name the record the index is in, since that is invisible from the record list alone.
 
 ### Lookup simulator
 
@@ -401,6 +403,8 @@ kindling-cli lookup dict.mobi rivière   # prints how the word would resolve on-
 `kindling lookup` simulates the Kindle firmware's dictionary search against a built MOBI and reports which stored form a tapped word resolves to (and its text position), or that nothing resolves. It reads the collation from the orth-index header and applies the matching normalization: accent and case folding for Latin and Greek, literal per-character matching for the generated-ORDT scripts (Japanese, Chinese, Korean, Arabic), and query-side case folding against as-stored labels for Cyrillic. So `riviere` and `RIVIÈRE` both resolve `rivière`, an all-caps `ФСБ` resolves only if a lowercase alias exists (issue #17), and the exit status is non-zero on a miss so it works as a scriptable assertion.
 
 This is a build-side regression harness, not a hardware oracle: its fidelity is bounded by our understanding of the firmware, so it catches encode-side mistakes (label sort order, a missing alias, ORDT symbol numbering) but cannot discover unknown firmware behavior. The normalization it uses is grounded in Amazon's own data (the fold table lifted from the collation blob, and the ORDT tables embedded in the file itself) rather than invented. Implementation is in [`src/lookup.rs`](src/lookup.rs).
+
+The MOBI header names the dictionary index at offset 0x18, but that pointer is verified before it is used and the index is otherwise found by its own signature, because a record number that was not adjusted for records inserted ahead of it lands on something else and every query then misses with nothing to say why (issue #49). A miss now says which kind of miss it is: an index that holds no matching headword, named along with its record and headword count, or a file that has no dictionary index at all. Notes about the file (a huffdic compression type, a recovered index pointer) go to stderr so stdout stays the single result line.
 
 ## Performance and Comparisons
 
@@ -457,7 +461,7 @@ Kindling works with the KF7/MOBI format used by Kindle e-readers. The key struct
 
 - **PalmDB header**: Database name, record count, record offsets
 - **Record 0**: PalmDOC header + MOBI header (264 bytes) + EXTH metadata + full name
-- **Text records**: PalmDOC LZ77 compressed HTML with trailing bytes (`\x00\x81`)
+- **Text records**: PalmDOC LZ77 compressed HTML with trailing bytes (`\x00\x81`). Kindling writes PalmDOC (type 2) or uncompressed (type 1), and reads HUFF/CDIC (type 17480) as well
 - **INDX records**: Orthographic index with headword entries, character mapping, and sort tables
 - **Image records**: JPEG/PNG with JFIF header patching for Kindle cover compatibility, each capped at 128 KB. The reader decodes an image record into a fixed buffer, and one over that limit closes the reading app when the page carrying it scrolls into view instead of just rendering blank (issue #25). Oversized images are re-encoded to fit at the same pixel dimensions and the untouched original moves into the HD container, which is what kindlegen does. The re-encode starts at whatever quality you asked for (`--jpeg-quality` on comics) rather than a fixed rung, and prints a line naming the image, the quality it came out at, and the new dimensions if quality alone could not get it under the cap and the geometry had to shrink too (issue #38)
 - **KF8 section**: Dual-format output with BOUNDARY record, KF8 text, FDST, skeleton/fragment/NCX indexes. The FDST table is sized to the flows the book actually has (one for a book with no stylesheet, two with CSS), never declaring a zero-length flow, and EXTH 125 carries the real resource-record count; a hardcoded 2-flow table plus a fake count made a minimal no-CSS, no-image book fail to open on device with "Unable to Open Item"
@@ -476,6 +480,7 @@ Much of the foundational MOBI format knowledge comes from the [MobileRead wiki](
 
   Kindling satisfies both constraints by emitting fixed-size 4096-byte chunks but inserting ASCII space padding at HTML inter-element gaps (between a `>` and the next `<`) so each chunk ends just past a complete tag close. The padding sits in HTML inter-element whitespace zones, which parsers collapse, so it has no rendering impact and never lands inside a text run in a way that breaks entry-position lookup: entries are anchored on the bytes they contributed to the blob, and the anchor is split at the same `><` junctions the padder uses so a padded entry still matches.
 - **Trailing bytes** (`\x00\x81`): Every text record ends with a multi-byte flag byte (`0x00`) followed by a TBS byte (`0x81`) as the very last byte. The Kindle decompressor walks backward from the end of the record, consuming the TBS byte first (bit 1 of `extra_flags`), then the multi-byte tail (bit 0); this ordering is mandatory. Earlier kindling builds wrote these bytes in reverse order and produced a white screen on device.
+- **HUFF/CDIC ("huffdic") compression**: text records compressed with a static Huffman code over a shared phrase dictionary, PalmDOC compression type 17480. One `HUFF` record carries the code tables and `huff_rec_count - 1` `CDIC` records carry the phrases; both are found through record numbers at MOBI header 0x60 and 0x64 that are relative to the section's own record 0, so the KF8 half of a dual-format file adds the boundary. kindlegen places the block after the whole index and immediately before the first image record, so the index records never move. The `HUFF` tables are a 256-entry lookup keyed by the top 8 bits of a 32-bit code window plus per-length `mincode`/`maxcode` bounds for the codes those 8 bits cannot resolve; a symbol's phrase index is `maxcode - code`, so symbols run backwards through each length's code range, and the bounds are stored pre-shifted, which overruns 32 bits at short code lengths and is why kindling computes them in `u64`. Every `CDIC` declares the *total* phrase count rather than its own, so a record contributes `min(1 << bits, total - loaded)` phrases and the last one's offset table has stale slots that must not be read. A phrase whose length word lacks the 0x8000 flag is itself a compressed bitstream and expands through the same decoder. Trailing data entries come off before decompression, exactly as for PalmDOC. Cross-checked against KindleUnpack, calibre and libmobi, and validated against a real kindlegen 2.9 huffdic file whose uncompressed twin ships beside it in libmobi's corpus (`scripts/validate_huffdic_fixtures.sh`).
 - **Inverted VWI**: Tag values use "high bit = stop" encoding (opposite of standard VWI).
 - **SRCS record**: Must have 16-byte header (`SRCS` + length + size + count), pointed to by MOBI header offset 208. Required for Kindle Previewer.
 - **Skeleton and fragment INDX (KF8)**: KF8 HTML is split into a "skeleton" per source file and one fragment per `<aid>` insert point. Skeleton entries carry a byte offset, length, and fragment count; fragment entries use a numeric decimal label (parsed as an integer) plus insert position, file number, sequence, and length.
@@ -574,6 +579,7 @@ kindling/
 │   ├── indx.rs                  # Orthographic INDX records for dictionaries (ORDT/SPL sort tables)
 │   ├── ordt.rs                  # Generated ORDT collation tables and label encoding (ja/zh/ko/ar)
 │   ├── palmdoc.rs               # PalmDOC LZ77 compression
+│   ├── huffcdic.rs              # HUFF/CDIC (huffdic) decompression, compression type 17480
 │   ├── exth.rs                  # EXTH record encoding
 │   ├── vwi.rs                   # Variable-width integer encoding
 │   ├── opf.rs                   # OPF and EPUB parsing (Method 1 and Method 2 covers)
@@ -597,6 +603,7 @@ kindling/
 │   ├── kindlegen_parity.rs      # Byte/field parity vs committed kindlegen reference .mobi files
 │   ├── dict_languages.rs        # Per-language dictionary tests (en/el/fr/ru/tr/ja/zh/ko/ar)
 │   ├── roundtrip.rs             # Structural round-trip of kindling output via inline MOBI reader
+│   ├── huffdic.rs               # HUFF/CDIC decoding and the stale index pointer of issue #49
 │   ├── stardict.rs              # StarDict bundle structure (.ifo/.idx/.dict/.syn)
 │   ├── epub_conformance.rs      # EPUB2/EPUB3 output structure and dictionary-layer checks
 │   ├── epub_tests_corpus.rs     # Opt-in w3c/epub-tests corpus harness (KINDLING_CORPUS_DIR)
@@ -627,7 +634,7 @@ The suite currently contains over 810 tests spanning unit tests in `src/tests.rs
 - **CLI smoke test**: `tests/cli.rs` builds the `kindling-cli` binary via Cargo and runs `validate` against the clean fixtures (`clean_book`, `clean_dict`) plus one error fixture per Phase 2 rule cluster (`book_with_errors`, `book_with_warnings`, `parse_encoding_errors`, `legacy_dict_errors`, `fixed_layout_errors`, `fixed_layout_missing_opf`, `cross_refs_errors`, `filename_errors`, `css_forbidden_errors`, `image_integrity_errors`, `opf_grammar_errors`), asserting exit codes and that the expected rule ids appear in stdout
 - **Comic pipeline**: Device profiles (including kpw5, scribe2025, kindle2024), spread detection and splitting, crop-before-split symmetry, margin cropping, auto-contrast, moire wiring for color devices, webtoon merge/split with overlap fallback, dark gutter detection, Panel View markup, manga RTL ordering and cover selection, JPEG quality, ComicInfo.xml parsing, EPUB image extraction
 - **Comic CLI flags**: doc-type EBOK/PDOC, title/author/language overrides, `--legacy-mobi` opt-in for legacy dual-format output
-- **Compression**: PalmDOC LZ77 compress/decompress roundtrips for various sizes and encodings
+- **Compression**: PalmDOC LZ77 compress/decompress roundtrips for various sizes and encodings, and HUFF/CDIC decoding (`tests/huffdic.rs`), where the committed huffdic fixtures must decompress byte for byte to the text of the PalmDOC dictionaries they were transcoded from, with unit coverage for truncated tables, a lone HUFF record, zero-length codes, and self-referential phrases
 - **Regression tests**: Dictionary capability marker (0x50 vs 0x4850), JFIF density patching, RTL spread cover selection, dictionary text record trailing byte order
 - **Structural round-trip tests** (`tests/roundtrip.rs`): build each of the three parity fixtures with `kindling-cli`, parse the result back with a minimal inline MOBI reader in `tests/common/mod.rs`, and assert the PalmDB header, MOBI header, EXTH, INDX / SKEL / FRAG records, and decompressed text blob have the exact shape we expect. These catch format-level regressions where libmobi would happily accept an output that does not round-trip.
 - **kindlegen byte/field parity tests** (`tests/kindlegen_parity.rs`): build the same inputs with `kindling-cli` and diff the output field-by-field against a committed kindlegen reference `.mobi`. Timestamp/UID fields (EXTH 112, 113, 204-207, etc.) are compared by presence only; core metadata (EXTH 100, 101, 524) must match exactly. Divergences are reported in a readable table via `cargo test -- --nocapture`.
@@ -703,6 +710,8 @@ The script locates kindlegen in this order:
 3. `$HOME/.local/bin/kindlegen`
 
 and aborts with a helpful error if none are found. kindlegen is no longer distributed by Amazon, but a Linux binary is still mirrored at <https://github.com/tdtds/kindlegen/raw/master/exe/kindlegen>. Drop it into `~/.local/bin/kindlegen` and the regeneration script will find it.
+
+The huffdic fixtures under `tests/fixtures/huffdic/` cannot come from kindlegen at all: the macOS kindlegen inside Kindle Previewer 3 segfaults on `-c2` for every input large enough to actually reach its huffdic path, so there is no reference build to make. They are transcoded from the committed kindlegen PalmDOC dictionaries instead, with `cargo run --example gen_huffdic_fixture`, and validated by `./scripts/validate_huffdic_fixtures.sh`, which checks them against KindleUnpack's and calibre's decoders and, more to the point, decodes a real kindlegen 2.9 huffdic file from libmobi's corpus and requires it to match the uncompressed twin that ships beside it.
 
 **Legal note.** The committed `kindlegen_reference.mobi` files are Kindle-format builds of the repo's own fixture content, produced by running kindlegen on OPF/EPUB sources that live next to them. Amazon's copyright does not extend to the OUTPUT kindlegen produces from your own content, so these files are safe to commit. What you cannot commit is the kindlegen BINARY itself; it remains Amazon-proprietary and is only required to run `scripts/regenerate_parity_fixtures.sh` when a source fixture changes.
 

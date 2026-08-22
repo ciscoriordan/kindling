@@ -14,7 +14,7 @@ use std::path::Path;
 use std::process::Command;
 
 use common::{kindling_bin, kindling_build};
-use kindling::lookup::lookup;
+use kindling::lookup::{lookup, report};
 
 fn build_ru_strict(out: &Path) {
     let opf = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/langs/ru/src/dict.opf");
@@ -113,4 +113,41 @@ fn japanese_literal_match() {
         lookup(&data, "存在しない語").is_none(),
         "non-headword misses"
     );
+}
+
+/// The simulator is used on kindling's own output all day; this is the only
+/// test that points it at kindlegen's. It also pins the index-pointer
+/// behavior from issue #49: on a well-formed dictionary the record the header
+/// names must be the record the index is in, so the recovery path stays a
+/// recovery path and does not quietly become the normal one.
+#[test]
+fn kindlegen_reference_dictionaries_resolve() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let cases: [(&str, &str); 6] = [
+        ("langs/en/en-kindlegen.mobi", "book"),
+        ("langs/fr/fr-kindlegen.mobi", "rivière"),
+        ("langs/ru/ru-kindlegen.mobi", "Москва"),
+        ("langs/el/el-kindlegen.mobi", "νερό"),
+        ("langs/ja/ja-kindlegen.mobi", "水"),
+        ("parity/simple_dict/kindlegen_reference.mobi", "alpha"),
+    ];
+    for (path, word) in cases {
+        let data = std::fs::read(root.join(path)).unwrap_or_else(|e| panic!("{path}: {e}"));
+        let r = report(&data, word);
+        assert!(
+            r.result.is_some(),
+            "{path}: {word:?} should resolve, index at {:?} with {} headwords",
+            r.index_record,
+            r.entries
+        );
+        assert_eq!(
+            r.index_record.map(|i| i as u32),
+            r.declared_index_record,
+            "{path}: the header should name the record the orth index is actually in"
+        );
+        println!(
+            "  \u{2713} {path}: {word:?} resolves via record {:?}",
+            r.index_record
+        );
+    }
 }

@@ -29,7 +29,17 @@
 //!     all-caps ФСБ needs a lowercase alias and a stressed form needs its bare
 //!     spelling (issues #8 and #17). Modeled by matching the query's lowercased
 //!     and stress-stripped forms against the labels as stored.
+//!
+//! Finding the index. The MOBI header names the orth index record at offset
+//! 0x18, but that pointer cannot be trusted on files kindling did not write:
+//! a record number that was not adjusted for records inserted ahead of it
+//! lands on something else entirely, and every query then misses with nothing
+//! to say why (issue #49). So the pointer is verified before it is used, and
+//! the index is otherwise found by its own signature (see
+//! [`orth_index_name`]). [`report`] says which record was used and what the
+//! header claimed, so a stale pointer is visible rather than silent.
 
+use crate::huffcdic::COMPRESSION_HUFFDIC;
 use crate::ordt::folded_sort_key;
 
 /// A resolved lookup: the stored label that matched and the text position its
@@ -38,6 +48,52 @@ use crate::ordt::folded_sort_key;
 pub struct LookupResult {
     pub matched_label: String,
     pub position: u32,
+}
+
+/// What the simulator found, including why a miss missed.
+///
+/// [`lookup`] answers only "did it resolve"; this carries the detail the CLI
+/// needs to tell a dictionary with no matching headword apart from a file that
+/// has no dictionary index at all, or one whose index pointer is wrong.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LookupReport {
+    /// The match, when the query resolved.
+    pub result: Option<LookupResult>,
+    /// Record number of the orth index actually used, if one was found.
+    pub index_record: Option<usize>,
+    /// Record number the MOBI header declared for the orth index. `None` when
+    /// the header says there is no dictionary (`0xFFFFFFFF`) or the file could
+    /// not be parsed.
+    pub declared_index_record: Option<u32>,
+    /// Number of headword labels the index holds.
+    pub entries: usize,
+    /// PalmDOC compression type from record 0: 1 uncompressed, 2 PalmDOC LZ77,
+    /// 17480 HUFF/CDIC.
+    pub compression: u16,
+    /// Set when the file is not a readable PalmDB at all.
+    pub unreadable: bool,
+    /// Why the HUFF/CDIC tables could not be read, on a huffdic file whose
+    /// compression model is broken. The lookup index is never compressed, so
+    /// this never explains a miss - it is here so a report on a huffdic file
+    /// can say the compression was understood, or say plainly that it was not.
+    pub huffdic_error: Option<String>,
+}
+
+impl LookupReport {
+    /// Whether the orth index sits somewhere other than where the MOBI header
+    /// says it does. True for a file whose index pointer was not adjusted for
+    /// records inserted ahead of it.
+    pub fn index_pointer_is_stale(&self) -> bool {
+        match (self.index_record, self.declared_index_record) {
+            (Some(used), Some(declared)) => used as u32 != declared,
+            _ => false,
+        }
+    }
+
+    /// Whether the text records use HUFF/CDIC compression.
+    pub fn is_huffdic(&self) -> bool {
+        self.compression == COMPRESSION_HUFFDIC
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +110,8 @@ enum Collation {
 struct OrthIndex {
     entries: Vec<(String, u32)>, // (decoded label, text position)
     collation: Collation,
+    /// PalmDB record number the primary INDX was read from.
+    record: usize,
 }
 
 fn u16_be(d: &[u8], o: usize) -> Option<u16> {
@@ -140,21 +198,115 @@ fn read_vwi_inv(entry: &[u8], mut pos: usize) -> Option<u32> {
     None
 }
 
+/// Index encoding declared by an orth primary INDX header (0xFDEA). Weaker
+/// than [`orth_index_name`] as a signature - kindling stamps it on all three
+/// of the primaries it writes for one dictionary - so it is only the fallback.
+const ORTH_INDEX_ENCODING: u32 = 65002;
+
+/// The index name in an orth primary INDX header, if the record is one.
+///
+/// Every INDX header is 192 bytes and TAGX starts right after it, except the
+/// orth primary, which carries its index name (`default`, from
+/// `<idx:entry name="default">`) in between and declares a header length past
+/// 192 to cover it. Measured across every committed kindlegen and kindling
+/// dictionary, that is exactly one record per file, and nothing at all in a
+/// book or a comic - which matters, because a kindling comic's orth index
+/// field points at a fragment INDX that parses into a handful of mojibake
+/// entries if it is taken at face value.
+fn orth_index_name(rec: &[u8]) -> Option<&[u8]> {
+    if rec.get(0..4) != Some(b"INDX".as_slice()) {
+        return None;
+    }
+    let header_len = u32_be(rec, 4)? as usize;
+    // index type at 8, generation at 12: an orth primary is type 0 and the
+    // primary rather than one of its data records.
+    if u32_be(rec, 8)? != 0 || u32_be(rec, 12)? != 0 {
+        return None;
+    }
+    if header_len <= 192 || header_len > rec.len() {
+        return None;
+    }
+    let name = &rec[192..header_len];
+    name.iter().all(|b| b.is_ascii_graphic()).then_some(name)
+}
+
+/// Whether record `idx` at least declares the orth index encoding. The loose
+/// test, for a dictionary whose primary header carries no index name.
+fn declares_orth_encoding(data: &[u8], recs: &[(usize, usize)], idx: usize) -> bool {
+    let (s, e) = match recs.get(idx) {
+        Some(r) => *r,
+        None => return false,
+    };
+    let rec = &data[s..e];
+    rec.get(0..4) == Some(b"INDX".as_slice())
+        && u32_be(rec, 12) == Some(0)
+        && u32_be(rec, 28) == Some(ORTH_INDEX_ENCODING)
+}
+
+/// Locate the orth primary INDX.
+///
+/// Prefers the record the MOBI header names, but only once it has been
+/// confirmed to be one. Otherwise takes the record that looks like one:
+/// preferring the `default` index the firmware searches, then the index with
+/// the most entries, since a dictionary can carry several.
+fn find_orth_primary(data: &[u8], recs: &[(usize, usize)], declared: Option<u32>) -> Option<usize> {
+    let named: Vec<usize> = (0..recs.len())
+        .filter(|&i| {
+            let (s, e) = recs[i];
+            orth_index_name(&data[s..e]).is_some()
+        })
+        .collect();
+    let pick = |candidates: &[usize]| -> Option<usize> {
+        if let Some(d) = declared {
+            if candidates.contains(&(d as usize)) {
+                return Some(d as usize);
+            }
+        }
+        candidates.iter().copied().max_by_key(|&i| {
+            let (s, e) = recs[i];
+            let rec = &data[s..e];
+            let is_default = orth_index_name(rec) == Some(b"default".as_slice());
+            // Total entry count at header offset 36. `Reverse(i)` breaks a tie
+            // toward the earlier record, so the choice does not depend on
+            // iteration order.
+            (
+                is_default,
+                u32_be(rec, 36).unwrap_or(0),
+                std::cmp::Reverse(i),
+            )
+        })
+    };
+    if !named.is_empty() {
+        return pick(&named);
+    }
+    let encoded: Vec<usize> = (0..recs.len())
+        .filter(|&i| declares_orth_encoding(data, recs, i))
+        .collect();
+    pick(&encoded)
+}
+
+/// PalmDB record number of the dictionary's orth primary INDX, found the way
+/// [`lookup`] finds it: the record the MOBI header names when that record
+/// really is one, and otherwise the record that looks like one.
+///
+/// Returns `None` for a file with no dictionary index at all.
+pub fn orth_index_record(mobi: &[u8]) -> Option<usize> {
+    let recs = palmdb_records(mobi)?;
+    let (r0s, r0e) = *recs.first()?;
+    let declared = u32_be(&mobi[r0s..r0e], 40).filter(|&v| v != u32::MAX);
+    find_orth_primary(mobi, &recs, declared)
+}
+
 /// Parse the orth index of a dictionary MOBI: decode every label and its text
 /// position, and determine the collation the firmware would apply.
 fn parse_orth_index(data: &[u8]) -> Option<OrthIndex> {
     let recs = palmdb_records(data)?;
     let (r0s, r0e) = *recs.first()?;
     let rec0 = &data[r0s..r0e];
-    let orth_idx = u32_be(rec0, 40)? as usize;
-    if orth_idx >= recs.len() {
-        return None;
-    }
+    let declared = u32_be(rec0, 40).filter(|&v| v != u32::MAX);
+    let orth_idx = find_orth_primary(data, &recs, declared)?;
     let (ps, pe) = recs[orth_idx];
     let primary = &data[ps..pe];
-    if primary.get(0..4)? != b"INDX".as_slice() {
-        return None;
-    }
 
     let num_data = u32_be(primary, 24)? as usize;
     let spl_count = u32_be(primary, 56).unwrap_or(0);
@@ -194,15 +346,24 @@ fn parse_orth_index(data: &[u8]) -> Option<OrthIndex> {
         if rec.get(0..4) != Some(b"INDX".as_slice()) {
             continue;
         }
-        let idxt_off = u32_be(rec, 20)? as usize;
-        let count = u32_be(rec, 24)? as usize;
+        // A truncated leaf costs its own entries and no more. These used to
+        // be `?`, which threw away every label in the dictionary because one
+        // record ran short.
+        let (idxt_off, count) = match (u32_be(rec, 20), u32_be(rec, 24)) {
+            (Some(o), Some(c)) => (o as usize, c as usize),
+            _ => continue,
+        };
         if rec.get(idxt_off..idxt_off + 4) != Some(b"IDXT".as_slice()) {
             continue;
         }
         let mut offs: Vec<usize> = Vec::with_capacity(count + 1);
         for i in 0..count {
-            offs.push(u16_be(rec, idxt_off + 4 + i * 2)? as usize);
+            match u16_be(rec, idxt_off + 4 + i * 2) {
+                Some(o) => offs.push(o as usize),
+                None => break,
+            }
         }
+        let count = offs.len();
         offs.push(idxt_off);
         for i in 0..count {
             let (a, b) = (offs[i], offs[i + 1]);
@@ -241,7 +402,11 @@ fn parse_orth_index(data: &[u8]) -> Option<OrthIndex> {
         Collation::Plain
     };
 
-    Some(OrthIndex { entries, collation })
+    Some(OrthIndex {
+        entries,
+        collation,
+        record: orth_idx,
+    })
 }
 
 fn is_latin_label(label: &str) -> bool {
@@ -264,7 +429,56 @@ fn fold_key(s: &str) -> String {
 /// Resolve `query` against the dictionary in `mobi`, returning the matched
 /// label and its text position, or `None` if the firmware would find nothing.
 pub fn lookup(mobi: &[u8], query: &str) -> Option<LookupResult> {
-    let index = parse_orth_index(mobi)?;
+    report(mobi, query).result
+}
+
+/// Resolve `query` and report what the file looked like while doing it.
+///
+/// A miss is not one thing: the file may hold no dictionary index, or hold one
+/// that simply has no matching headword. The CLI needs to say which, so this
+/// returns both the outcome and the shape of the file behind it.
+pub fn report(mobi: &[u8], query: &str) -> LookupReport {
+    let mut out = LookupReport {
+        result: None,
+        index_record: None,
+        declared_index_record: None,
+        entries: 0,
+        compression: 0,
+        unreadable: false,
+        huffdic_error: None,
+    };
+
+    let recs = match palmdb_records(mobi) {
+        Some(r) if !r.is_empty() => r,
+        _ => {
+            out.unreadable = true;
+            return out;
+        }
+    };
+    let (r0s, r0e) = recs[0];
+    let rec0 = &mobi[r0s..r0e];
+    out.compression = u16_be(rec0, 0).unwrap_or(0);
+    out.declared_index_record = u32_be(rec0, 40).filter(|&v| v != u32::MAX);
+
+    if out.compression == COMPRESSION_HUFFDIC {
+        let records: Vec<&[u8]> = recs.iter().map(|&(s, e)| &mobi[s..e]).collect();
+        if let Err(e) = crate::huffcdic::Huffdic::load(&records, 0) {
+            out.huffdic_error = Some(e.to_string());
+        }
+    }
+
+    let index = match parse_orth_index(mobi) {
+        Some(i) => i,
+        None => return out,
+    };
+    out.index_record = Some(index.record);
+    out.entries = index.entries.len();
+    out.result = resolve(&index, query);
+    out
+}
+
+/// Match `query` against the decoded labels using the index's collation.
+fn resolve(index: &OrthIndex, query: &str) -> Option<LookupResult> {
     match index.collation {
         Collation::Fold => {
             let qk = fold_key(query);

@@ -137,6 +137,84 @@ fn parse_palmdb(data: &[u8]) -> io::Result<PalmDb> {
     })
 }
 
+/// Report on the HUFF/CDIC model of a huffdic section: whether the tables
+/// load, how many phrases they hold, and whether the text records they cover
+/// decompress to the length record 0 declares.
+///
+/// kindling never writes huffdic, so this only ever runs on files built
+/// elsewhere - `kindlegen -c2` output and Amazon's own store dictionaries
+/// (issue #49). Reporting the decoded length is the point: it is the one line
+/// that proves the model was understood rather than merely parsed.
+fn dump_huffdic(out: &mut String, label: &str, data: &[u8], palmdb: &PalmDb, section_start: usize) {
+    let record0 = match palmdb.record(data, section_start) {
+        Some(r) => r,
+        None => return,
+    };
+    if read_u16_be(record0, 0) != Some(crate::huffcdic::COMPRESSION_HUFFDIC) {
+        return;
+    }
+    let huff_index = read_u32_be(record0, 112).unwrap_or(0);
+    let huff_count = read_u32_be(record0, 116).unwrap_or(0);
+    let _ = writeln!(
+        out,
+        "{}.huffdic.huff_record = {}",
+        label,
+        section_start as u32 + huff_index
+    );
+    let _ = writeln!(
+        out,
+        "{}.huffdic.cdic_records = {}",
+        label,
+        huff_count.saturating_sub(1)
+    );
+
+    let records: Vec<&[u8]> = (0..palmdb.num_records)
+        .map(|i| palmdb.record(data, i).unwrap_or(&[]))
+        .collect();
+    let model = match crate::huffcdic::Huffdic::from_records(
+        &records,
+        section_start,
+        huff_index,
+        huff_count,
+    ) {
+        Ok(m) => m,
+        Err(e) => {
+            let _ = writeln!(
+                out,
+                "{}.huffdic.error = {}",
+                label,
+                quote_str(&e.to_string())
+            );
+            return;
+        }
+    };
+    let _ = writeln!(out, "{}.huffdic.phrases = {}", label, model.phrase_count());
+
+    let text_records = read_u16_be(record0, 8).unwrap_or(0) as usize;
+    let extra_flags = read_u32_be(record0, 240).unwrap_or(0);
+    let mut decoded = 0usize;
+    for i in 1..=text_records {
+        let raw = match palmdb.record(data, section_start + i) {
+            Some(r) => r,
+            None => break,
+        };
+        let body = crate::huffcdic::text_body(raw, extra_flags);
+        match model.decompress(body) {
+            Ok(bytes) => decoded += bytes.len(),
+            Err(e) => {
+                let _ = writeln!(
+                    out,
+                    "{}.huffdic.error = {}",
+                    label,
+                    quote_str(&format!("text record {i}: {e}"))
+                );
+                return;
+            }
+        }
+    }
+    let _ = writeln!(out, "{}.huffdic.text_bytes = {}", label, decoded);
+}
+
 fn dump_palmdb_header(out: &mut String, data: &[u8], palmdb: &PalmDb) {
     // PalmDB name is a 32-byte null-terminated field.
     let name_end = data[..32].iter().position(|&b| b == 0).unwrap_or(32);
@@ -204,6 +282,16 @@ fn dump_mobi_section(
     let encryption = read_u16_be(record0, 12).unwrap_or(0);
 
     let _ = writeln!(out, "palmdoc.compression = {}", compression);
+    let _ = writeln!(
+        out,
+        "palmdoc.compression_name = {}",
+        quote_str(match compression {
+            1 => "none",
+            2 => "palmdoc",
+            crate::huffcdic::COMPRESSION_HUFFDIC => "huffdic",
+            _ => "unknown",
+        })
+    );
     let _ = writeln!(out, "palmdoc.text_length = {}", text_length);
     let _ = writeln!(out, "palmdoc.text_record_count = {}", text_record_count);
     let _ = writeln!(out, "palmdoc.text_record_size = {}", text_record_size);
@@ -1216,6 +1304,26 @@ pub fn dump_mobi(path: &Path) -> io::Result<String> {
     // MOBI section 0 (always present: KF7 or KF8-only).
     let rec0 = palmdb.record(&data, 0).unwrap_or(&[]);
     let kf7 = dump_mobi_section(&mut out, "section0", rec0, 0);
+    dump_huffdic(&mut out, "section0", &data, &palmdb, 0);
+
+    // A dictionary whose orth index pointer was not adjusted for records
+    // inserted ahead of it looks, to anything that trusts the pointer, like a
+    // dictionary with no matching headwords (issue #49). Say so where it is
+    // visible rather than leaving it to be inferred from the record list.
+    if let Some(found) = crate::lookup::orth_index_record(&data) {
+        let declared = read_u32_be(rec0, 40).unwrap_or(u32::MAX);
+        if declared != found as u32 {
+            let _ = writeln!(
+                &mut out,
+                "section0.orth_index_mismatch = {}",
+                quote_str(&format!(
+                    "header names record {}, orth primary INDX is at record {}",
+                    opt_record_idx(declared),
+                    found
+                ))
+            );
+        }
+    }
 
     // KF8 section if EXTH 121 boundary is set in the KF7 header.
     if let Some(kf7) = kf7.as_ref() {
@@ -1227,6 +1335,7 @@ pub fn dump_mobi(path: &Path) -> io::Result<String> {
                     let _ = writeln!(&mut out, "kf8.boundary_record = {}", boundary);
                     if let Some(kf8_rec0) = palmdb.record(&data, boundary) {
                         dump_mobi_section(&mut out, "section_kf8", kf8_rec0, boundary);
+                        dump_huffdic(&mut out, "section_kf8", &data, &palmdb, boundary);
                     }
                 }
             }

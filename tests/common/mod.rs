@@ -477,6 +477,20 @@ pub fn parse_mobi_file(data: &[u8]) -> Result<ParsedMobi, String> {
 /// compress_text_palmdoc().
 pub fn extract_text_blob(parsed: &ParsedMobi, section: &MobiSection) -> Vec<u8> {
     let mut blob = Vec::new();
+    // kindling only writes PalmDOC, but reference files from other tools may
+    // be huffdic (`kindlegen -c2`), so load the HUFF/CDIC model when the
+    // header calls for one. See issue #49.
+    let huffdic = if section.header.compression == kindling::huffcdic::COMPRESSION_HUFFDIC {
+        let records: Vec<&[u8]> = (0..parsed.palmdb.num_records)
+            .map(|i| parsed.palmdb.record(&parsed.raw, i))
+            .collect();
+        match kindling::huffcdic::Huffdic::load(&records, section.record_idx) {
+            Ok(model) => model,
+            Err(e) => panic!("huffdic tables unreadable: {e}"),
+        }
+    } else {
+        None
+    };
     // Both KF7 and KF8 records carry multibyte (bit 0) + TBS (bit 1)
     // trailing regions; kindling writes extra_record_flags = 3 for both.
     // The backward-varint loop below strips the TBS region by its own
@@ -523,8 +537,12 @@ pub fn extract_text_blob(parsed: &ParsedMobi, section: &MobiSection) -> Vec<u8> 
             palmdoc_decompress(&raw[..end])
         } else if section.header.compression == 1 {
             raw[..end].to_vec()
+        } else if let Some(model) = huffdic.as_ref() {
+            model
+                .decompress(&raw[..end])
+                .unwrap_or_else(|e| panic!("text record {rec_idx}: {e}"))
         } else {
-            // HUFF/CDIC (17480) — not used by kindling. Give up gracefully.
+            // Some other compression type entirely. Give up gracefully.
             return blob;
         };
         blob.extend_from_slice(&decompressed);
@@ -532,27 +550,35 @@ pub fn extract_text_blob(parsed: &ParsedMobi, section: &MobiSection) -> Vec<u8> 
     blob
 }
 
-/// Read a trailing-region size varint from the end of `buf`, walking
-/// backwards. MOBI encodes these with 7 bits per byte; the LAST byte of the
-/// encoded value (which is the first byte we see when reading backwards) has
-/// its high bit set, earlier bytes have the high bit clear. The returned
-/// value is the total size of the trailing region in bytes INCLUDING the
-/// varint itself.
+/// Read a trailing-region size varint that ends at the end of `buf`.
+///
+/// 7 bits per byte, most significant byte FIRST, and it is the first byte that
+/// carries the high-bit marker, not the last: `81 20` is `(1 << 7) | 0x20` =
+/// 160, not 4097. So the read walks backwards only to find where the varint
+/// starts, and accumulates forwards from there. Doing it the other way round
+/// reverses the significance of the bytes, which is invisible while every
+/// region is short enough to encode in one byte and then silently declines to
+/// strip anything the moment one is not (a 160-byte TBS region reads as 4097,
+/// fails the sanity check, and the whole region gets decompressed as text).
+/// Matches `getSizeOfTrailingDataEntry` in KindleUnpack and
+/// `mobi_get_record_extrasize` in libmobi, both of which scan the last four
+/// bytes forwards and reset at each high-bit byte.
+///
+/// The returned value is the total size of the trailing region in bytes
+/// INCLUDING the varint itself.
 fn read_backward_varint(buf: &[u8]) -> (usize, usize) {
-    let mut value: usize = 0;
-    let mut bytes = 0;
-    for i in (0..buf.len()).rev() {
-        let b = buf[i];
-        bytes += 1;
-        value = (value << 7) | (b & 0x7F) as usize;
-        if b & 0x80 != 0 {
-            break;
-        }
-        if bytes > 4 {
+    let mut start = buf.len();
+    while start > 0 && buf.len() - start < 4 {
+        start -= 1;
+        if buf[start] & 0x80 != 0 {
             break;
         }
     }
-    (bytes, value)
+    let mut value: usize = 0;
+    for &b in &buf[start..] {
+        value = (value << 7) | (b & 0x7F) as usize;
+    }
+    (buf.len() - start, value)
 }
 
 // ---------------------------------------------------------------------------

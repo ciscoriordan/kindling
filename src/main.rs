@@ -691,7 +691,18 @@ fn parse_kindlegen_args() -> (PathBuf, Option<String>, bool, bool, bool, bool) {
                 // Silently ignore -locale <value>
                 i += 2;
             }
-            "-dont_append_source" | "-c0" | "-c1" | "-c2" | "-verbose" => {
+            "-c2" => {
+                // kindling reads HUFF/CDIC but does not write it, so this is
+                // one of the ignored flags that is worth saying out loud: the
+                // output is PalmDOC and a little larger than kindlegen's
+                // would have been. See issue #49 and src/huffcdic.rs.
+                eprintln!(
+                    "note: -c2 asks for HUFF/CDIC compression, which kindling reads but does \
+                     not write. The output is PalmDOC compressed (-c1); nothing else changes."
+                );
+                i += 1;
+            }
+            "-dont_append_source" | "-c0" | "-c1" | "-verbose" => {
                 // Silently ignore these flags
                 i += 1;
             }
@@ -1503,7 +1514,45 @@ fn do_lookup(input: &PathBuf, word: &str) {
             std::process::exit(1);
         }
     };
-    match kindling::lookup::lookup(&data, word) {
+    let report = kindling::lookup::report(&data, word);
+
+    if report.unreadable {
+        eprintln!(
+            "error: {} is not a MOBI/AZW3 file (no readable PalmDB record list)",
+            input.display()
+        );
+        std::process::exit(1);
+    }
+
+    // Notes go to stderr so stdout stays exactly one result line and the
+    // subcommand keeps working as the scriptable assertion the README
+    // documents.
+    //
+    // Say so on a huffdic file. kindling never writes HUFF/CDIC, so anyone
+    // looking one up built it elsewhere (`kindlegen -c2`, or an Amazon store
+    // dictionary) and deserves to know the compression was understood rather
+    // than being left to guess it was the reason for a miss (issue #49).
+    if report.is_huffdic() {
+        eprintln!(
+            "note: text records use HUFF/CDIC compression (kindlegen -c2). The lookup index is \
+             not compressed, so this does not affect the result."
+        );
+    }
+    if let Some(why) = &report.huffdic_error {
+        eprintln!("note: the HUFF/CDIC tables in this file could not be read: {why}");
+    }
+    // A record number that was not adjusted for records inserted ahead of it
+    // is the one failure that looks exactly like an absent headword.
+    if report.index_pointer_is_stale() {
+        eprintln!(
+            "note: the MOBI header names record {} for the dictionary index, but the orth index \
+             is at record {}. Using the index that is there.",
+            report.declared_index_record.unwrap_or(0),
+            report.index_record.unwrap_or(0)
+        );
+    }
+
+    match report.result {
         Some(res) => {
             if res.matched_label == word {
                 println!(
@@ -1518,7 +1567,20 @@ fn do_lookup(input: &PathBuf, word: &str) {
             }
         }
         None => {
-            println!("{word:?} does not resolve in {}", input.display());
+            match report.index_record {
+                Some(rec) => println!(
+                    "{word:?} does not resolve in {}: the orth index at record {rec} holds {} \
+                     headwords and none of them match.",
+                    input.display(),
+                    report.entries
+                ),
+                None => println!(
+                    "{word:?} does not resolve in {}: the file has no dictionary index, so \
+                     nothing can. It is a book rather than a dictionary, or its orth INDX is \
+                     unreadable.",
+                    input.display()
+                ),
+            }
             std::process::exit(1);
         }
     }

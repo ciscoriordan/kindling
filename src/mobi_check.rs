@@ -892,6 +892,25 @@ pub fn check_mobi_file(
         if !has_indx {
             report.warn("dictionary MOBI has no INDX section; lookups will fail".to_string());
         }
+        // The orth index pointer has to name the record the index is actually
+        // in. A pointer left behind by records inserted ahead of it is the
+        // whole of issue #49: every lookup misses and the file looks like a
+        // dictionary with no headwords in it.
+        let declared = palmdb
+            .record(&data, 0)
+            .and_then(|r0| read_u32_be(r0, 40))
+            .filter(|&v| v != u32::MAX);
+        match (declared, crate::lookup::orth_index_record(&data)) {
+            (Some(d), Some(found)) if d as usize != found => report.warn(format!(
+                "MOBI header names record {d} for the orth index but the index is at record \
+                 {found}; on-device lookup will find nothing"
+            )),
+            (None, Some(found)) => report.warn(format!(
+                "orth index is at record {found} but the MOBI header does not name it; \
+                 on-device lookup will find nothing"
+            )),
+            _ => {}
+        }
     }
 
     // Structural record magic sanity. Walks every PalmDB record once and
