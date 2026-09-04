@@ -414,6 +414,43 @@ def build_dict_e(root):
     return d, "dict-e.opf"
 
 
+def build_dict_f(root):
+    """Popup scroll-through check for the <hr/> -> <hr/><mbp:pagebreak/> fix.
+
+    The first entry is long enough to force scrolling, and the neighbour's
+    bold headword is the first thing after the separator — exactly the reach
+    a bare <hr/> boundary gives the popup, so the check fails pre-fix.
+    """
+    d = os.path.join(root, "src", "dict-f")
+    os.makedirs(d, exist_ok=True)
+    paras = [
+        "<p>Look up <b>zbleedfirst</b> in the probe book, then scroll this "
+        "definition to its very bottom.</p>",
+    ]
+    for i in range(1, 7):
+        paras.append(f"<p>Filler paragraph {i} of zbleedfirst. It is here only to push "
+                     f"this entry past one popup screen, because the scroll-through only "
+                     f"shows while scrolling a definition that does not fit.</p>")
+    paras.append("<p>LAST LINE OF zbleedfirst. Any word, rule or paragraph readable "
+                 "below this line is the next entry bleeding into the popup.</p>")
+    entries = [
+        entry("zbleedfirst", "".join(paras)),
+        entry("zbleedsecond", "<p>zbleedsecond is a different entry. Seeing this text, or "
+                              "this bold headword, while looking up zbleedfirst is the "
+                              "failure.</p>"),
+    ]
+    entries += filler_entries()
+    open(os.path.join(d, "content.html"), "w", encoding="utf-8").write(
+        dict_html(entries, title="KD-F popup boundary"))
+    open(os.path.join(d, "dict-f.opf"), "w", encoding="utf-8").write(
+        dict_opf("KD-F popup boundary", ["content.html"], uid="kindling-device-f"))
+    write_common(d, "KD-F popup boundary",
+                 "Look up zbleedfirst and scroll to the bottom. The LAST LINE paragraph "
+                 "must be the end of the popup; zbleedsecond appearing below it is the "
+                 "scroll-through bug (bare <hr/> entry separators).", uid="kindling-device-f")
+    return d, "dict-f.opf"
+
+
 # --------------------------------------------------------------------------
 # books
 # --------------------------------------------------------------------------
@@ -604,7 +641,8 @@ def main():
 
     print("dictionaries")
     for builder, flags in ((build_dict_a, []), (build_dict_b, []), (build_dict_c, []),
-                           (build_dict_d, []), (build_dict_e, ["--no-kindle-limits"])):
+                           (build_dict_d, []), (build_dict_e, ["--no-kindle-limits"]),
+                           (build_dict_f, [])):
         d, opf = builder(out)
         stem = os.path.basename(d)
         target = os.path.join(ship, f"{stem}.mobi")

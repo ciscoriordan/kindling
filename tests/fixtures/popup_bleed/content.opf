@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookId" version="2.0">
+<metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
+<dc:title>Popup bleed repro</dc:title>
+<dc:language>en</dc:language>
+<dc:identifier id="BookId">popup-bleed-repro</dc:identifier>
+<meta name="cover" content="cover-image"/>
+<x-metadata>
+<DictionaryInLanguage>en</DictionaryInLanguage>
+<DictionaryOutLanguage>en</DictionaryOutLanguage>
+<DefaultLookupIndex>default</DefaultLookupIndex>
+</x-metadata>
+</metadata>
+<manifest>
+<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+<item id="cover-image" href="cover.jpg" media-type="image/jpeg" properties="cover-image"/>
+<item id="c1" href="content.xhtml" media-type="application/xhtml+xml"/>
+</manifest>
+<spine toc="ncx">
+<itemref idref="c1"/>
+</spine>
+<guide>
+<reference type="index" title="Index" href="content.xhtml"/>
+</guide>
+</package>
