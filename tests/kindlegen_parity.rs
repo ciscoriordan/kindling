@@ -273,6 +273,61 @@ fn parity_simple_dict() {
     }
 }
 
+/// The popup ends its page box only at `<mbp:pagebreak/>`, so a bare `<hr/>`
+/// separator lets it scroll into the next entry. The tests above compare
+/// metadata only; this one watches the text — every `<hr/>` must be followed
+/// by a page break, as kindlegen's per-entry breaks are.
+#[test]
+fn parity_simple_dict_inter_entry_pagebreaks() {
+    let kindling = kindling_build_parsed("simple_dict", "simple_dict.opf", "mobi");
+    let kindlegen = load_reference("simple_dict");
+
+    let k_text = extract_text_blob(&kindling, &kindling.kf7);
+    let g_text = extract_text_blob(&kindlegen, &kindlegen.kf7);
+
+    let breaks = |t: &[u8]| t.windows(16).filter(|w| w == b"<mbp:pagebreak/>").count();
+    let hrs = |t: &[u8]| t.windows(5).filter(|w| w == b"<hr/>").count();
+    let k_breaks = breaks(&k_text);
+    let g_breaks = breaks(&g_text);
+    let k_hrs = hrs(&k_text);
+
+    let mut diff = Diff::default();
+
+    // 5-entry fixture: kindlegen breaks at all 4 inter-entry boundaries (plus
+    // whatever it emits after the last entry).
+    if g_breaks < 4 {
+        diff.push(format!(
+            "kindlegen reference lost its page breaks ({g_breaks} < 4); regenerate the fixture"
+        ));
+    }
+    if k_breaks < k_hrs {
+        diff.push(format!(
+            "kindling emits {k_hrs} <hr/> separators but only {k_breaks} page breaks \
+             (kindlegen: {g_breaks}) — a bare <hr/> boundary scrolls the popup \
+             into the next entry on device"
+        ));
+    }
+    let mut bare = 0;
+    for i in 0..k_text.len().saturating_sub(20) {
+        if &k_text[i..i + 5] == b"<hr/>" && &k_text[i + 5..i + 21] != b"<mbp:pagebreak/>" {
+            bare += 1;
+            if bare <= 3 {
+                diff.push(format!("bare <hr/> separator at byte {i}"));
+            }
+        }
+    }
+    if bare > 3 {
+        diff.push(format!("...and {} more bare <hr/> separators", bare - 3));
+    }
+
+    if !diff.is_empty() {
+        panic!(
+            "{}",
+            diff.into_error("parity_simple_dict_inter_entry_pagebreaks:")
+        );
+    }
+}
+
 #[test]
 fn parity_simple_book() {
     let kindling = kindling_build_parsed("simple_book", "simple_book.opf", "mobi");

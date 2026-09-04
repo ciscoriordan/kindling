@@ -2588,7 +2588,14 @@ fn strip_idx_markup(html: &str) -> String {
         result = std::borrow::Cow::Owned(entry_open.replace_all(&result, "").to_string());
     }
     if result.contains("</idx:entry>") {
-        result = std::borrow::Cow::Owned(entry_close.replace_all(&result, "<hr/>").to_string());
+        // End the entry with a real page break. The lookup popup's page box
+        // only closes at <mbp:pagebreak/> — a bare <hr/> is just a visual
+        // rule, so the popup can scroll into the next article. kindlegen
+        // breaks every entry boundary this way. The <hr/> scanners still
+        // match their token first, so spans and chunk alignment are unchanged.
+        result = std::borrow::Cow::Owned(
+            entry_close.replace_all(&result, "<hr/><mbp:pagebreak/>").to_string(),
+        );
     }
 
     // Number ordered-list items with `value="N"` so list markers render in the
@@ -3157,6 +3164,27 @@ mod record_split_tests {
             !out.contains("type="),
             "no <ol type> attribute is emitted: {out}"
         );
+    }
+
+    #[test]
+    fn entry_close_appends_pagebreak_after_hr() {
+        // A bare <hr/> between entries lets the popup scroll into the next
+        // article; every </idx:entry> must close with hr + pagebreak.
+        let out = strip_idx_markup(
+            "<idx:entry><idx:orth value=\"alpha\"><h5>alpha</h5></idx:orth><p>first</p></idx:entry>\
+             <idx:entry><idx:orth value=\"bravo\"><h5>bravo</h5></idx:orth><p>second</p></idx:entry>",
+        );
+        assert_eq!(
+            out.matches("<hr/><mbp:pagebreak/>").count(),
+            2,
+            "every </idx:entry> closes with hr+pagebreak: {out}"
+        );
+        for (i, _) in out.match_indices("<hr/>") {
+            assert!(
+                out[i + 5..].starts_with("<mbp:pagebreak/>"),
+                "bare <hr/> separator at byte {i}: {out}"
+            );
+        }
     }
 
     #[test]
