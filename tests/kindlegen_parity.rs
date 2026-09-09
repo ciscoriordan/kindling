@@ -170,8 +170,15 @@ fn load_reference(fixture: &str) -> ParsedMobi {
 /// Build a fixture with `kindling-cli build` into a scratch tempdir and
 /// return the parsed output. Used for dict and book fixtures.
 fn kindling_build_parsed(fixture: &str, opf_name: &str, ext: &str) -> ParsedMobi {
+    kindling_build_parsed_in("kindling_parity", fixture, opf_name, ext)
+}
+
+/// Same, under a caller-chosen tempdir root. Tests run in parallel and each
+/// build wipes its directory first, so two tests building the same fixture
+/// must not share one.
+fn kindling_build_parsed_in(root: &str, fixture: &str, opf_name: &str, ext: &str) -> ParsedMobi {
     let opf = parity_fixture(fixture).join(opf_name);
-    let tmp = std::env::temp_dir().join("kindling_parity").join(fixture);
+    let tmp = std::env::temp_dir().join(root).join(fixture);
     let _ = fs::remove_dir_all(&tmp);
     fs::create_dir_all(&tmp).unwrap();
     let out = tmp.join(format!("out.{ext}"));
@@ -269,6 +276,93 @@ fn parity_simple_dict() {
         eprintln!(
             "{}",
             diff.into_error("parity_simple_dict: diffs against kindlegen reference:")
+        );
+    }
+}
+
+/// Every `<hr/>` separator must be followed by `<mbp:pagebreak/>`: a bare rule
+/// lets the lookup popup scroll into the next entry (PR #52). The simple_dict
+/// source carries a page break after each entry, which kindlegen keeps and
+/// kindling used to drop along with everything else outside `<idx:entry>`
+/// (issue #42). The tests above compare metadata only, which is why this
+/// divergence was invisible.
+#[test]
+fn parity_simple_dict_inter_entry_pagebreaks() {
+    let kindling = kindling_build_parsed_in(
+        "kindling_parity_text",
+        "simple_dict",
+        "simple_dict.opf",
+        "mobi",
+    );
+    let kindlegen = load_reference("simple_dict");
+
+    let k_text = extract_text_blob(&kindling, &kindling.kf7);
+    let g_text = extract_text_blob(&kindlegen, &kindlegen.kf7);
+
+    let breaks = |t: &[u8]| t.windows(16).filter(|w| w == b"<mbp:pagebreak/>").count();
+    let hrs = |t: &[u8]| t.windows(5).filter(|w| w == b"<hr/>").count();
+    let k_breaks = breaks(&k_text);
+    let g_breaks = breaks(&g_text);
+    let k_hrs = hrs(&k_text);
+
+    let mut diff = Diff::default();
+
+    // The simple_dict source carries <mbp:pagebreak/> after each of its 5
+    // entries and kindlegen keeps them (plus its own trailing one), so fewer
+    // than 4 in the reference means the source or the reference changed.
+    if g_breaks < 4 {
+        diff.push(format!(
+            "kindlegen reference has only {g_breaks} page breaks (< 4): \
+             tests/fixtures/parity/simple_dict/content.html lost its inter-entry \
+             <mbp:pagebreak/> lines; regenerate both"
+        ));
+    }
+    if k_breaks < k_hrs {
+        diff.push(format!(
+            "kindling emits {k_hrs} <hr/> separators but only {k_breaks} page breaks \
+             (kindlegen: {g_breaks}) — a bare <hr/> boundary scrolls the popup \
+             into the next entry on device"
+        ));
+    }
+    // One page break per entry plus the one the body tail always carries.
+    // kindling's count is not compared to kindlegen's, because kindlegen only
+    // keeps the source's breaks and this fixture happens to carry them.
+    if k_breaks != k_hrs + 1 {
+        diff.push(format!(
+            "kindling emits {k_breaks} page breaks for {k_hrs} entries; expected one \
+             per entry plus the body tail"
+        ));
+    }
+    // Every <hr/> must be followed by <mbp:pagebreak/>. Spaces in between are
+    // allowed: pad_text_for_chunking fills the last gap between two tags of a
+    // record with spaces, and on a multi-record build that gap can be this
+    // one. An <hr/> directly followed by another <hr/> is an entry's own rule
+    // before the separator, and the separator is judged on its own.
+    let mut bare = 0;
+    let mut pos = 0;
+    while let Some(off) = k_text[pos..].windows(5).position(|w| w == b"<hr/>") {
+        let hr = pos + off;
+        let mut after = hr + 5;
+        while k_text.get(after) == Some(&b' ') {
+            after += 1;
+        }
+        let rest = &k_text[after..];
+        if !rest.starts_with(b"<mbp:pagebreak/>") && !rest.starts_with(b"<hr/>") {
+            bare += 1;
+            if bare <= 3 {
+                diff.push(format!("bare <hr/> separator at byte {hr}"));
+            }
+        }
+        pos = hr + 5;
+    }
+    if bare > 3 {
+        diff.push(format!("...and {} more bare <hr/> separators", bare - 3));
+    }
+
+    if !diff.is_empty() {
+        panic!(
+            "{}",
+            diff.into_error("parity_simple_dict_inter_entry_pagebreaks:")
         );
     }
 }

@@ -2231,9 +2231,12 @@ fn build_text_content_by_letter(
     // Join front matter with pagebreaks
     let fm_body = front_matter_sections.join("<mbp:pagebreak/>");
 
-    // Join dictionary sections with pagebreaks, wrapped in <mbp:frameset> if the
-    // source dictionary HTML used one (required for Kindle dictionary rendering)
-    let dict_body = dict_sections.join("<mbp:pagebreak/>");
+    // Every section already ends with the page break strip_idx_markup writes
+    // after its last entry, so the sections are concatenated as they are; a
+    // join separator would put two breaks in a row at every 30 MB seam. The
+    // result is wrapped in <mbp:frameset> if the source dictionary HTML used
+    // one (required for Kindle dictionary rendering).
+    let dict_body = dict_sections.concat();
     let dict_body = if has_frameset {
         format!("<mbp:frameset>{}</mbp:frameset>", dict_body)
     } else {
@@ -2588,7 +2591,22 @@ fn strip_idx_markup(html: &str) -> String {
         result = std::borrow::Cow::Owned(entry_open.replace_all(&result, "").to_string());
     }
     if result.contains("</idx:entry>") {
-        result = std::borrow::Cow::Owned(entry_close.replace_all(&result, "<hr/>").to_string());
+        // Close the entry with a horizontal rule and a page break. The rule is
+        // what the Kindle Publishing Guidelines ask for between entries, and
+        // entry_span / is_entry_boundary key on it. The page break is what
+        // Amazon's own dictionaries put between entries; without it the lookup
+        // popup can scroll past the end of the matched entry into the next one
+        // (PR #52). A source that already carries a page break after
+        // </idx:entry> loses it, because nothing outside <idx:entry> survives
+        // (issue #42), so it is added unconditionally here. kindlegen does not
+        // add one on its own, it only keeps the source's. The scanners that
+        // look for <hr/> match it before the page break, so entry spans and
+        // record chunking are unchanged.
+        result = std::borrow::Cow::Owned(
+            entry_close
+                .replace_all(&result, "<hr/><mbp:pagebreak/>")
+                .to_string(),
+        );
     }
 
     // Number ordered-list items with `value="N"` so list markers render in the
@@ -3157,6 +3175,48 @@ mod record_split_tests {
             !out.contains("type="),
             "no <ol type> attribute is emitted: {out}"
         );
+    }
+
+    #[test]
+    fn entry_close_appends_pagebreak_after_hr() {
+        // A bare <hr/> between entries lets the popup scroll into the next
+        // article; every </idx:entry> must close with hr + pagebreak.
+        let out = strip_idx_markup(
+            "<idx:entry><idx:orth value=\"alpha\"><h5>alpha</h5></idx:orth><p>first</p></idx:entry>\
+             <idx:entry><idx:orth value=\"bravo\"><h5>bravo</h5></idx:orth><p>second</p></idx:entry>",
+        );
+        assert_eq!(
+            out.matches("<hr/><mbp:pagebreak/>").count(),
+            2,
+            "every </idx:entry> closes with hr+pagebreak: {out}"
+        );
+        for (i, _) in out.match_indices("<hr/>") {
+            assert!(
+                out[i + 5..].starts_with("<mbp:pagebreak/>"),
+                "bare <hr/> separator at byte {i}: {out}"
+            );
+        }
+    }
+
+    #[test]
+    fn entry_boundary_accepts_padded_hr_pagebreak_junction() {
+        // A headword now follows <hr/><mbp:pagebreak/> rather than a bare
+        // <hr/>, and pad_text_for_chunking can leave a run of spaces between
+        // the page break and the headword when a record ends there. Both
+        // shapes must count as an entry boundary; a <b> inside a paragraph
+        // must not.
+        let filler = "<p>x</p>".repeat(40);
+        let tight = format!("{filler}<hr/><mbp:pagebreak/><b>next</b>");
+        let padded = format!("{filler}<hr/><mbp:pagebreak/>        <b>next</b>");
+        let inline = format!("{filler}<p>see <b>next</b></p>");
+        for (text, expect) in [(&tight, true), (&padded, true), (&inline, false)] {
+            let at = text.rfind("<b>").unwrap();
+            assert_eq!(
+                is_entry_boundary(text.as_bytes(), at),
+                expect,
+                "is_entry_boundary at byte {at} of {text:?}"
+            );
+        }
     }
 
     #[test]

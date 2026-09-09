@@ -5969,12 +5969,12 @@ mod tests {
 
         // Verify separators appear between entries, not entries running together
         assert!(
-            text.contains("a small animal<hr/>"),
-            "Entry content should be followed by <hr/> separator"
+            text.contains("a small animal<hr/><mbp:pagebreak/>"),
+            "Entry content should be followed by <hr/><mbp:pagebreak/>"
         );
         assert!(
-            text.contains("a loyal animal<hr/>"),
-            "Entry content should be followed by <hr/> separator"
+            text.contains("a loyal animal<hr/><mbp:pagebreak/>"),
+            "Entry content should be followed by <hr/><mbp:pagebreak/>"
         );
         println!(
             "  \u{2713} <hr/> separators present between dictionary entries ({} found)",

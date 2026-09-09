@@ -34,7 +34,7 @@ Pre-built binaries for Mac (Apple Silicon, Intel), Linux (x86_64), and Windows (
 - **Lookup simulator**: `kindling lookup <dict.mobi> <word>` reproduces the on-device dictionary search against a built MOBI (accent/case folding for Latin and Greek, literal matching for CJK/Arabic, query-side case folding for Cyrillic) and reports which stored form resolves. It is a build-side regression check, not a hardware oracle (see [Lookup simulator](#lookup-simulator))
 - **Reads huffdic (`-c2`) files**: text compressed with HUFF/CDIC (PalmDOC compression type 17480), which is what `kindlegen -c2` and every Amazon store dictionary use, is decompressed by [`src/huffcdic.rs`](src/huffcdic.rs), so `dump` reports the compression model and the bytes it decodes to instead of treating those records as opaque. kindling still writes PalmDOC only, and `-c2` in kindlegen compat mode says so (issue #49)
 - **Build-time HTML self-check**: every `build` runs a two-pass HTML balance check on the assembled MOBI text blob and on each individual PalmDB text record after splitting, catching regressions like dangling tags, `<hr/` corruption, and bold/italic state leaking across record boundaries (see [Build-time self-check](#build-time-self-check))
-- **UTF-8 and tag-safe record splitter**: text records end on HTML `<hr/>` entry boundaries where possible, otherwise back off past any unclosed `<` tag and any incomplete UTF-8 multi-byte character, so multi-byte characters are never truncated and chunks never end mid-tag
+- **UTF-8 and tag-safe record splitter**: every text record is exactly the declared record size, which the firmware relies on to route popup lookups, and the bytes that would otherwise straddle a record end are pushed into the next record by padding the last gap between two tags with spaces, so no record ends inside a multi-byte character or a tag
 - Drop-in *kindlegen* replacement (same CLI flags, same status codes)
 - Kindle Previewer compatible (EPUB source embedded by default)
 - Usable as both a CLI (`kindling-cli`) and a Rust library crate (`kindling`) with a public API for external consumers (see `src/lib.rs`)
@@ -122,6 +122,8 @@ The input OPF must reference HTML files with `<idx:entry>`, `<idx:orth>`, and `<
 A dictionary's CSS is picked up from every dictionary file, whether it sits in an inline `<style>` block or an external `<link rel="stylesheet">`, and rules whose selectors carry an escaped colon (`idx\:orth`) are emitted last, because the Kindle popup's CSS parser discards everything after one (issue #39). Note that `class=` attributes are stripped from entry HTML, deliberately, so class selectors never match a dictionary entry however the sheet arrives.
 
 An entry's headword may be an attribute (`<idx:orth value="word"/>`) or the element's own text (`<idx:orth>word</idx:orth>`), and the entry body may be shaped however you like. kindling locates each entry by the bytes it contributed to the text blob, so an entry whose body never repeats its own headword, or wraps it in `<p>`/`<h1>`/`<span>` rather than `<b>`, still gets a correct lookup span. Before 0.32.0 only `<b>`- or `<big>`-wrapped headwords at the very start of an entry were found; anything else was stored as a zero-length span and popped up blank on device, and each miss cost a scan of the whole blob, which made large builds quadratic (issue #27).
+
+Every entry closes with a horizontal rule, which the guidelines ask for, and a page break, which is what Amazon's own dictionaries put between entries. Without the page break the lookup popup was reported to scroll past the end of the matched entry into the next one (pull request #52); the same change means that when the dictionary is opened as a book, each entry starts on its own page. kindling adds the page break itself, so a source whose entries are separated only by `<hr/>` (which is what PyGlossary writes) gets it too; kindlegen only keeps a page break the source already has.
 
 Headwords may be wrapped in either `<b>` or `<big>`. PyGlossary picks the wrapper by writing system and uses `<big>` for Hangul, CJK, Devanagari, Armenian, Bengali, Burmese and Greek, so dictionaries built through it (including reader.dict's) rely on the `<big>` path (issue #22).
 
@@ -652,11 +654,11 @@ KINDLING=./target/release/kindling-cli python3 tests/fixtures/device/generate.py
 cp tests/fixtures/device/build/ship/*.mobi /Volumes/Kindle/documents/
 ```
 
-It writes five dictionaries, five books, three comics and a probe book listing
+It writes six dictionaries, five books, three comics and a probe book listing
 every word to tap. Every dictionary declares `en` to `en` and the probe
 book is tagged `en`, because the lookup popup's picker only lists dictionaries
 whose input language matches the book's language tag; that is what lets one book
-drive all five. The output is gitignored and rebuilt from source each run.
+drive all six. The output is gitignored and rebuilt from source each run.
 
 These are deliberately not the repo's own fixtures. `clean_book` is a single
 432-byte page, so "it opens but won't turn pages" looks like a bug and is just a
