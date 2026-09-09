@@ -2586,8 +2586,8 @@ fn strip_idx_markup(html: &str) -> String {
     }
 
     if result.contains("<idx:entry") {
-        // Remove idx:entry open tags but keep inner content;
-        // replace close tags with <hr/> to visually separate entries
+        // Remove idx:entry open tags but keep inner content; the close tag
+        // is handled below.
         result = std::borrow::Cow::Owned(entry_open.replace_all(&result, "").to_string());
     }
     if result.contains("</idx:entry>") {
@@ -2979,33 +2979,20 @@ fn pad_text_for_chunking(text: &[u8], chunk_size: usize) -> Vec<u8> {
     padded
 }
 
-/// Split `text_bytes` into chunk ranges of at most `chunk_size` bytes,
-/// choosing end positions that keep each chunk well-formed enough to be
-/// decoded independently by Kindle. Returns the start..end byte offsets
-/// for each chunk.
+/// Split `text_bytes` into consecutive ranges of exactly `chunk_size` bytes
+/// (only the last one is shorter). Returns the start..end byte offsets for
+/// each chunk.
 ///
 /// Kindle readers concatenate decoded records back into a single byte
-/// stream, but each record is also decoded independently for HTML
-/// parsing and pagination. A chunk boundary landing inside:
-///
-///   - a multi-byte UTF-8 character - leaves an orphan lead byte that
-///     renders as tofu;
-///   - an HTML tag like `<b>` - leaves a truncated tag that corrupts
-///     HTML state for the rest of the record;
-///   - an HTML tag pair like `<b>...</b>` - leaves the opener in one
-///     record with no closer, causing bold/italic/paragraph state to
-///     leak for the rest of the record.
-///
-/// Split point preferences, in order:
-///   1. Just after `<hr/>` - a lemma dictionary places one between
-///      every entry, so aligning to it guarantees no tag pair straddles
-///      a record boundary. Only used when it gives at least half the
-///      chunk of forward progress, to avoid tiny chunks when the only
-///      `<hr/>` in range is near the start.
-///   2. Just before an unclosed `<` - so no chunk ends inside an HTML
-///      tag. Tag pairs may still straddle (giving bold/italic leak),
-///      but this is strictly better than leaving a truncated tag.
-///   3. A UTF-8 character boundary - so no chunk ends mid-character.
+/// stream, but each record is also decoded independently for HTML parsing
+/// and pagination, so a record that ends inside a multi-byte UTF-8 character
+/// or inside a tag corrupts that record. Keeping records well formed is the
+/// job of `pad_text_for_chunking`, which runs first and moves the last gap
+/// between two tags of every record onto the boundary with space padding.
+/// This function never backs off: the firmware routes popup lookups by
+/// `byte_offset / text_record_size`, so every record must be exactly
+/// `chunk_size` bytes (see the body comment). An earlier version preferred
+/// to end records just after `<hr/>`; that alignment is gone.
 fn split_on_utf8_boundaries(text_bytes: &[u8], chunk_size: usize) -> Vec<(usize, usize)> {
     // Kindle firmware uses `byte_offset / text_record_size` (4096) to
     // compute which PalmDOC record contains a given decompressed byte.
