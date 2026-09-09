@@ -415,7 +415,7 @@ def build_dict_e(root):
 
 
 def build_dict_f(root):
-    """Popup scroll-through check for the <hr/> -> <hr/><mbp:pagebreak/> fix.
+    """#53 popup scroll-through: the <hr/> -> <hr/><mbp:pagebreak/> fix.
 
     The first entry is long enough to force scrolling, and the neighbor's
     bold headword is the first thing after the separator — exactly the reach
@@ -562,7 +562,7 @@ def probe_book(root):
                 "Switch to KD-E first. Each of these must show its numbered body text. "
                 "A popup that opens but is blank is the bug.",
                 NOLIMIT_WORDS),
-        section(5, "5. Popup boundary, in KD-F (pull request 52)",
+        section(5, "5. Popup boundary, in KD-F (issue 53)",
                 "Switch to KD-F. Look up zbleedfirst and scroll the popup to its very "
                 "bottom. The LAST LINE paragraph must be the end of the popup. Seeing "
                 "zbleedsecond, its bold headword, or anything else below that line is "
