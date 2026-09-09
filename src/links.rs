@@ -42,8 +42,10 @@ const EXTERNAL_SCHEMES: [&str; 8] = [
 /// Where a link points, once resolved against the document holding it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Resolution {
-    /// Points outside the book. Leave the href exactly as it is.
-    External,
+    /// Leave the href exactly as it is. Either it points outside the book,
+    /// or it names no destination at all, as `href=""` does. Overwriting an
+    /// empty one would report a link the author never wrote as broken.
+    Leave,
     /// Points at a document kindling put in the text stream. `file` is that
     /// document's position in spine order; `fragment` is `None` for a
     /// whole-document link.
@@ -51,9 +53,9 @@ pub(crate) enum Resolution {
         file: usize,
         fragment: Option<String>,
     },
-    /// Names a document that is not in the spine, or is empty. kindlegen
-    /// reports these as "Hyperlink not resolved" and writes a dead link of
-    /// the same width; kindling does the same.
+    /// Names a document that is not in the spine. kindlegen reports these
+    /// as "Hyperlink not resolved" and writes a dead link of the same
+    /// width; kindling does the same.
     Unresolved,
 }
 
@@ -174,24 +176,18 @@ pub(crate) fn resolve(
     documents: &HashMap<String, usize>,
 ) -> Resolution {
     let href = href.trim();
-    if href.is_empty() {
-        return Resolution::Unresolved;
-    }
-    if is_external_href(href) {
-        return Resolution::External;
+    if href.is_empty() || is_external_href(href) {
+        return Resolution::Leave;
     }
     let (path, fragment) = split_href(href);
     let fragment = fragment.map(percent_decode);
 
-    // A bare `#frag` stays in the document that wrote it.
+    // A bare `#frag` stays in the document that wrote it, and a bare `#`
+    // means the top of that document, which is where kindlegen sends it.
     if path.is_empty() {
-        return match fragment {
-            Some(f) => Resolution::Internal {
-                file: self_index,
-                fragment: Some(f),
-            },
-            // `href="#"` points nowhere in particular.
-            None => Resolution::Unresolved,
+        return Resolution::Internal {
+            file: self_index,
+            fragment,
         };
     }
 
@@ -464,6 +460,35 @@ pub(crate) fn scan_anchors(html: &str) -> Vec<Anchor> {
     out
 }
 
+/// Collect the ids declared on a document's wrapper elements.
+///
+/// A link to one of these is a link to the document itself, because that is
+/// all a `<body id>` can mean, and it is how such a link behaves in a
+/// browser. Neither Kindle format has a byte to point at for the wrapper
+/// itself — MOBI6 drops the tags when it merges, KF8 leaves the body tag on
+/// the skeleton rather than in the fragment — so the writers resolve these
+/// to the start of the document's content instead of killing the link.
+///
+/// This is what kindlegen does in KF8. In MOBI6 kindlegen gives up and
+/// reports the link as unresolved; kindling resolves it there too, because
+/// the destination is not in doubt.
+pub(crate) fn scan_document_anchors(html: &str) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    for_each_tag(html, |tag, attrs| {
+        if !NON_TARGET_TAGS.contains(&tag.name.as_str()) {
+            return;
+        }
+        for attr in ["id", "name"] {
+            if let Some((_, _, value)) = find_attr(attrs, attr) {
+                if !value.is_empty() {
+                    out.insert(value);
+                }
+            }
+        }
+    });
+    out
+}
+
 /// Collect every `href` attribute on an `<a>` element in `html`, as byte
 /// ranges into `html`.
 ///
@@ -572,11 +597,7 @@ mod tests {
             "tel:+15550100",
             "kindle:pos:fid:0001:off:0000000000",
         ] {
-            assert_eq!(
-                resolve("a.xhtml", 0, href, &d),
-                Resolution::External,
-                "{href}"
-            );
+            assert_eq!(resolve("a.xhtml", 0, href, &d), Resolution::Leave, "{href}");
         }
     }
 
@@ -587,8 +608,43 @@ mod tests {
             resolve("Text/a.xhtml", 0, "missing.xhtml#x", &d),
             Resolution::Unresolved
         );
-        assert_eq!(resolve("Text/a.xhtml", 0, "#", &d), Resolution::Unresolved);
-        assert_eq!(resolve("Text/a.xhtml", 0, "", &d), Resolution::Unresolved);
+    }
+
+    #[test]
+    fn sends_a_bare_hash_to_the_top_of_its_own_document() {
+        // kindlegen resolves `href="#"` to the start of the document that
+        // wrote it, in both formats. Treating it as broken both kills a
+        // working link and inflates the unresolved count.
+        let d = docs(&["Text/a.xhtml", "Text/b.xhtml"]);
+        assert_eq!(
+            resolve("Text/b.xhtml", 1, "#", &d),
+            Resolution::Internal {
+                file: 1,
+                fragment: None
+            }
+        );
+    }
+
+    #[test]
+    fn leaves_an_empty_href_alone() {
+        // `href=""` names no destination. Overwriting it reports a link the
+        // author never wrote as broken.
+        let d = docs(&["Text/a.xhtml"]);
+        assert_eq!(resolve("Text/a.xhtml", 0, "", &d), Resolution::Leave);
+        assert_eq!(resolve("Text/a.xhtml", 0, "   ", &d), Resolution::Leave);
+    }
+
+    #[test]
+    fn finds_ids_on_the_wrapper_elements() {
+        let html = r#"<html id="h"><head></head><body id="b"><p id="real">x</p></body></html>"#;
+        let w = scan_document_anchors(html);
+        assert!(w.contains("b"), "{w:?}");
+        assert!(w.contains("h"), "{w:?}");
+        assert!(!w.contains("real"), "{w:?}");
+        // And the two scans do not overlap: a wrapper id is never also a
+        // byte offset, which is what makes the fallback unambiguous.
+        let names: Vec<String> = scan_anchors(html).into_iter().map(|a| a.name).collect();
+        assert_eq!(names, vec!["real"]);
     }
 
     #[test]

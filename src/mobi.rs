@@ -2086,6 +2086,10 @@ fn build_text_content(
 
     let mut body_contents: Vec<String> = Vec::new();
     let mut body_anchors: Vec<Vec<links::Anchor>> = Vec::new();
+    // Ids on each document's `<html>`/`<body>` wrappers, which the merge
+    // throws away. A link to one of those means the document itself, so it
+    // resolves to where the document starts rather than to nothing.
+    let mut wrapper_anchors: Vec<std::collections::HashSet<String>> = Vec::new();
     let mut body_links: Vec<Vec<PendingFilepos>> = Vec::new();
     let mut first_head: Option<String> = None;
 
@@ -2107,6 +2111,7 @@ fn build_text_content(
                 first_head = Some(cap.get(0).unwrap().as_str().to_string());
             }
         }
+        wrapper_anchors.push(links::scan_document_anchors(&cleaned));
         let body = match body_re.captures(&cleaned) {
             Some(cap) => cap.get(1).unwrap().as_str().trim().to_string(),
             None => cleaned.clone(),
@@ -2156,7 +2161,13 @@ fn build_text_content(
                 Some((file, Some(fragment))) => anchor_offsets
                     .get(*file)
                     .and_then(|m| m.get(fragment.as_str()))
-                    .copied(),
+                    .copied()
+                    .or_else(|| {
+                        wrapper_anchors
+                            .get(*file)
+                            .filter(|w| w.contains(fragment.as_str()))
+                            .map(|_| doc_start[*file])
+                    }),
                 None => None,
             };
             let at = doc_start[i] + link.digits;
@@ -2200,7 +2211,7 @@ fn replace_hrefs_with_filepos(
     let mut cursor = 0usize;
     for href in &hrefs {
         let resolution = links::resolve(doc_href, self_index, &href.value, documents);
-        if resolution == links::Resolution::External {
+        if resolution == links::Resolution::Leave {
             continue;
         }
         out.push_str(&body[cursor..href.start]);

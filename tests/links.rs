@@ -152,14 +152,51 @@ fn legacy_mobi_rewrites_every_internal_link_to_a_filepos() {
         .collect();
     assert_eq!(
         remaining,
-        vec![r#"<a href="https://example.org/""#],
-        "only the external link should keep an href"
+        vec![r#"<a href="https://example.org/""#, "<a href=\"\""],
+        "only the external link and the empty one should keep an href"
     );
 
-    // Four cross-document fragment links, two same-document ones, one
-    // whole-document link, and the two the fixture makes unresolvable.
+    // Four cross-document fragment links, three same-document ones, one
+    // whole-document link, one to another document's body id, and the two
+    // the fixture makes unresolvable. The empty href is not among them.
     let links = kf7_links(&blob);
-    assert_eq!(links.len(), 9, "expected nine rewritten links: {links:?}");
+    assert_eq!(
+        links.len(),
+        11,
+        "expected eleven rewritten links: {links:?}"
+    );
+}
+
+#[test]
+fn legacy_mobi_sends_a_document_link_to_the_start_of_that_document() {
+    let parsed = build_footnote_fixture(true, "documentlinks");
+    let kf7 = &parsed.kf7;
+    let blob = String::from_utf8(extract_text_blob(&parsed, kf7)).unwrap();
+    let links = kf7_links(&blob);
+
+    let target = |label: &str| -> usize {
+        links
+            .iter()
+            .find(|l| l.label == label)
+            .unwrap_or_else(|| panic!("no link labelled {label:?}"))
+            .target
+            .unwrap_or_else(|| panic!("{label:?} did not resolve"))
+    };
+
+    // A fragment naming a document's `<body id>` is a link to the document.
+    // The wrapper tags do not survive the merge, so there is no element to
+    // point at, and killing the link loses a destination that is not in
+    // doubt. It lands where the whole-document link lands.
+    assert_eq!(
+        target("CH2_TO_CH1_BODY"),
+        target("CH2_TO_CH1_WHOLE"),
+        "a link to ch1's body id should reach ch1"
+    );
+
+    // `href="#"` is the top of the document that wrote it, which is what
+    // kindlegen does. Chapter two's own heading is what it must reach.
+    let at = target("CH2_BARE_HASH");
+    assert_eq!(element_text(&blob, at).trim(), "CH2_HEADING");
 }
 
 #[test]

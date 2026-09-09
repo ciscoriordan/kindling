@@ -562,6 +562,10 @@ fn build_kf8_html(
     // what a `kindle:pos` offset means; `pending_links` holds absolute
     // positions in `combined` where those offsets get written.
     let mut fragment_anchors: Vec<std::collections::HashMap<String, usize>> = Vec::new();
+    // Ids on each document's wrapper elements, which live on the skeleton
+    // rather than in the fragment. A link to one means the document itself,
+    // so it resolves to offset zero, which is what kindlegen writes.
+    let mut wrapper_anchors: Vec<std::collections::HashSet<String>> = Vec::new();
     let mut pending_links: Vec<(usize, (usize, Option<String>))> = Vec::new();
     let mut unresolved = 0usize;
 
@@ -641,6 +645,7 @@ fn build_kf8_html(
                 .map(|a| (a.name, a.offset))
                 .collect(),
         );
+        wrapper_anchors.push(links::scan_document_anchors(&split.skeleton));
         let body_end = split.body_inner_offset + split.body_inner.len();
         for link in pending {
             // A position in `processed` falls in the skeleton's head, in
@@ -688,7 +693,15 @@ fn build_kf8_html(
             Some(name) => fragment_anchors
                 .get(file)
                 .and_then(|m| m.get(name))
-                .copied(),
+                .copied()
+                // A link to a document's own `<body id>` is a link to the
+                // document, and offset zero is where its content starts.
+                .or_else(|| {
+                    wrapper_anchors
+                        .get(file)
+                        .filter(|w| w.contains(name.as_str()))
+                        .map(|_| 0)
+                }),
         };
         match offset {
             Some(offset) => {
@@ -1114,7 +1127,7 @@ fn replace_hrefs_with_kindle_pos(
     let mut cursor = 0usize;
     for href in &hrefs {
         match links::resolve(doc_href, self_index, &href.value, documents) {
-            links::Resolution::External => continue,
+            links::Resolution::Leave => continue,
             links::Resolution::Internal { file, fragment } => {
                 out.push_str(&html[cursor..href.start]);
                 out.push_str("href=\"");
