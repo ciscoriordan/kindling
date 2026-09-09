@@ -343,18 +343,34 @@ impl OPFData {
         Ok(())
     }
 
+    /// Resolve one spine href to a file on disk.
+    ///
+    /// A manifest href is a URL, so a document whose filename contains a
+    /// space is written `my%20chapter.xhtml` while the file itself is named
+    /// `my chapter.xhtml`. Joining the raw href finds nothing, and a spine
+    /// document that is not found is dropped from the book: the chapter
+    /// vanishes with no warning. The raw form is tried first so a filename
+    /// that really does contain a percent sign still works.
+    fn spine_file(&self, href: &str) -> Option<PathBuf> {
+        let raw = self.base_dir.join(href);
+        if raw.exists() {
+            return Some(raw);
+        }
+        let decoded = crate::links::percent_decode(href);
+        if decoded != href {
+            let path = self.base_dir.join(&decoded);
+            if path.exists() {
+                return Some(path);
+            }
+        }
+        None
+    }
+
     /// Return full paths to HTML content files in spine order.
     pub fn get_content_html_paths(&self) -> Vec<PathBuf> {
         self.spine_items
             .iter()
-            .filter_map(|(_, href)| {
-                let full_path = self.base_dir.join(href);
-                if full_path.exists() {
-                    Some(full_path)
-                } else {
-                    None
-                }
-            })
+            .filter_map(|(_, href)| self.spine_file(href))
             .collect()
     }
 
@@ -367,13 +383,7 @@ impl OPFData {
     pub fn get_content_html_hrefs(&self) -> Vec<String> {
         self.spine_items
             .iter()
-            .filter_map(|(_, href)| {
-                if self.base_dir.join(href).exists() {
-                    Some(href.clone())
-                } else {
-                    None
-                }
-            })
+            .filter_map(|(_, href)| self.spine_file(href).map(|_| href.clone()))
             .collect()
     }
 
@@ -940,6 +950,48 @@ mod tests {
         }
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn finds_a_spine_document_whose_href_is_percent_encoded() {
+        // A manifest href is a URL, so a file named `my chapter.xhtml` is
+        // written `my%20chapter.xhtml`. Joining the raw href finds nothing,
+        // and a spine document that is not found is dropped from the book
+        // with no warning, taking the whole chapter with it.
+        let d = temp_dir("pct_spine");
+        fs::write(d.join("plain.xhtml"), "<html><body>a</body></html>").unwrap();
+        fs::write(d.join("my chapter.xhtml"), "<html><body>b</body></html>").unwrap();
+        fs::write(
+            d.join("book.opf"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf" unique-identifier="B">
+ <metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>T</dc:title>
+ <dc:language>en</dc:language><dc:identifier id="B">u</dc:identifier></metadata>
+ <manifest>
+  <item id="a" href="plain.xhtml" media-type="application/xhtml+xml"/>
+  <item id="b" href="my%20chapter.xhtml" media-type="application/xhtml+xml"/>
+ </manifest>
+ <spine><itemref idref="a"/><itemref idref="b"/></spine>
+</package>"#,
+        )
+        .unwrap();
+
+        let opf = OPFData::parse(&d.join("book.opf")).expect("parse");
+        let paths = opf.get_content_html_paths();
+        assert_eq!(
+            paths.len(),
+            2,
+            "the encoded document was dropped: {paths:?}"
+        );
+        assert!(paths[1].ends_with("my chapter.xhtml"), "{paths:?}");
+
+        // The two listings have to stay index-aligned, because position `i`
+        // in the href list is the KF8 fragment id of the `i`-th document.
+        let hrefs = opf.get_content_html_hrefs();
+        assert_eq!(hrefs.len(), paths.len());
+        assert_eq!(hrefs[1], "my%20chapter.xhtml");
+
+        fs::remove_dir_all(&d).ok();
     }
 
     #[test]
