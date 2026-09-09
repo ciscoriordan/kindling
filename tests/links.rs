@@ -82,13 +82,22 @@ fn decode_base32(s: &str) -> usize {
     })
 }
 
-/// Text of the `<a>` element carrying `link` — the fixture labels every
-/// link, so a failure names the link that went wrong.
-fn link_label(blob: &str, at: usize) -> String {
+/// The immediate text content of the element whose `<` is at `at`: the bytes
+/// between that tag's `>` and the next `<`.
+///
+/// Every assertion below is written against this rather than a window of the
+/// blob, because a window wide enough to hold an element is also wide enough
+/// to reach the next one, and would accept an offset that is merely close.
+fn element_text(blob: &str, at: usize) -> String {
     let tail = &blob[at..];
     let close = tail.find('>').map(|i| i + 1).unwrap_or(0);
     let end = tail[close..].find('<').map(|i| close + i).unwrap_or(close);
     tail[close..end].to_string()
+}
+
+/// The link's own text, which the fixture uses as its name.
+fn link_label(blob: &str, at: usize) -> String {
+    element_text(blob, at)
 }
 
 // ---------------------------------------------------------------------------
@@ -182,13 +191,13 @@ fn legacy_mobi_filepos_targets_land_on_the_named_element() {
                 "<",
                 "{label:?} points at byte {at}, which is not the start of an element"
             );
-            // The marker has to be inside the element the offset names, not
-            // merely somewhere later in the book.
-            let window = &blob[at..(at + 400).min(blob.len())];
-            assert!(
-                window.contains(marker),
-                "{label:?} points at {at} ({:?}), expected to reach {marker:?}",
-                &window[..80.min(window.len())]
+            // The marker has to be the text of the element the offset names,
+            // not merely somewhere after it.
+            let text = element_text(&blob, at);
+            assert_eq!(
+                text.trim(),
+                *marker,
+                "{label:?} points at {at}, whose element reads {text:?}"
             );
         }
     }
@@ -302,12 +311,12 @@ fn kf8_resolves_fragment_links_to_a_real_offset() {
                     "{label:?} points at byte {pos} of document {fid}, \
                      which is not the start of an element"
                 );
-                let window = &target[pos..(pos + 400).min(target.len())];
-                assert!(
-                    window.contains(marker),
-                    "{label:?} resolved to {pos} in document {fid} ({:?}), \
-                     expected to reach {marker:?}",
-                    &window[..80.min(window.len())]
+                let text = element_text(target, pos);
+                assert_eq!(
+                    text.trim(),
+                    *marker,
+                    "{label:?} resolved to {pos} in document {fid}, \
+                     whose element reads {text:?}"
                 );
                 seen += 1;
             }
