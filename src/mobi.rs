@@ -324,11 +324,9 @@ fn build_dictionary_mobi(
             html_check::print_self_check_warnings(&issues);
         }
 
-        // Per-record balance check: Kindle decodes each record in
-        // isolation, so a record that opens <b> without a matching
-        // </b> leaks bold state for the rest of the record, and a
-        // record ending inside a tag leaves garbage at its start.
-        // This check catches regressions in the record splitter.
+        // Tag-nesting check over the assembled text, plus a per-record
+        // check that the chunker never ended a record inside a tag.
+        // Both catch regressions in text assembly and splitting.
         let chunk_size = compute_chunk_size(text_content.len());
         let ranges = split_on_utf8_boundaries(&text_content, chunk_size);
         let record_issues = html_check::validate_records(&text_content, &ranges, 20);

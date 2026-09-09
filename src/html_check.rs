@@ -270,55 +270,96 @@ pub fn validate_text_blob(blob: &[u8]) -> Vec<String> {
     errors
 }
 
-/// Validate that each record, when decoded independently, has balanced
-/// HTML tag state. A Kindle reader decodes each text record in isolation
-/// for HTML parsing and pagination, so a record that opens `<b>` without
-/// a matching `</b>` causes bold state to leak for the rest of the
-/// record, and a record ending inside a tag leaves garbage at its start.
+/// Validate the tag nesting of the assembled text, and that no record ends
+/// part-way through a tag.
 ///
-/// `records` is an iterator of `(start, end)` byte offsets into `blob`,
-/// which is the pre-compression text. Returns human-readable issue
-/// strings for every record that fails balance. Reports up to
-/// `max_issues` entries to keep the error list bounded.
+/// This used to count opening against closing tags inside each record and
+/// report any record where the two differed. That is not a test of anything:
+/// a record boundary falls wherever 4096 bytes land, so an element that
+/// spans one is counted as unbalanced in both halves. Its two failures were
+/// independent, and each on its own was enough to make the check fire on
+/// correct output:
+///
+/// * The per-record framing. Issue #51 reported 7188 such warnings on a
+///   771k-headword dictionary whose markup was provably well formed, and
+///   kindlegen's own output fails the same test on nine records in ten.
+/// * The counting matched only the bare tag, so `<p class="x">` never
+///   counted as an open while every `</p>` counted as a close. On a book
+///   blob that is 0 opens against 94 closes.
+///
+/// So the balance is now followed across the whole text: what is reported is
+/// a close with nothing open, or an element still open when the text ends.
+/// Those are real corruption. The mid-tag check stays per record and is a
+/// different question, about kindling's own chunker rather than the markup:
+/// it pads to an inter-element gap so a record cannot end inside a tag.
+///
+/// `records` is a slice of `(start, end)` byte offsets into `blob`, which is
+/// the pre-compression text. Reports up to `max_issues` entries to keep the
+/// list bounded.
 pub fn validate_records(blob: &[u8], records: &[(usize, usize)], max_issues: usize) -> Vec<String> {
     let mut issues = Vec::new();
-    let mut unbalanced_b = 0usize;
-    let mut unbalanced_i = 0usize;
-    let mut unbalanced_p = 0usize;
-    let mut unbalanced_h5 = 0usize;
     let mut mid_tag = 0usize;
+
+    // Nesting depth carried across the whole blob, not reset per record.
+    // A record boundary falls wherever 4096 bytes land, so in a dictionary
+    // almost every one of them lands inside a paragraph; counting opens
+    // against closes inside a single record then reports both halves of
+    // that paragraph as broken. Issue #51 saw 7188 such reports on a
+    // 771k-headword build whose markup was provably well formed, and
+    // kindlegen's own output fails the same test on nine records out of
+    // ten. What is actually wrong is a close with nothing open, or an
+    // element still open when the text ends.
+    let mut depth: [i32; TRACKED_TAGS.len()] = [0; TRACKED_TAGS.len()];
+    let mut first_negative: [Option<usize>; TRACKED_TAGS.len()] = [None; TRACKED_TAGS.len()];
+
+    if let Ok(text) = std::str::from_utf8(blob) {
+        crate::links::for_each_tag(text, |tag, _attrs| {
+            let Some(slot) = TRACKED_TAGS.iter().position(|t| *t == tag.name) else {
+                return;
+            };
+            // `<p/>` opens and closes at once, so it changes nothing.
+            if tag.self_closing {
+                return;
+            }
+            if tag.closing {
+                depth[slot] -= 1;
+                if depth[slot] < 0 && first_negative[slot].is_none() {
+                    first_negative[slot] = Some(tag.start);
+                }
+            } else {
+                depth[slot] += 1;
+            }
+        });
+    }
+
+    for (slot, tag) in TRACKED_TAGS.iter().enumerate() {
+        if let Some(at) = first_negative[slot] {
+            if issues.len() < max_issues {
+                issues.push(format!(
+                    "</{}> at byte {} closes an element that was never opened{}",
+                    tag,
+                    at,
+                    record_containing(records, at)
+                ));
+            }
+        }
+        if depth[slot] > 0 && issues.len() < max_issues {
+            issues.push(format!(
+                "<{}> is left open {} time(s) at the end of the text",
+                tag, depth[slot]
+            ));
+        }
+    }
 
     for (idx, &(s, e)) in records.iter().enumerate() {
         if e > blob.len() || s > e {
             continue;
         }
         let rec = &blob[s..e];
-
-        // Per-tag balance scan (cheap substring count).
-        let rec_str = match std::str::from_utf8(rec) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        for (tag, counter) in [
-            ("b", &mut unbalanced_b),
-            ("i", &mut unbalanced_i),
-            ("p", &mut unbalanced_p),
-            ("h5", &mut unbalanced_h5),
-        ] {
-            let opens = rec_str.matches(&format!("<{}>", tag)).count() as i32;
-            let closes = rec_str.matches(&format!("</{}>", tag)).count() as i32;
-            if opens != closes {
-                *counter += 1;
-                if issues.len() < max_issues {
-                    issues.push(format!(
-                        "record {} ({}..{}): <{}> unbalanced (opens={}, closes={})",
-                        idx, s, e, tag, opens, closes
-                    ));
-                }
-            }
-        }
-
-        // Mid-tag scan: does the record end with an unclosed `<`?
+        // A record ending inside a tag is a splitter bug rather than a
+        // markup one: the chunker pads to an inter-element gap precisely
+        // so this cannot happen, and a reader decoding that record alone
+        // sees a partial tag at its start.
         if record_ends_in_tag(rec) {
             mid_tag += 1;
             if issues.len() < max_issues {
@@ -332,14 +373,35 @@ pub fn validate_records(blob: &[u8], records: &[(usize, usize)], max_issues: usi
         }
     }
 
-    if unbalanced_b + unbalanced_i + unbalanced_p + unbalanced_h5 + mid_tag > 0 {
+    let unbalanced = TRACKED_TAGS
+        .iter()
+        .enumerate()
+        .filter(|(slot, _)| depth[*slot] != 0 || first_negative[*slot].is_some())
+        .count();
+    if unbalanced + mid_tag > 0 {
         issues.push(format!(
-            "summary: {}/{} records unbalanced-<b>, {} unbalanced-<i>, {} unbalanced-<p>, {} unbalanced-<h5>, {} mid-tag",
-            unbalanced_b, records.len(), unbalanced_i, unbalanced_p, unbalanced_h5, mid_tag
+            "summary: {} of {} tracked tags unbalanced across the whole text, {} record(s) ending mid-tag, {} records",
+            unbalanced,
+            TRACKED_TAGS.len(),
+            mid_tag,
+            records.len()
         ));
     }
 
     issues
+}
+
+/// Elements whose nesting the record self-check follows. Deliberately few:
+/// these are the ones a text-assembly bug has actually mangled before.
+const TRACKED_TAGS: [&str; 4] = ["b", "i", "p", "h5"];
+
+/// A `" (record N)"` suffix naming the record a byte offset falls in, or an
+/// empty string when it falls outside every record.
+fn record_containing(records: &[(usize, usize)], at: usize) -> String {
+    match records.iter().position(|&(s, e)| at >= s && at < e) {
+        Some(i) => format!(" (record {})", i),
+        None => String::new(),
+    }
 }
 
 /// Return true if the record byte slice ends inside an HTML tag
@@ -371,4 +433,91 @@ pub fn print_self_check_warnings(issues: &[String]) {
          https://github.com/ciscoriordan/kindling/issues"
     );
     eprintln!("The MOBI will still be written; use --no-self-check to suppress these warnings.");
+}
+
+#[cfg(test)]
+mod record_balance_tests {
+    use super::*;
+
+    /// Split a blob the way the chunker does for these tests: at a fixed
+    /// size, with no regard for tags, which is exactly the condition that
+    /// made the old check misfire.
+    fn chunks(blob: &[u8], size: usize) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        let mut at = 0;
+        while at < blob.len() {
+            let end = (at + size).min(blob.len());
+            out.push((at, end));
+            at = end;
+        }
+        out
+    }
+
+    #[test]
+    fn an_element_spanning_a_record_boundary_is_not_an_error() {
+        // The whole of issue #51: the markup is well formed, and the only
+        // thing "wrong" is that a paragraph happens to straddle a boundary.
+        let blob = b"<p>aaaaaaaaaa</p><p>bbbbbbbbbb</p><p>cccccccccc</p>";
+        let records = chunks(blob, 8);
+        assert!(records.len() > 3, "the split has to cross several tags");
+        let issues = validate_records(blob, &records, 20);
+        let balance: Vec<&String> = issues
+            .iter()
+            .filter(|i| i.contains("never opened") || i.contains("left open"))
+            .collect();
+        assert!(
+            balance.is_empty(),
+            "well-formed markup reported: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn an_element_with_attributes_counts_as_opened() {
+        // The second defect: the old check matched only the bare tag, so
+        // every close counted and no open did.
+        let blob = br#"<p class="x">one</p><p id="y">two</p>"#;
+        let issues = validate_records(blob, &chunks(blob, 4096), 20);
+        assert!(
+            issues.is_empty(),
+            "attributes made a balanced blob look broken: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn a_close_with_nothing_open_is_reported() {
+        let blob = b"<p>one</p></p>";
+        let issues = validate_records(blob, &chunks(blob, 4096), 20);
+        assert!(
+            issues.iter().any(|i| i.contains("never opened")),
+            "real corruption went unreported: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn an_element_left_open_at_the_end_is_reported() {
+        let blob = b"<p>one</p><p>two";
+        let issues = validate_records(blob, &chunks(blob, 4096), 20);
+        assert!(
+            issues.iter().any(|i| i.contains("left open")),
+            "an unclosed element went unreported: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn a_self_closing_tag_changes_nothing() {
+        let blob = b"<p>one</p><br/><hr/>";
+        assert!(validate_records(blob, &chunks(blob, 4096), 20).is_empty());
+    }
+
+    #[test]
+    fn a_record_ending_inside_a_tag_is_still_reported() {
+        // A different question from markup balance, and a real chunker bug.
+        let blob = b"<p>aaaa</p><p>bbbb</p>";
+        let records = vec![(0, 2), (2, blob.len())];
+        let issues = validate_records(blob, &records, 20);
+        assert!(
+            issues.iter().any(|i| i.contains("ends inside an HTML tag")),
+            "the mid-tag check stopped working: {issues:?}"
+        );
+    }
 }

@@ -259,23 +259,29 @@ pub(crate) fn encode_base32(value: usize, width: usize) -> String {
 const NON_TARGET_TAGS: [&str; 3] = ["html", "head", "body"];
 
 /// One element's opening tag.
-struct TagSpan {
+pub(crate) struct TagSpan {
     /// Offset of `<`.
-    start: usize,
+    pub start: usize,
     /// Lowercased element name.
-    name: String,
+    pub name: String,
     /// Offset just past `>`.
-    end: usize,
+    pub end: usize,
+    /// True for `</name>`, which closes an element rather than opening one.
+    pub closing: bool,
+    /// True for `<name/>`, which opens and closes in one tag.
+    pub self_closing: bool,
 }
 
-/// Walk the opening tags of `html`, calling `f` for each with the tag span
-/// and the raw attribute text between the name and the closing `>`.
+/// Walk the tags of `html`, calling `f` for each with the tag span and the
+/// raw attribute text between the name and the closing `>`.
 ///
 /// This is a scanner rather than a regular expression because an attribute
 /// value may legally contain `>`, which a `<[^>]*>` pattern cuts in half.
-/// Closing tags, comments, CDATA sections, doctypes and processing
-/// instructions are skipped.
-fn for_each_tag<F: FnMut(&TagSpan, &str)>(html: &str, mut f: F) {
+/// Comments, CDATA sections, doctypes and processing instructions are
+/// skipped. Closing tags are reported, with `closing` set and no attributes,
+/// because a caller counting nesting depth needs them; callers that only
+/// care about elements being opened skip them.
+pub(crate) fn for_each_tag<F: FnMut(&TagSpan, &str)>(html: &str, mut f: F) {
     let bytes = html.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
@@ -300,25 +306,18 @@ fn for_each_tag<F: FnMut(&TagSpan, &str)>(html: &str, mut f: F) {
             }
             continue;
         }
-        // Closing tag.
-        if rest.first() == Some(&b'/') {
-            i = html[i..]
-                .find('>')
-                .map(|p| i + p + 1)
-                .unwrap_or(bytes.len());
-            continue;
-        }
+        let closing = rest.first() == Some(&b'/');
         // Element name.
-        let mut j = i + 1;
+        let mut j = i + 1 + usize::from(closing);
         while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b':') {
             j += 1;
         }
-        if j == i + 1 {
+        if j == i + 1 + usize::from(closing) {
             // A bare `<` in text, not a tag.
             i += 1;
             continue;
         }
-        let name = html[i + 1..j].to_ascii_lowercase();
+        let name = html[i + 1 + usize::from(closing)..j].to_ascii_lowercase();
         // Attributes, stopping at the `>` that is not inside a quoted value.
         //
         // Only a quote that opens an attribute value counts, which means one
@@ -361,10 +360,13 @@ fn for_each_tag<F: FnMut(&TagSpan, &str)>(html: &str, mut f: F) {
             break;
         }
         let attrs = &html[j..k];
+        let self_closing = attrs.trim_end().ends_with('/');
         let span = TagSpan {
             start,
             name,
             end: k + 1,
+            closing,
+            self_closing,
         };
         f(&span, attrs);
         i = k + 1;
@@ -469,7 +471,7 @@ pub(crate) fn scan_anchors(html: &str) -> Vec<Anchor> {
     let mut out: Vec<Anchor> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for_each_tag(html, |tag, attrs| {
-        if NON_TARGET_TAGS.contains(&tag.name.as_str()) {
+        if tag.closing || NON_TARGET_TAGS.contains(&tag.name.as_str()) {
             return;
         }
         let attributes: &[&str] = if tag.name == "a" {
@@ -506,7 +508,7 @@ pub(crate) fn scan_anchors(html: &str) -> Vec<Anchor> {
 pub(crate) fn scan_document_anchors(html: &str) -> std::collections::HashSet<String> {
     let mut out = std::collections::HashSet::new();
     for_each_tag(html, |tag, attrs| {
-        if !NON_TARGET_TAGS.contains(&tag.name.as_str()) {
+        if tag.closing || !NON_TARGET_TAGS.contains(&tag.name.as_str()) {
             return;
         }
         for attr in ["id", "name"] {
@@ -528,7 +530,7 @@ pub(crate) fn scan_document_anchors(html: &str) -> std::collections::HashSet<Str
 pub(crate) fn scan_hrefs(html: &str) -> Vec<HrefAttr> {
     let mut out: Vec<HrefAttr> = Vec::new();
     for_each_tag(html, |tag, attrs| {
-        if tag.name != "a" {
+        if tag.closing || tag.name != "a" {
             return;
         }
         // `attrs` starts at the byte after the element name.
