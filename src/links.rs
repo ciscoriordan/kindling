@@ -308,8 +308,19 @@ fn for_each_tag<F: FnMut(&TagSpan, &str)>(html: &str, mut f: F) {
         }
         let name = html[i + 1..j].to_ascii_lowercase();
         // Attributes, stopping at the `>` that is not inside a quoted value.
+        //
+        // Only a quote that opens an attribute value counts, which means one
+        // that follows `=` and any whitespace. A quote anywhere else is an
+        // ordinary character. That distinction matters because a stray quote
+        // inside a tag is common in converted books — an inch mark in
+        // `<span title="a 5" gun">` is the usual way it happens — and
+        // treating it as opening a value makes the scanner hunt for a
+        // closing quote through the rest of the document, silently losing
+        // every link and anchor after it. HTML tokenizers end the tag at
+        // that `>`, and so does kindlegen.
         let mut k = j;
         let mut quote: Option<u8> = None;
+        let mut expecting_value = false;
         while k < bytes.len() {
             let b = bytes[k];
             match quote {
@@ -319,10 +330,16 @@ fn for_each_tag<F: FnMut(&TagSpan, &str)>(html: &str, mut f: F) {
                     }
                 }
                 None => {
-                    if b == b'"' || b == b'\'' {
-                        quote = Some(b);
-                    } else if b == b'>' {
+                    if b == b'>' {
                         break;
+                    } else if b == b'=' {
+                        expecting_value = true;
+                    } else if expecting_value && (b == b'"' || b == b'\'') {
+                        quote = Some(b);
+                        expecting_value = false;
+                    } else if !b.is_ascii_whitespace() {
+                        // An unquoted value, or the next attribute name.
+                        expecting_value = false;
                     }
                 }
             }
@@ -738,5 +755,237 @@ mod tests {
         // Rewriting a value we cannot delimit would corrupt the tag.
         let html = "<a href=x.xhtml>t</a>";
         assert!(scan_hrefs(html).is_empty());
+    }
+
+    // -----------------------------------------------------------------
+    // Adversarial input
+    //
+    // Every offset these scanners return is used to slice a `&str`, and
+    // slicing a multi-byte character in half panics. A panic here is a
+    // build crash on somebody's book, so the bar is that no input reaches
+    // one, however malformed.
+    // -----------------------------------------------------------------
+
+    /// Markup a real EPUB might contain, plus shapes designed to break a
+    /// scanner. Used by the sweep tests below, which check both that
+    /// nothing panics and that every offset lands on a character boundary.
+    const NASTY: &[&str] = &[
+        "",
+        "<",
+        ">",
+        "<>",
+        "</>",
+        "< p>",
+        "<p",
+        "<p ",
+        "<p id",
+        "<p id=",
+        "<p id=\"",
+        "<p id=\"unterminated",
+        "<a href=\"x.xhtml",
+        "<!--",
+        "<!-- <a href=\"no.xhtml\"> ",
+        "<![CDATA[ <a href=\"no\"> ]]>",
+        "<?xml version=\"1.0\"?>",
+        "<!DOCTYPE html>",
+        "<a foo bar baz>t</a>",
+        "<a foo=bar href=\"x.xhtml#f\">t</a>",
+        "<a data-href=\"decoy.xhtml\" href=\"real.xhtml\">t</a>",
+        "<a xlink:href=\"decoy.xhtml\" href=\"real.xhtml\">t</a>",
+        "<a href=\"one.xhtml\" href=\"two.xhtml\">t</a>",
+        "<a title=\"a > b\" href=\"x.xhtml\">t</a>",
+        "<a title='he said \"hi\"' href='x.xhtml'>t</a>",
+        "<a href = \"spaced.xhtml\" >t</a>",
+        "<p id=\"\">empty id</p>",
+        "<h2:ns id=\"prefixed\">x</h2:ns>",
+        "<p1 id=\"digit-in-name\">x</p1>",
+        // Non-ASCII in every position an offset could be taken near.
+        "<p id=\"przypis\">Powiedział że ę</p>",
+        "Ala ma kota<a href=\"ń.xhtml#ę\">ł</a>ę",
+        "<p id=\"注釈-1\">日本語のテキスト</p>",
+        "<p>😀<a href=\"x.xhtml\">😀</a>😀</p>",
+        "\u{2014}<a href=\"x.xhtml\">\u{2014}</a>\u{2014}",
+        "<p id=\"\u{1F600}\">supplementary plane id</p>",
+        // A multi-byte character immediately before and after a tag edge.
+        "ę<p id=\"a\">ę</p>ę",
+        "<a href=\"%E2%80%94.xhtml#%C4%99\">percent</a>",
+        // Stray quotes inside a tag: an inch mark, and an apostrophe in an
+        // unquoted value. Both are odd counts and used to swallow the rest
+        // of the document.
+        "<p title=\"5\" inch\">a</p><a href=\"real.xhtml\">t</a><p id=\"later\">z</p>",
+        "<a title=it's href=\"real.xhtml\">t</a><p id=\"later\">z</p>",
+        "<span title=\"a 5\" gun\">GUN</span><a href=\"x.xhtml#f\">t</a>",
+    ];
+
+    #[test]
+    fn scanners_never_panic_on_malformed_or_non_ascii_input() {
+        for input in NASTY {
+            // The assertions are that these return at all, and that every
+            // offset they hand back can be used to slice without panicking.
+            for anchor in scan_anchors(input) {
+                assert!(
+                    input.is_char_boundary(anchor.offset),
+                    "anchor offset {} is mid-character in {input:?}",
+                    anchor.offset
+                );
+                let _ = &input[anchor.offset..];
+                assert!(
+                    input[anchor.offset..].starts_with('<'),
+                    "anchor in {input:?} does not point at an element"
+                );
+            }
+            for href in scan_hrefs(input) {
+                assert!(
+                    input.is_char_boundary(href.start) && input.is_char_boundary(href.end),
+                    "href range {}..{} is mid-character in {input:?}",
+                    href.start,
+                    href.end
+                );
+                let slice = &input[href.start..href.end];
+                assert!(
+                    slice.starts_with("href") || slice.starts_with("HREF"),
+                    "href range in {input:?} covers {slice:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn scanners_terminate_on_every_prefix_of_nasty_input() {
+        // Truncation is where a scanner is most likely to spin or to read
+        // past the end, and a record boundary can truncate anything. Each
+        // call is expected to return; the test hanging is the failure.
+        for input in NASTY {
+            for end in 0..=input.len() {
+                if !input.is_char_boundary(end) {
+                    continue;
+                }
+                let prefix = &input[..end];
+                let _ = scan_anchors(prefix);
+                let _ = scan_hrefs(prefix);
+            }
+        }
+    }
+
+    #[test]
+    fn rewriting_every_href_reassembles_the_document() {
+        // What the writers actually do with these ranges: cut the document
+        // at each href and paste it back. If a range were wrong, the result
+        // would not match.
+        for input in NASTY {
+            let mut out = String::new();
+            let mut cursor = 0usize;
+            for href in scan_hrefs(input) {
+                assert!(href.start >= cursor, "href ranges overlap in {input:?}");
+                out.push_str(&input[cursor..href.start]);
+                out.push_str(&input[href.start..href.end]);
+                cursor = href.end;
+            }
+            out.push_str(&input[cursor..]);
+            assert_eq!(&out, input, "reassembly lost bytes for {input:?}");
+        }
+    }
+
+    #[test]
+    fn an_attribute_name_ending_in_href_is_not_the_href() {
+        // `data-href` and `xlink:href` are real attributes on real EPUB
+        // markup; rewriting one of them would point the link at nothing.
+        for html in [
+            r#"<a data-href="decoy.xhtml" href="real.xhtml">t</a>"#,
+            r#"<a xlink:href="decoy.xhtml" href="real.xhtml">t</a>"#,
+        ] {
+            let hrefs = scan_hrefs(html);
+            assert_eq!(hrefs.len(), 1, "{html}");
+            assert_eq!(hrefs[0].value, "real.xhtml", "{html}");
+        }
+    }
+
+    #[test]
+    fn a_repeated_href_resolves_to_the_first() {
+        let html = r#"<a href="one.xhtml" href="two.xhtml">t</a>"#;
+        let hrefs = scan_hrefs(html);
+        assert_eq!(hrefs.len(), 1);
+        assert_eq!(hrefs[0].value, "one.xhtml");
+    }
+
+    #[test]
+    fn a_valueless_attribute_does_not_hide_the_href() {
+        let html = r#"<a hidden href="x.xhtml">t</a>"#;
+        assert_eq!(scan_hrefs(html)[0].value, "x.xhtml");
+    }
+
+    #[test]
+    fn an_unquoted_attribute_does_not_hide_the_href() {
+        let html = r#"<a class=big href="x.xhtml">t</a>"#;
+        assert_eq!(scan_hrefs(html)[0].value, "x.xhtml");
+    }
+
+    #[test]
+    fn finds_anchors_and_links_around_non_ascii_text() {
+        let html = "Powiedział<a href=\"ń.xhtml#ę\">że</a><p id=\"przypis\">ę</p>";
+        let hrefs = scan_hrefs(html);
+        assert_eq!(hrefs.len(), 1);
+        assert_eq!(hrefs[0].value, "ń.xhtml#ę");
+        assert_eq!(&html[hrefs[0].start..hrefs[0].end], "href=\"ń.xhtml#ę\"");
+        let anchors = scan_anchors(html);
+        assert_eq!(anchors.len(), 1);
+        assert_eq!(anchors[0].name, "przypis");
+        assert_eq!(anchors[0].offset, html.find("<p").unwrap());
+    }
+
+    #[test]
+    fn a_stray_quote_in_a_tag_does_not_swallow_the_rest_of_the_document() {
+        // An inch mark inside an attribute value is a routine defect in
+        // converted books. Treating it as opening a value sends the scanner
+        // looking for a closing quote through everything that follows, so
+        // every link and anchor after it goes unseen: in KF8 they keep a
+        // bare href and stop navigating at all, and anchors other documents
+        // point at are lost, which turns their links into dead placeholders.
+        let html = r#"<p title="5" inch">a</p><a href="real.xhtml">t</a><p id="later">z</p>"#;
+
+        let hrefs = scan_hrefs(html);
+        assert_eq!(hrefs.len(), 1, "the link after the stray quote was lost");
+        assert_eq!(hrefs[0].value, "real.xhtml");
+
+        let names: Vec<String> = scan_anchors(html).into_iter().map(|a| a.name).collect();
+        assert_eq!(
+            names,
+            vec!["later"],
+            "the anchor after the stray quote was lost"
+        );
+    }
+
+    #[test]
+    fn a_stray_quote_after_an_unquoted_value_does_not_swallow_the_document() {
+        let html = r#"<a title=it's href="real.xhtml">t</a><p id="later">z</p>"#;
+        assert_eq!(scan_hrefs(html).len(), 1, "{html}");
+        assert_eq!(scan_anchors(html).len(), 1, "{html}");
+    }
+
+    #[test]
+    fn a_quote_inside_a_quoted_value_is_still_part_of_the_value() {
+        // The other half of the rule: quotes that do open a value must keep
+        // working, including the opposite quote character inside one.
+        let html = r#"<a title='He said "hi"' href="real.xhtml">t</a><p id="later">z</p>"#;
+        let hrefs = scan_hrefs(html);
+        assert_eq!(hrefs.len(), 1);
+        assert_eq!(hrefs[0].value, "real.xhtml");
+        assert_eq!(scan_anchors(html).len(), 1);
+
+        let html = r#"<a title="it's" href="real.xhtml">t</a><p id="later">z</p>"#;
+        assert_eq!(scan_hrefs(html)[0].value, "real.xhtml");
+        assert_eq!(scan_anchors(html).len(), 1);
+    }
+
+    #[test]
+    fn resolves_a_non_ascii_fragment_and_document_name() {
+        let d = docs(&["Text/\u{2014}.xhtml"]);
+        assert_eq!(
+            resolve("Text/a.xhtml", 0, "%E2%80%94.xhtml#%C4%99", &d),
+            Resolution::Internal {
+                file: 0,
+                fragment: Some("\u{119}".to_string())
+            }
+        );
     }
 }
