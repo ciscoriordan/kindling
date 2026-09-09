@@ -525,6 +525,92 @@ def book_source(root, name, title, uid, cover_prop, cover_name="cover.jpg", exif
     return d, f"{name}.opf"
 
 
+def footnote_book(root):
+    """A book whose footnotes have to land on the right note (issue #50).
+
+    Every chapter names its own marker `ref-1` and its own tail `end-N`, which
+    is what real books do and what makes this worth checking: three back-links
+    all ask for `ref-1`, and resolving that name in one table across the whole
+    book still produces links that go somewhere, just always to chapter one.
+    So each note names the chapter it belongs to in text large enough to read
+    from a photo, and landing on the wrong one is visible rather than subtle.
+
+    Both directions are on the page. The marker goes to the note, the note's
+    arrow comes back to the marker, and a separate link inside each chapter
+    jumps to the bottom of that same chapter without leaving it.
+    """
+    name = "book-footnotes"
+    d = os.path.join(root, "src", name)
+    os.makedirs(d, exist_ok=True)
+    cover_image(os.path.join(d, "cover.jpg"), "KF", "footnote links")
+    uid = "kindling-device-footnotes"
+    big = 'style="font-size: 200%; font-weight: bold;"'
+
+    files = []
+    for i, para in enumerate(CHAPTER_TEXT, 1):
+        files.append(f"ch{i}.html")
+        open(os.path.join(d, f"ch{i}.html"), "w", encoding="utf-8").write(
+            '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE html>\n'
+            '<html xmlns="http://www.w3.org/1999/xhtml"><head>'
+            '<meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>'
+            f"<title>Chapter {i}</title></head><body>"
+            f'<h1 {big}>CHAPTER {i}</h1>'
+            f'<p>{esc(para)}<a href="notes.html#ftn-{i}" id="ref-1">[1]</a></p>'
+            f'<p>Tapping that marker must open a note that says NOTE FOR CHAPTER {i}. '
+            f'Any other number means every chapter\'s footnote went to the same place.</p>'
+            f'<p><a href="#end-{i}">Jump to the end of this chapter.</a> '
+            f"It must stay in chapter {i}.</p>"
+            f"<p>{esc(para)}</p><p>{esc(para)}</p>"
+            f'<p id="end-{i}" {big}>END OF CHAPTER {i}</p>'
+            "</body></html>\n")
+
+    body = "".join(
+        f'<p id="ftn-{i}"><a href="ch{i}.html#ref-1" {big}>&#8592;</a> '
+        f'<span {big}>NOTE FOR CHAPTER {i}</span>. '
+        f"The arrow must return to the marker in chapter {i}.</p>"
+        for i in range(1, len(CHAPTER_TEXT) + 1))
+    files.append("notes.html")
+    open(os.path.join(d, "notes.html"), "w", encoding="utf-8").write(
+        '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE html>\n'
+        '<html xmlns="http://www.w3.org/1999/xhtml"><head>'
+        '<meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>'
+        "<title>Notes</title></head><body>"
+        f'<h1 {big}>NOTES</h1>{body}</body></html>\n')
+
+    manifest = ['<item id="cover-img" href="cover.jpg" media-type="image/jpeg" '
+                'properties="cover-image"/>']
+    spine = []
+    for n, f in enumerate(files):
+        manifest.append(f'<item id="s{n}" href="{f}" media-type="application/xhtml+xml"/>')
+        spine.append(f'<itemref idref="s{n}"/>')
+    manifest.append('<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>')
+    open(os.path.join(d, f"{name}.opf"), "w", encoding="utf-8").write(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<package version="3.0" xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookId">\n'
+        '  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">\n'
+        "    <dc:title>KF footnote links</dc:title>\n"
+        "    <dc:language>en</dc:language>\n"
+        "    <dc:creator>Kindling device test</dc:creator>\n"
+        f'    <dc:identifier id="BookId">{esc(uid)}</dc:identifier>\n'
+        "  </metadata>\n"
+        "  <manifest>\n    " + "\n    ".join(manifest) + "\n  </manifest>\n"
+        '  <spine toc="ncx">\n    ' + "\n    ".join(spine) + "\n  </spine>\n"
+        "</package>\n")
+    open(os.path.join(d, "toc.ncx"), "w", encoding="utf-8").write(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1" xml:lang="en">\n'
+        f'<head><meta name="dtb:uid" content="{esc(uid)}"/>'
+        '<meta name="dtb:depth" content="1"/><meta name="dtb:totalPageCount" content="0"/>'
+        '<meta name="dtb:maxPageNumber" content="0"/></head>\n'
+        "<docTitle><text>KF footnote links</text></docTitle>\n"
+        '<navMap>' + "".join(
+            f'<navPoint id="np{n}" playOrder="{n + 1}"><navLabel><text>'
+            f'{"Notes" if f == "notes.html" else f"Chapter {n + 1}"}</text></navLabel>'
+            f'<content src="{f}"/></navPoint>' for n, f in enumerate(files)
+        ) + "</navMap>\n</ncx>\n")
+    return d, f"{name}.opf"
+
+
 def probe_book(root):
     """The book whose words get tapped. Tagged `en` so every test dict lists."""
     d = os.path.join(root, "src", "probe")
@@ -684,6 +770,14 @@ def main():
                              exif_first=exif)
         run([K, "build", os.path.join(d, opf), "-o", os.path.join(ship, f"{name}.mobi"),
              "--legacy-mobi", "--doc-type", "ebok"])
+
+    # #50: footnote markers, their back-links, and a same-document jump.
+    # Dual format so both link writers ship in one file: a modern Kindle reads
+    # the KF8 half, and the MOBI6 half is there for a pre-2012 device if one
+    # turns up. This book must build with no unresolved-link warning at all.
+    d, opf = footnote_book(out)
+    run([K, "build", os.path.join(d, opf), "-o", os.path.join(ship, "book-footnotes.mobi"),
+         "--legacy-mobi"])
 
     d, opf = probe_book(out)
     run([K, "build", os.path.join(d, opf), "-o", os.path.join(ship, "probe.mobi"),
