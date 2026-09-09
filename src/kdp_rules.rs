@@ -901,8 +901,9 @@ pub const RULES: &[Rule] = &[
         title: "Fragment id not defined in the target file",
         pdf_page: 27,
         description: "RSC_012: The file on the left of '#' exists in the manifest but the \
-                      '#anchor' id is not declared anywhere inside that file. The link will \
-                      scroll to the top of the target instead of the intended element.",
+                      '#anchor' id is not declared anywhere inside that file. There is no \
+                      byte to point the link at, so it ships inert and does nothing when \
+                      tapped, which is what kindlegen does with it too.",
         profile_mask: ALL_PROFILES,
     },
     Rule {
