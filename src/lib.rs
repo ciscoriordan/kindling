@@ -36,6 +36,7 @@ pub(crate) mod fonts;
 pub(crate) mod html_check;
 pub(crate) mod indx;
 pub(crate) mod kf8;
+pub(crate) mod links;
 pub(crate) mod moire;
 pub(crate) mod palmdoc;
 pub(crate) mod vwi;

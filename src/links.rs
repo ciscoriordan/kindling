@@ -1,0 +1,742 @@
+//! Internal link resolution shared by the MOBI6 and KF8 writers.
+//!
+//! An EPUB links between its own documents with ordinary hrefs
+//! (`../Text/notes.xhtml#n1`, `#local`). Neither Kindle format understands
+//! those, because both formats concatenate every document into one byte
+//! stream and throw the file boundaries away:
+//!
+//! * MOBI6 wants `<a filepos=0000001014>`, a decimal byte offset into the
+//!   uncompressed text blob.
+//! * KF8 wants `<a href="kindle:pos:fid:0002:off:000000001D">`, where the
+//!   fid is the target's fragment and the offset is a base-32 byte offset
+//!   inside that fragment.
+//!
+//! Both need the same three things, which is what this module provides:
+//! resolving an href against the document that contains it, finding every
+//! anchor a link could target, and locating the `href` attributes to
+//! overwrite. The writers differ only in what they write, so they own the
+//! rewriting itself.
+//!
+//! Fragment names repeat across documents constantly — a book whose every
+//! chapter numbers its own footnotes from one has a `ftn-1` in each — so a
+//! fragment is only ever looked up inside the document that declares it.
+//! Resolving them in one global table sends every chapter's first footnote
+//! to the same place.
+
+use std::collections::HashMap;
+
+/// URI schemes that never point inside the book. `kindle:` is in the list
+/// because a link already rewritten to `kindle:pos:` or `kindle:embed:`
+/// must not be rewritten twice.
+const EXTERNAL_SCHEMES: [&str; 8] = [
+    "http://",
+    "https://",
+    "mailto:",
+    "kindle:",
+    "tel:",
+    "data:",
+    "javascript:",
+    "ftp://",
+];
+
+/// Where a link points, once resolved against the document holding it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Resolution {
+    /// Points outside the book. Leave the href exactly as it is.
+    External,
+    /// Points at a document kindling put in the text stream. `file` is that
+    /// document's position in spine order; `fragment` is `None` for a
+    /// whole-document link.
+    Internal {
+        file: usize,
+        fragment: Option<String>,
+    },
+    /// Names a document that is not in the spine, or is empty. kindlegen
+    /// reports these as "Hyperlink not resolved" and writes a dead link of
+    /// the same width; kindling does the same.
+    Unresolved,
+}
+
+/// An `id` or `name` attribute that a fragment link can target, and the
+/// byte offset of the `<` that opens the element carrying it.
+///
+/// The offset is of the element, not of the attribute: a reader told to
+/// jump to a byte in the middle of a tag would land mid-markup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Anchor {
+    pub name: String,
+    pub offset: usize,
+}
+
+/// An `href` attribute on an `<a>` element, as a byte range to overwrite
+/// and the value it currently holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HrefAttr {
+    /// Byte range of the whole attribute, `href` through the closing
+    /// quote. Overwriting exactly this range leaves the rest of the tag
+    /// intact.
+    pub start: usize,
+    pub end: usize,
+    /// The attribute value, still percent-encoded.
+    pub value: String,
+}
+
+/// Split an href into its path and fragment parts. An empty fragment
+/// (`page.xhtml#`) counts as no fragment.
+pub(crate) fn split_href(href: &str) -> (&str, Option<&str>) {
+    match href.find('#') {
+        Some(i) => {
+            let frag = &href[i + 1..];
+            (&href[..i], if frag.is_empty() { None } else { Some(frag) })
+        }
+        None => (href, None),
+    }
+}
+
+/// True when the href points outside the book.
+pub(crate) fn is_external_href(href: &str) -> bool {
+    let lower = href.trim().to_ascii_lowercase();
+    EXTERNAL_SCHEMES.iter().any(|s| lower.starts_with(s))
+}
+
+/// Resolve `.` and `..` segments in a slash-separated path.
+pub(crate) fn normalize_path(path: &str) -> String {
+    let mut segments: Vec<&str> = Vec::new();
+    for seg in path.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                segments.pop();
+            }
+            s => segments.push(s),
+        }
+    }
+    segments.join("/")
+}
+
+/// Percent-decode a path. Bytes are decoded then read back as UTF-8 so a
+/// multi-byte character written as several escapes survives; an escape
+/// that does not form valid UTF-8 is left alone rather than mangled.
+pub(crate) fn percent_decode(s: &str) -> String {
+    if !s.contains('%') {
+        return s.to_string();
+    }
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok();
+            if let Some(byte) = hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
+}
+
+/// Directory part of a manifest href, `""` when it has none.
+fn parent_dir(href: &str) -> &str {
+    match href.rfind('/') {
+        Some(i) => &href[..i],
+        None => "",
+    }
+}
+
+/// Build the lookup a resolver needs: every spine document's normalized
+/// manifest href mapped to its position in spine order.
+///
+/// The hrefs come from `OPFData::get_content_html_hrefs`, which is
+/// index-aligned with the documents kindling actually writes, so the
+/// position is also the KF8 fragment id.
+pub(crate) fn build_document_index(hrefs: &[String]) -> HashMap<String, usize> {
+    let mut map: HashMap<String, usize> = HashMap::new();
+    for (i, href) in hrefs.iter().enumerate() {
+        map.entry(normalize_path(&percent_decode(href)))
+            .or_insert(i);
+    }
+    map
+}
+
+/// Resolve one `<a href>` against the document that contains it.
+///
+/// `doc_href` is the containing document's own manifest href, which is what
+/// makes `../Text/notes.xhtml` and a bare `#frag` mean different things in
+/// different documents.
+pub(crate) fn resolve(
+    doc_href: &str,
+    self_index: usize,
+    href: &str,
+    documents: &HashMap<String, usize>,
+) -> Resolution {
+    let href = href.trim();
+    if href.is_empty() {
+        return Resolution::Unresolved;
+    }
+    if is_external_href(href) {
+        return Resolution::External;
+    }
+    let (path, fragment) = split_href(href);
+    let fragment = fragment.map(percent_decode);
+
+    // A bare `#frag` stays in the document that wrote it.
+    if path.is_empty() {
+        return match fragment {
+            Some(f) => Resolution::Internal {
+                file: self_index,
+                fragment: Some(f),
+            },
+            // `href="#"` points nowhere in particular.
+            None => Resolution::Unresolved,
+        };
+    }
+
+    // The containing document's own href may be percent-encoded too, and
+    // the directory it contributes has to be in the same form as the keys
+    // in `documents` for the join to match.
+    let doc_decoded = percent_decode(doc_href);
+    let dir = parent_dir(&doc_decoded);
+    let decoded = percent_decode(path);
+    let joined = if dir.is_empty() {
+        decoded
+    } else {
+        format!("{}/{}", dir, decoded)
+    };
+    let target = normalize_path(&joined);
+
+    match documents.get(&target) {
+        Some(&file) => Resolution::Internal { file, fragment },
+        // Not in the spine. A manifest-only document is not in the text
+        // stream at all, so there is no byte to point at.
+        None => Resolution::Unresolved,
+    }
+}
+
+/// Encode `value` as zero-padded base-32 using the alphabet Kindle uses for
+/// `kindle:pos` offsets and fragment ids (`0-9`, then `A-V`).
+///
+/// A value too large for `width` characters is truncated to the low bits,
+/// which is what the format's fixed-width field forces; at ten characters
+/// that is 50 bits, far past any real book.
+pub(crate) fn encode_base32(value: usize, width: usize) -> String {
+    const CHARS: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUV";
+    let mut out = vec![b'0'; width];
+    let mut v = value;
+    for slot in out.iter_mut().rev() {
+        *slot = CHARS[v % 32];
+        v /= 32;
+    }
+    String::from_utf8(out).expect("base-32 alphabet is ASCII")
+}
+
+// ---------------------------------------------------------------------------
+// Tag scanning
+// ---------------------------------------------------------------------------
+
+/// Elements whose `id` is not a usable jump target.
+///
+/// `<html>`, `<head>` and `<body>` do not survive into the text stream:
+/// MOBI6 merges every document's body contents and drops the wrappers, and
+/// KF8 keeps the body tag on the skeleton rather than in the fragment. A
+/// link to `#some-body-id` therefore has no element to land on. kindlegen
+/// treats these as unresolved too, and warns.
+const NON_TARGET_TAGS: [&str; 3] = ["html", "head", "body"];
+
+/// One element's opening tag.
+struct TagSpan {
+    /// Offset of `<`.
+    start: usize,
+    /// Lowercased element name.
+    name: String,
+    /// Offset just past `>`.
+    end: usize,
+}
+
+/// Walk the opening tags of `html`, calling `f` for each with the tag span
+/// and the raw attribute text between the name and the closing `>`.
+///
+/// This is a scanner rather than a regular expression because an attribute
+/// value may legally contain `>`, which a `<[^>]*>` pattern cuts in half.
+/// Closing tags, comments, CDATA sections, doctypes and processing
+/// instructions are skipped.
+fn for_each_tag<F: FnMut(&TagSpan, &str)>(html: &str, mut f: F) {
+    let bytes = html.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'<' {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        let rest = &bytes[i + 1..];
+        // `<!-- … -->`, `<![CDATA[ … ]]>`, `<!DOCTYPE …>`, `<?xml … ?>`.
+        if rest.first() == Some(&b'!') || rest.first() == Some(&b'?') {
+            if html[i..].starts_with("<!--") {
+                i = html[i + 4..]
+                    .find("-->")
+                    .map(|p| i + 4 + p + 3)
+                    .unwrap_or(bytes.len());
+            } else {
+                i = html[i..]
+                    .find('>')
+                    .map(|p| i + p + 1)
+                    .unwrap_or(bytes.len());
+            }
+            continue;
+        }
+        // Closing tag.
+        if rest.first() == Some(&b'/') {
+            i = html[i..]
+                .find('>')
+                .map(|p| i + p + 1)
+                .unwrap_or(bytes.len());
+            continue;
+        }
+        // Element name.
+        let mut j = i + 1;
+        while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b':') {
+            j += 1;
+        }
+        if j == i + 1 {
+            // A bare `<` in text, not a tag.
+            i += 1;
+            continue;
+        }
+        let name = html[i + 1..j].to_ascii_lowercase();
+        // Attributes, stopping at the `>` that is not inside a quoted value.
+        let mut k = j;
+        let mut quote: Option<u8> = None;
+        while k < bytes.len() {
+            let b = bytes[k];
+            match quote {
+                Some(q) => {
+                    if b == q {
+                        quote = None;
+                    }
+                }
+                None => {
+                    if b == b'"' || b == b'\'' {
+                        quote = Some(b);
+                    } else if b == b'>' {
+                        break;
+                    }
+                }
+            }
+            k += 1;
+        }
+        if k >= bytes.len() {
+            break;
+        }
+        let attrs = &html[j..k];
+        let span = TagSpan {
+            start,
+            name,
+            end: k + 1,
+        };
+        f(&span, attrs);
+        i = k + 1;
+    }
+}
+
+/// Find one attribute inside a tag's attribute text.
+///
+/// Returns the attribute's byte range relative to `attrs` and its value.
+/// Only quoted values are recognized; an unquoted value is left alone
+/// rather than guessed at, so such a link keeps its href and stays inert
+/// instead of being rewritten to the wrong place.
+fn find_attr(attrs: &str, wanted: &str) -> Option<(usize, usize, String)> {
+    let bytes = attrs.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        // Skip to the start of an attribute name.
+        while i < bytes.len() && !bytes[i].is_ascii_alphabetic() {
+            i += 1;
+        }
+        let name_start = i;
+        while i < bytes.len()
+            && (bytes[i].is_ascii_alphanumeric()
+                || bytes[i] == b'-'
+                || bytes[i] == b'_'
+                || bytes[i] == b':')
+        {
+            i += 1;
+        }
+        if i == name_start {
+            break;
+        }
+        let name = &attrs[name_start..i];
+        // Optional whitespace, `=`, whitespace, then the value.
+        let mut j = i;
+        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        if j >= bytes.len() || bytes[j] != b'=' {
+            // Valueless attribute; carry on from where the name ended.
+            continue;
+        }
+        j += 1;
+        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        if j >= bytes.len() {
+            break;
+        }
+        let quote = bytes[j];
+        if quote != b'"' && quote != b'\'' {
+            // Unquoted value: skip it without interpreting it.
+            while j < bytes.len() && !bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            i = j;
+            continue;
+        }
+        let value_start = j + 1;
+        let Some(rel_end) = attrs[value_start..].find(quote as char) else {
+            break;
+        };
+        let value_end = value_start + rel_end;
+        if name.eq_ignore_ascii_case(wanted) {
+            return Some((
+                name_start,
+                value_end + 1,
+                attrs[value_start..value_end].to_string(),
+            ));
+        }
+        i = value_end + 1;
+    }
+    None
+}
+
+/// Collect every anchor in `html` that a fragment link could target.
+///
+/// `id` counts on any element. The legacy `name` attribute counts only on
+/// `<a>`, which is the only element it ever meant an anchor on: EPUBs from
+/// older toolchains still write `<a name="note1">` and kindlegen resolves
+/// those, but `name` on a form control or a `<meta>` is an unrelated
+/// attribute and must not shadow a real anchor of the same value.
+///
+/// When a document declares the same name twice the first wins, matching
+/// how a browser resolves a duplicate id.
+pub(crate) fn scan_anchors(html: &str) -> Vec<Anchor> {
+    let mut out: Vec<Anchor> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for_each_tag(html, |tag, attrs| {
+        if NON_TARGET_TAGS.contains(&tag.name.as_str()) {
+            return;
+        }
+        let attributes: &[&str] = if tag.name == "a" {
+            &["id", "name"]
+        } else {
+            &["id"]
+        };
+        for attr in attributes {
+            if let Some((_, _, value)) = find_attr(attrs, attr) {
+                if !value.is_empty() && seen.insert(value.clone()) {
+                    out.push(Anchor {
+                        name: value,
+                        offset: tag.start,
+                    });
+                }
+            }
+        }
+    });
+    out
+}
+
+/// Collect every `href` attribute on an `<a>` element in `html`, as byte
+/// ranges into `html`.
+///
+/// Ranges are returned in document order and never overlap, so a caller can
+/// rewrite them front to back while tracking how much the text has shifted.
+pub(crate) fn scan_hrefs(html: &str) -> Vec<HrefAttr> {
+    let mut out: Vec<HrefAttr> = Vec::new();
+    for_each_tag(html, |tag, attrs| {
+        if tag.name != "a" {
+            return;
+        }
+        // `attrs` starts at the byte after the element name.
+        let attrs_start = tag.end - 1 - attrs.len();
+        if let Some((rel_start, rel_end, value)) = find_attr(attrs, "href") {
+            out.push(HrefAttr {
+                start: attrs_start + rel_start,
+                end: attrs_start + rel_end,
+                value,
+            });
+        }
+    });
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn docs(hrefs: &[&str]) -> HashMap<String, usize> {
+        build_document_index(&hrefs.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn splits_href_into_path_and_fragment() {
+        assert_eq!(split_href("a.xhtml#f1"), ("a.xhtml", Some("f1")));
+        assert_eq!(split_href("a.xhtml"), ("a.xhtml", None));
+        assert_eq!(split_href("#f1"), ("", Some("f1")));
+        // A trailing `#` names no fragment.
+        assert_eq!(split_href("a.xhtml#"), ("a.xhtml", None));
+    }
+
+    #[test]
+    fn normalizes_dot_segments() {
+        assert_eq!(normalize_path("Text/../Images/a.jpg"), "Images/a.jpg");
+        assert_eq!(normalize_path("./a.xhtml"), "a.xhtml");
+        assert_eq!(normalize_path("Text//a.xhtml"), "Text/a.xhtml");
+    }
+
+    #[test]
+    fn percent_decodes_multibyte_escapes() {
+        assert_eq!(percent_decode("off%20spine.xhtml"), "off spine.xhtml");
+        // Three escapes forming one character, not three replacement chars.
+        assert_eq!(percent_decode("%E2%80%94"), "\u{2014}");
+        // Not an escape; left alone rather than mangled.
+        assert_eq!(percent_decode("100%"), "100%");
+        assert_eq!(percent_decode("%zz"), "%zz");
+    }
+
+    #[test]
+    fn resolves_relative_paths_against_the_containing_document() {
+        let d = docs(&["OEBPS/Text/ch1.xhtml", "OEBPS/Text/notes.xhtml"]);
+        assert_eq!(
+            resolve("OEBPS/Text/ch1.xhtml", 0, "../Text/notes.xhtml#n1", &d),
+            Resolution::Internal {
+                file: 1,
+                fragment: Some("n1".to_string())
+            }
+        );
+        assert_eq!(
+            resolve("OEBPS/Text/ch1.xhtml", 0, "notes.xhtml", &d),
+            Resolution::Internal {
+                file: 1,
+                fragment: None
+            }
+        );
+    }
+
+    #[test]
+    fn keeps_a_bare_fragment_in_its_own_document() {
+        let d = docs(&["Text/ch1.xhtml", "Text/ch2.xhtml"]);
+        // The same fragment name in two documents must not collide: each
+        // resolves to the document that wrote it.
+        assert_eq!(
+            resolve("Text/ch1.xhtml", 0, "#local", &d),
+            Resolution::Internal {
+                file: 0,
+                fragment: Some("local".to_string())
+            }
+        );
+        assert_eq!(
+            resolve("Text/ch2.xhtml", 1, "#local", &d),
+            Resolution::Internal {
+                file: 1,
+                fragment: Some("local".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn leaves_external_schemes_alone() {
+        let d = docs(&["a.xhtml"]);
+        for href in [
+            "https://example.org/",
+            "http://example.org/",
+            "mailto:a@example.org",
+            "tel:+15550100",
+            "kindle:pos:fid:0001:off:0000000000",
+        ] {
+            assert_eq!(
+                resolve("a.xhtml", 0, href, &d),
+                Resolution::External,
+                "{href}"
+            );
+        }
+    }
+
+    #[test]
+    fn reports_documents_outside_the_spine_as_unresolved() {
+        let d = docs(&["Text/a.xhtml"]);
+        assert_eq!(
+            resolve("Text/a.xhtml", 0, "missing.xhtml#x", &d),
+            Resolution::Unresolved
+        );
+        assert_eq!(resolve("Text/a.xhtml", 0, "#", &d), Resolution::Unresolved);
+        assert_eq!(resolve("Text/a.xhtml", 0, "", &d), Resolution::Unresolved);
+    }
+
+    #[test]
+    fn resolves_percent_encoded_document_names() {
+        let d = docs(&["Text/off spine.xhtml"]);
+        assert_eq!(
+            resolve("Text/a.xhtml", 9, "off%20spine.xhtml#deep", &d),
+            Resolution::Internal {
+                file: 0,
+                fragment: Some("deep".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn resolves_relative_to_a_percent_encoded_containing_document() {
+        // The directory the link is resolved against comes from the
+        // containing document's own href, which can be encoded as well.
+        let d = docs(&["My Text/a.xhtml", "My Text/b.xhtml"]);
+        assert_eq!(
+            resolve("My%20Text/a.xhtml", 0, "b.xhtml#f", &d),
+            Resolution::Internal {
+                file: 1,
+                fragment: Some("f".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn decodes_percent_encoded_fragments() {
+        let d = docs(&["a.xhtml", "b.xhtml"]);
+        assert_eq!(
+            resolve("a.xhtml", 0, "b.xhtml#note%201", &d),
+            Resolution::Internal {
+                file: 1,
+                fragment: Some("note 1".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn encodes_base32_the_way_kindle_reads_it() {
+        // Values checked against kindlegen output: 423 -> D7, 94 -> 2U.
+        assert_eq!(encode_base32(423, 10), "00000000D7");
+        assert_eq!(encode_base32(94, 10), "000000002U");
+        assert_eq!(encode_base32(0, 10), "0000000000");
+        assert_eq!(encode_base32(1, 4), "0001");
+        assert_eq!(encode_base32(31, 4), "000V");
+        assert_eq!(encode_base32(32, 4), "0010");
+    }
+
+    #[test]
+    fn finds_anchors_at_the_start_of_their_element() {
+        let html = r#"<h1 id="top">T</h1><p>x <span id="deep">y</span></p>"#;
+        let anchors = scan_anchors(html);
+        assert_eq!(
+            anchors[0],
+            Anchor {
+                name: "top".into(),
+                offset: 0
+            }
+        );
+        // The offset is the `<` of the span, not of its id attribute.
+        let span_at = html.find("<span").unwrap();
+        assert_eq!(
+            anchors[1],
+            Anchor {
+                name: "deep".into(),
+                offset: span_at
+            }
+        );
+    }
+
+    #[test]
+    fn finds_legacy_name_anchors() {
+        let html = r#"<p><a name="note1">n</a></p>"#;
+        let anchors = scan_anchors(html);
+        assert_eq!(anchors.len(), 1);
+        assert_eq!(anchors[0].name, "note1");
+        assert_eq!(anchors[0].offset, html.find("<a").unwrap());
+    }
+
+    #[test]
+    fn ignores_name_on_elements_where_it_is_not_an_anchor() {
+        // A form control named `n1` must not shadow the paragraph that
+        // actually declares the anchor.
+        let html = r#"<input name="n1"/><p id="n1">real</p>"#;
+        let anchors = scan_anchors(html);
+        assert_eq!(anchors.len(), 1);
+        assert_eq!(anchors[0].offset, html.find("<p").unwrap());
+    }
+
+    #[test]
+    fn ignores_anchors_on_wrapper_elements() {
+        // These tags do not survive into the text stream, so an id on them
+        // has no byte to point at.
+        let html =
+            r#"<html id="h"><head id="hd"></head><body id="b"><p id="real">x</p></body></html>"#;
+        let names: Vec<_> = scan_anchors(html).into_iter().map(|a| a.name).collect();
+        assert_eq!(names, vec!["real"]);
+    }
+
+    #[test]
+    fn keeps_the_first_of_a_duplicated_anchor_name() {
+        let html = r#"<p id="dup">one</p><p id="dup">two</p>"#;
+        let anchors = scan_anchors(html);
+        assert_eq!(anchors.len(), 1);
+        assert_eq!(anchors[0].offset, 0);
+    }
+
+    #[test]
+    fn finds_href_attributes_only_on_anchors() {
+        let html = r#"<link href="s.css"/><a href="x.xhtml#f">t</a><img src="i.jpg"/>"#;
+        let hrefs = scan_hrefs(html);
+        assert_eq!(hrefs.len(), 1);
+        assert_eq!(hrefs[0].value, "x.xhtml#f");
+        assert_eq!(&html[hrefs[0].start..hrefs[0].end], r#"href="x.xhtml#f""#);
+    }
+
+    #[test]
+    fn finds_href_after_other_attributes() {
+        let html = r#"<a id="r" epub:type="noteref" href="n.xhtml#n1" class="c">t</a>"#;
+        let hrefs = scan_hrefs(html);
+        assert_eq!(hrefs.len(), 1);
+        assert_eq!(&html[hrefs[0].start..hrefs[0].end], r#"href="n.xhtml#n1""#);
+    }
+
+    #[test]
+    fn reads_single_quoted_attribute_values() {
+        let html = "<a href='n.xhtml#n1'>t</a>";
+        let hrefs = scan_hrefs(html);
+        assert_eq!(hrefs[0].value, "n.xhtml#n1");
+        assert_eq!(&html[hrefs[0].start..hrefs[0].end], "href='n.xhtml#n1'");
+    }
+
+    #[test]
+    fn survives_a_greater_than_inside_an_attribute_value() {
+        // A `<[^>]*>` pattern cuts this tag in half and loses the href.
+        let html = r#"<a title="a > b" href="n.xhtml#n1">t</a><p id="after">x</p>"#;
+        let hrefs = scan_hrefs(html);
+        assert_eq!(hrefs.len(), 1);
+        assert_eq!(hrefs[0].value, "n.xhtml#n1");
+        let anchors = scan_anchors(html);
+        assert_eq!(anchors.len(), 1);
+        assert_eq!(anchors[0].name, "after");
+    }
+
+    #[test]
+    fn skips_comments_and_declarations() {
+        let html = r#"<!DOCTYPE html><!-- <a href="no.xhtml"> --><a href="yes.xhtml">t</a>"#;
+        let hrefs = scan_hrefs(html);
+        assert_eq!(hrefs.len(), 1);
+        assert_eq!(hrefs[0].value, "yes.xhtml");
+    }
+
+    #[test]
+    fn ignores_an_anchor_with_no_href() {
+        let html = r#"<a id="target">t</a><a href="x.xhtml">u</a>"#;
+        assert_eq!(scan_hrefs(html).len(), 1);
+    }
+
+    #[test]
+    fn leaves_unquoted_href_values_untouched() {
+        // Rewriting a value we cannot delimit would corrupt the tag.
+        let html = "<a href=x.xhtml>t</a>";
+        assert!(scan_hrefs(html).is_empty());
+    }
+}

@@ -16,6 +16,7 @@ use crate::exth;
 use crate::extracted::ExtractedEpub;
 use crate::html_check;
 use crate::indx::{self, LookupTerm};
+use crate::links;
 use crate::opf::{self, DictionaryEntry, OPFData};
 use crate::palmdoc;
 
@@ -1090,23 +1091,18 @@ fn build_book_mobi(
     } else {
         // --- Dual KF7+KF8 format ---
 
-        // Build the KF7 text content (stripped for KF7, with recindex for images)
-        eprintln!("Building KF7 text content...");
-        let text_content = build_text_content(opf, false);
-
-        // Rewrite image src attributes to recindex references for KF7
-        let text_content = if !href_to_recindex.is_empty() {
-            rewrite_image_src(&text_content, &href_to_recindex, &opf.spine_items)
-        } else {
-            text_content
-        };
-
-        // Drop KF8-only stylesheet links from the KF7 half. `kindle:flow:` is a
+        // Build the KF7 text content. This resolves internal links to
+        // `filepos` byte offsets, rewrites image src attributes to recindex
+        // references, and drops KF8-only stylesheet links — all per spine
+        // document, because the last two change byte lengths and doing them
+        // afterwards would invalidate the link offsets. (`kindle:flow:` is a
         // KF8 URI scheme and the KF7 stream carries no flows, so a MOBI6
         // renderer has nothing to resolve it against. It reached every
         // --legacy-mobi comic, whose whole reason for existing is the old
-        // devices that would have to parse it (issue #33).
-        let text_content = strip_kf8_flow_links(&text_content);
+        // devices that would have to parse it (issue #33).)
+        eprintln!("Building KF7 text content...");
+        let recindex_lookup = build_recindex_lookup(&href_to_recindex, &opf.spine_items);
+        let text_content = build_text_content(opf, false, &recindex_lookup);
 
         // Build KF7 text records
         let (text_records, text_length) = if no_compress {
@@ -2042,50 +2038,185 @@ fn extract_css_content(
     (css_parts.join("\n"), extracted_basenames)
 }
 
-/// Read and concatenate all spine HTML files into a single text blob.
+/// A `filepos` value is exactly ten digits, so the placeholder written on
+/// the first pass is the same width as the number patched in on the second
+/// and nothing shifts between them.
+const FILEPOS_DIGITS: usize = 10;
+
+/// What a `filepos=` placeholder is waiting for, once every document's
+/// position in the merged stream is known.
+struct PendingFilepos {
+    /// Offset of the first of the ten digits, relative to the document body
+    /// the link sits in.
+    digits: usize,
+    /// Target document in spine order and the fragment inside it, or `None`
+    /// when the link could not be resolved to a document at all.
+    target: Option<(usize, Option<String>)>,
+}
+
+/// Read and concatenate all spine HTML files into a single text blob, with
+/// internal links rewritten to MOBI6 `filepos` byte offsets.
 ///
 /// When `strip_idx` is true (dictionary mode), idx: namespace markup is stripped.
 /// When false (book mode), HTML is cleaned minimally.
-fn build_text_content(opf: &OPFData, strip_idx: bool) -> Vec<u8> {
-    let mut parts: Vec<String> = Vec::new();
+///
+/// Merging throws the file boundaries away, so `<a href="notes.xhtml#n1">`
+/// stops meaning anything: a MOBI6 reader follows `filepos`, a byte offset
+/// into this blob, and ignores an href entirely. Every internal link is
+/// therefore replaced here, in two passes. The first writes a fixed-width
+/// placeholder while merging, which is what fixes each document's start
+/// offset; the second fills in the digits once those offsets exist. A link
+/// whose target is not in the spine, or names a fragment no element
+/// declares, gets `filepos=XXXXXXXXXX` — the same inert, same-width marker
+/// kindlegen writes for a link it could not resolve.
+///
+/// `recindex_lookup` is applied per document rather than to the merged blob
+/// because rewriting an image src changes byte lengths; doing it afterwards
+/// would move every anchor out from under the offsets computed here.
+fn build_text_content(
+    opf: &OPFData,
+    strip_idx: bool,
+    recindex_lookup: &std::collections::HashMap<String, usize>,
+) -> Vec<u8> {
+    let body_re = Regex::new(r"(?s)<body[^>]*>(.*?)</body>").unwrap();
+    let head_re = Regex::new(r"(?s)<head[^>]*>.*?</head>").unwrap();
 
-    for html_path in opf.get_content_html_paths() {
-        let content = std::fs::read_to_string(&html_path).unwrap_or_default();
+    let doc_hrefs = opf.get_content_html_hrefs();
+    let documents = links::build_document_index(&doc_hrefs);
+
+    let mut body_contents: Vec<String> = Vec::new();
+    let mut body_anchors: Vec<Vec<links::Anchor>> = Vec::new();
+    let mut body_links: Vec<Vec<PendingFilepos>> = Vec::new();
+    let mut first_head: Option<String> = None;
+
+    for (index, html_path) in opf.get_content_html_paths().iter().enumerate() {
+        let content = std::fs::read_to_string(html_path).unwrap_or_default();
         let cleaned = if strip_idx {
             strip_idx_markup(&content)
         } else {
             clean_book_html(&content)
         };
-        parts.push(cleaned);
-    }
+        // Both of these change byte lengths, so they have to happen before
+        // anything measures an offset.
+        let cleaned = apply_recindex_lookup(&cleaned, recindex_lookup);
+        let cleaned =
+            String::from_utf8_lossy(&strip_kf8_flow_links(cleaned.as_bytes())).to_string();
 
-    // Merge all HTML files into a single document
-    let body_re = Regex::new(r"(?s)<body[^>]*>(.*?)</body>").unwrap();
-    let head_re = Regex::new(r"(?s)<head[^>]*>.*?</head>").unwrap();
-
-    let mut body_contents: Vec<String> = Vec::new();
-    let mut first_head: Option<String> = None;
-
-    for part in &parts {
-        if let Some(cap) = body_re.captures(part) {
-            body_contents.push(cap.get(1).unwrap().as_str().trim().to_string());
-        } else {
-            body_contents.push(part.clone());
-        }
         if first_head.is_none() {
-            if let Some(cap) = head_re.captures(part) {
+            if let Some(cap) = head_re.captures(&cleaned) {
                 first_head = Some(cap.get(0).unwrap().as_str().to_string());
             }
         }
+        let body = match body_re.captures(&cleaned) {
+            Some(cap) => cap.get(1).unwrap().as_str().trim().to_string(),
+            None => cleaned.clone(),
+        };
+
+        let doc_href = doc_hrefs.get(index).map(|s| s.as_str()).unwrap_or("");
+        let (body, pending) = replace_hrefs_with_filepos(&body, doc_href, index, &documents);
+        body_anchors.push(links::scan_anchors(&body));
+        body_links.push(pending);
+        body_contents.push(body);
     }
 
     let head = first_head.unwrap_or_else(|| "<head><guide></guide></head>".to_string());
-    let merged_body = body_contents.join("<mbp:pagebreak/>");
+    const SEPARATOR: &str = "<mbp:pagebreak/>";
+    let merged_body = body_contents.join(SEPARATOR);
     let combined = format!(
         "<html>{}<body>{}  <mbp:pagebreak/></body></html>",
         head, merged_body
     );
-    combined.into_bytes()
+
+    // Where each document's body landed in the finished blob. Everything
+    // above this point is fixed-width, so these offsets are final.
+    let mut doc_start: Vec<usize> = Vec::with_capacity(body_contents.len());
+    let mut cursor = "<html>".len() + head.len() + "<body>".len();
+    for body in &body_contents {
+        doc_start.push(cursor);
+        cursor += body.len() + SEPARATOR.len();
+    }
+
+    let anchor_offsets: Vec<std::collections::HashMap<&str, usize>> = body_anchors
+        .iter()
+        .enumerate()
+        .map(|(i, anchors)| {
+            anchors
+                .iter()
+                .map(|a| (a.name.as_str(), doc_start[i] + a.offset))
+                .collect()
+        })
+        .collect();
+
+    let mut bytes = combined.into_bytes();
+    let mut unresolved = 0usize;
+    for (i, pending) in body_links.iter().enumerate() {
+        for link in pending {
+            let resolved = match &link.target {
+                Some((file, None)) => Some(doc_start[*file]),
+                Some((file, Some(fragment))) => anchor_offsets
+                    .get(*file)
+                    .and_then(|m| m.get(fragment.as_str()))
+                    .copied(),
+                None => None,
+            };
+            let at = doc_start[i] + link.digits;
+            match resolved {
+                Some(offset) => {
+                    let digits = format!("{:0width$}", offset, width = FILEPOS_DIGITS);
+                    bytes[at..at + FILEPOS_DIGITS].copy_from_slice(digits.as_bytes());
+                }
+                None => unresolved += 1,
+            }
+        }
+    }
+    if unresolved > 0 {
+        eprintln!(
+            "{} internal link(s) could not be resolved and will not navigate; \
+             they point at a document outside the spine or at a missing anchor",
+            unresolved
+        );
+    }
+    bytes
+}
+
+/// Replace every internal `<a href>` in one document's body with a
+/// fixed-width `filepos=` placeholder, returning the rewritten body and the
+/// offsets still to be filled in.
+///
+/// The placeholder starts out as `XXXXXXXXXX`, so a link nothing ever
+/// resolves is already correct and only the resolvable ones get patched.
+fn replace_hrefs_with_filepos(
+    body: &str,
+    doc_href: &str,
+    self_index: usize,
+    documents: &std::collections::HashMap<String, usize>,
+) -> (String, Vec<PendingFilepos>) {
+    let hrefs = links::scan_hrefs(body);
+    if hrefs.is_empty() {
+        return (body.to_string(), Vec::new());
+    }
+    let mut out = String::with_capacity(body.len());
+    let mut pending: Vec<PendingFilepos> = Vec::new();
+    let mut cursor = 0usize;
+    for href in &hrefs {
+        let resolution = links::resolve(doc_href, self_index, &href.value, documents);
+        if resolution == links::Resolution::External {
+            continue;
+        }
+        out.push_str(&body[cursor..href.start]);
+        out.push_str("filepos=");
+        pending.push(PendingFilepos {
+            digits: out.len(),
+            target: match resolution {
+                links::Resolution::Internal { file, fragment } => Some((file, fragment)),
+                _ => None,
+            },
+        });
+        out.push_str(&"X".repeat(FILEPOS_DIGITS));
+        cursor = href.end;
+    }
+    out.push_str(&body[cursor..]);
+    (out, pending)
 }
 
 /// Build text content for a dictionary, splitting at entry boundaries to stay
@@ -2716,7 +2847,20 @@ fn rewrite_image_src(
     spine_items: &[(String, String)],
 ) -> Vec<u8> {
     let text = String::from_utf8_lossy(text_bytes);
+    let lookup = build_recindex_lookup(href_to_recindex, spine_items);
+    apply_recindex_lookup(&text, &lookup).into_bytes()
+}
 
+/// Build the src-path-to-recindex lookup used by `rewrite_image_src`.
+///
+/// Split out from the rewrite so the book path can build it once and apply
+/// it to each spine document separately. Doing the substitution per document
+/// is what lets `build_text_content` know each document's final byte offset
+/// in the merged stream, which is what `filepos` links are made of.
+fn build_recindex_lookup(
+    href_to_recindex: &std::collections::HashMap<String, usize>,
+    spine_items: &[(String, String)],
+) -> std::collections::HashMap<String, usize> {
     // Build a lookup that maps various path forms to recindex.
     // For each manifest href like "Images/cover.jpg", we want to match:
     // - "Images/cover.jpg" (exact)
@@ -2772,9 +2916,20 @@ fn rewrite_image_src(
         }
     }
 
-    // Replace src="..." with recindex="NNNNN" using regex
+    path_to_recindex
+}
+
+/// Replace `src="..."` with `recindex="NNNNN"` for every image the lookup
+/// knows about, leaving anything else untouched.
+fn apply_recindex_lookup(
+    text: &str,
+    path_to_recindex: &std::collections::HashMap<String, usize>,
+) -> String {
+    if path_to_recindex.is_empty() {
+        return text.to_string();
+    }
     let src_re = Regex::new(r#"(?i)\bsrc\s*=\s*"([^"]*)""#).unwrap();
-    let result = src_re.replace_all(&text, |caps: &regex::Captures| {
+    let result = src_re.replace_all(text, |caps: &regex::Captures| {
         let src_path = caps.get(1).unwrap().as_str();
         // Try to match the src path
         if let Some(&recindex) = path_to_recindex.get(src_path) {
@@ -2800,7 +2955,7 @@ fn rewrite_image_src(
         }
     });
 
-    result.into_owned().into_bytes()
+    result.into_owned()
 }
 
 /// Simple percent-decoding for URL-encoded paths (handles %20, %2F, etc.)

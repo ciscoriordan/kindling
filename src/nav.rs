@@ -4,6 +4,7 @@
 /// nav document (`properties="nav"`) or, failing that, the EPUB 2 NCX
 /// (`toc.ncx`), so the on-device "Go To" TOC can show the book's real
 /// chapter names instead of each spine file's `<title>` tag (issue #18).
+use crate::links;
 use quick_xml::Reader;
 use quick_xml::events::Event;
 
@@ -130,7 +131,7 @@ fn parse_nav_xhtml(content: &str, nav_dir: &str) -> Vec<NavPoint> {
                         .find(|a| a.key.as_ref() == b"href")
                         .map(|a| String::from_utf8_lossy(&a.value).to_string())
                         .unwrap_or_default();
-                    if !href.is_empty() && !is_external_href(&href) {
+                    if !href.is_empty() && !links::is_external_href(&href) {
                         let (file, frag) = resolve_href(nav_dir, &href);
                         current = Some((file, frag, String::new(), ol_depth.saturating_sub(1)));
                     }
@@ -224,7 +225,10 @@ fn parse_toc_ncx(content: &str, ncx_dir: &str) -> Vec<NavPoint> {
                             .unwrap_or_default();
                         if let Some(label) = pending_label.take() {
                             let label = collapse_whitespace(&label);
-                            if !label.is_empty() && !src.is_empty() && !is_external_href(&src) {
+                            if !label.is_empty()
+                                && !src.is_empty()
+                                && !links::is_external_href(&src)
+                            {
                                 let (file, frag) = resolve_href(ncx_dir, &src);
                                 if !file.is_empty() {
                                     points.push(NavPoint {
@@ -280,7 +284,7 @@ pub fn group_by_spine(nav_points: &[NavPoint], spine_hrefs: &[String]) -> Vec<Ve
     let index: std::collections::HashMap<String, usize> = spine_hrefs
         .iter()
         .enumerate()
-        .map(|(i, h)| (normalize_path(&percent_decode_str(h)), i))
+        .map(|(i, h)| (links::normalize_path(&percent_decode_str(h)), i))
         .collect();
     for p in nav_points {
         if let Some(&i) = index.get(&p.file_href) {
@@ -300,50 +304,21 @@ fn parent_dir(href: &str) -> &str {
 
 /// Split an href into (file, fragment), percent-decode the file part, and
 /// resolve it against the referencing document's directory.
+///
+/// `crate::links` owns the path and scheme rules so the navigation tables
+/// and the `filepos` / `kindle:pos` link writers agree on what an href
+/// points at; a second set of rules here would let the table of contents
+/// and the links in the text disagree about the same href.
 fn resolve_href(doc_dir: &str, href: &str) -> (String, Option<String>) {
-    let (file, frag) = match href.find('#') {
-        Some(i) => (&href[..i], Some(href[i + 1..].to_string())),
-        None => (href, None),
-    };
-    let frag = frag.filter(|f| !f.is_empty());
+    let (file, frag) = links::split_href(href);
+    let frag = frag.map(|f| f.to_string());
     let decoded = percent_decode_str(file.trim());
     let joined = if doc_dir.is_empty() {
         decoded
     } else {
         format!("{}/{}", doc_dir, decoded)
     };
-    (normalize_path(&joined), frag)
-}
-
-/// Resolve `.` and `..` segments in a slash-separated path.
-fn normalize_path(path: &str) -> String {
-    let mut segments: Vec<&str> = Vec::new();
-    for seg in path.split('/') {
-        match seg {
-            "" | "." => {}
-            ".." => {
-                segments.pop();
-            }
-            s => segments.push(s),
-        }
-    }
-    segments.join("/")
-}
-
-fn is_external_href(href: &str) -> bool {
-    let lower = href.trim().to_ascii_lowercase();
-    [
-        "http://",
-        "https://",
-        "mailto:",
-        "kindle:",
-        "tel:",
-        "data:",
-        "javascript:",
-        "ftp://",
-    ]
-    .iter()
-    .any(|s| lower.starts_with(s))
+    (links::normalize_path(&joined), frag)
 }
 
 /// Collapse whitespace runs to single spaces and trim.

@@ -25,6 +25,7 @@
 /// footer; data records carry the per-entry control-byte-prefixed
 /// tag value stream and an IDXT footer pointing at each entry's
 /// starting offset.
+use crate::links;
 use regex::Regex;
 
 use crate::cncx::CncxBuilder;
@@ -545,17 +546,24 @@ fn build_kf8_html(
     kindlegen_parity: bool,
 ) -> (Vec<u8>, Vec<SkeletonEntry>, Vec<FragmentEntry>) {
     let path_to_recindex = build_image_path_lookup(href_to_recindex, spine_items);
-    // Map every internal spine-file reference (full href and bare
-    // basename, raw and percent-decoded) to the 4-char base32 fragment id
-    // of that file, which equals its position in `spine_hrefs` because
-    // kindling emits exactly one fragment per spine item. Used to rewrite
-    // `<a href="other.xhtml">` to `kindle:pos:fid:FFFF:off:...`.
-    let href_to_fid = build_internal_link_lookup(spine_hrefs);
+    // Every spine document's normalized href mapped to its position in
+    // spine order, which is also its fragment id because kindling emits
+    // exactly one fragment per spine document. Used to rewrite
+    // `<a href="other.xhtml#frag">` to `kindle:pos:fid:FFFF:off:OOOOOOOOOO`.
+    let documents = links::build_document_index(spine_hrefs);
 
     let mut skeleton_entries: Vec<SkeletonEntry> = Vec::new();
     let mut fragment_entries: Vec<FragmentEntry> = Vec::new();
     let mut combined: Vec<u8> = Vec::new();
     let mut global_seq: usize = 0;
+    // Anchor tables and link sites, filled in as each part is emitted and
+    // resolved once every fragment's contents are final. `fragment_anchors`
+    // holds offsets relative to a fragment's own text, which is exactly
+    // what a `kindle:pos` offset means; `pending_links` holds absolute
+    // positions in `combined` where those offsets get written.
+    let mut fragment_anchors: Vec<std::collections::HashMap<String, usize>> = Vec::new();
+    let mut pending_links: Vec<(usize, (usize, Option<String>))> = Vec::new();
+    let mut unresolved = 0usize;
 
     // AID counter: in parity mode kindlegen resets the intra-counter to
     // 0 at each spine item and prefixes every AID with `spine_idx *
@@ -573,20 +581,27 @@ fn build_kf8_html(
         };
         // 1. Normalize this spine item into Calibre-style KF8 output:
         //    add aid attributes to aid-able tags, rewrite image src URLs
-        //    to `kindle:embed:...`, internal `<a href>` links to
-        //    `kindle:pos:fid:...`, and `<link href="*.css">` to
+        //    to `kindle:embed:...`, and `<link href="*.css">` to
         //    `kindle:flow:0001`.
         let processed = process_kf8_part(
             raw_part,
             &mut aid_counter,
             &path_to_recindex,
-            &href_to_fid,
             css_basenames,
             kindlegen_parity,
         );
         if !kindlegen_parity {
             global_aid_counter = aid_counter;
         }
+
+        // 1b. Rewrite internal `<a href>` links to `kindle:pos` URLs. This
+        //     has to follow aid injection, which moves every byte after
+        //     each tag it touches, and precede the split, so that a link
+        //     anywhere in the part gets a recorded position.
+        let doc_href = spine_hrefs.get(skel_idx).map(|s| s.as_str()).unwrap_or("");
+        let (processed, pending, part_unresolved) =
+            replace_hrefs_with_kindle_pos(&processed, doc_href, skel_idx, &documents);
+        unresolved += part_unresolved;
 
         // 2. Split into (skeleton, body_inner). The body tag is left
         //    on the skeleton with its aid attribute intact, but the
@@ -615,7 +630,32 @@ fn build_kf8_html(
         combined.extend_from_slice(body_inner);
         let frag_len = body_inner.len();
 
-        let _ = frag_start; // start position in combined text, not stored
+        // 5b. Record what this part contributes to link resolution: the
+        //     anchors a link can land on, at offsets relative to the
+        //     fragment's own text (which is what a `kindle:pos` offset
+        //     counts from), and the positions in `combined` where this
+        //     part's own links get their offsets written.
+        fragment_anchors.push(
+            links::scan_anchors(&split.body_inner)
+                .into_iter()
+                .map(|a| (a.name, a.offset))
+                .collect(),
+        );
+        let body_end = split.body_inner_offset + split.body_inner.len();
+        for link in pending {
+            // A position in `processed` falls in the skeleton's head, in
+            // the fragment, or in the skeleton's tail after the fragment
+            // was lifted out of it.
+            let at = if link.url_at < split.body_inner_offset {
+                skel_start + link.url_at
+            } else if link.url_at < body_end {
+                frag_start + (link.url_at - split.body_inner_offset)
+            } else {
+                skel_start + link.url_at - split.body_inner.len()
+            };
+            pending_links.push((at, link.target));
+        }
+
         // Compute start_pos relative to the first fragment of this
         // skel's fragment block (which is `skel_start + skel_len`).
         // With one fragment per skel, this is 0.
@@ -637,6 +677,42 @@ fn build_kf8_html(
             length: skel_len,
             chunk_count: 1,
         });
+    }
+
+    // Second pass: every fragment's contents are final, so each link's
+    // target byte offset is now known. Writing it never changes a length —
+    // the URL was emitted at full width — so nothing computed above moves.
+    for (at, (file, fragment)) in pending_links {
+        let offset = match &fragment {
+            None => Some(0),
+            Some(name) => fragment_anchors
+                .get(file)
+                .and_then(|m| m.get(name))
+                .copied(),
+        };
+        match offset {
+            Some(offset) => {
+                let encoded = links::encode_base32(offset, KINDLE_POS_OFF_LEN);
+                let start = at + KINDLE_POS_OFF_AT;
+                combined[start..start + encoded.len()].copy_from_slice(encoded.as_bytes());
+            }
+            // The document exists but declares no such anchor. Blank the
+            // whole URL rather than leave a link that would jump to the
+            // top of an unrelated document.
+            None => {
+                for byte in combined[at..at + KINDLE_POS_LEN].iter_mut() {
+                    *byte = b'X';
+                }
+                unresolved += 1;
+            }
+        }
+    }
+    if unresolved > 0 {
+        eprintln!(
+            "KF8: {} internal link(s) could not be resolved and will not navigate; \
+             they point at a document outside the spine or at a missing anchor",
+            unresolved
+        );
     }
 
     (combined, skeleton_entries, fragment_entries)
@@ -812,6 +888,11 @@ fn extract_aid_value(tag_str: &str) -> Option<String> {
 /// image sources. Calibre's aid-able tag set + the standard
 /// `kindle:embed:XXXX?mime=image/<ext>` src rewrite.
 ///
+/// Internal `<a href>` links are NOT rewritten here. They are rewritten by
+/// `build_kf8_html` after this returns, because a `kindle:pos` link carries
+/// a byte offset into the target fragment and aid injection below moves
+/// every byte in this part.
+///
 /// `kindlegen_parity` swaps the IANA-correct `image/jpeg` mime for the
 /// non-standard `image/jpg` kindlegen emits, and drops `img` from the
 /// aid-able tag set so img tags are left unaided (matching kindlegen).
@@ -819,7 +900,6 @@ fn process_kf8_part(
     html: &str,
     aid_counter: &mut u32,
     path_to_recindex: &std::collections::HashMap<String, usize>,
-    href_to_fid: &std::collections::HashMap<String, String>,
     css_basenames: &std::collections::HashSet<String>,
     kindlegen_parity: bool,
 ) -> String {
@@ -872,32 +952,6 @@ fn process_kf8_part(
                     format!(
                         "{}kindle:flow:0001?mime=text/css{}",
                         caps.get(1).unwrap().as_str(),
-                        caps.get(3).unwrap().as_str()
-                    )
-                } else {
-                    caps.get(0).unwrap().as_str().to_string()
-                }
-            })
-            .to_string();
-    }
-
-    // Rewrite internal `<a href="other.xhtml#frag">` links to
-    // `kindle:pos:fid:FFFF:off:OOOOOOOOOO`. FFFF is the 4-char base32
-    // fragment id of the target spine file; OFF is a 10-digit decimal
-    // byte offset within that fragment. Whole-file links (and, for now,
-    // `#frag` links) resolve to offset 0 (the start of the target file).
-    // External schemes and unknown targets are left untouched.
-    if !href_to_fid.is_empty() {
-        let a_re = Regex::new(r#"(?i)(<a\b[^>]*\bhref\s*=\s*")([^"]+)("[^>]*>)"#).unwrap();
-        result = a_re
-            .replace_all(&result, |caps: &regex::Captures| {
-                let href = caps.get(2).unwrap().as_str();
-                if let Some(fid) = resolve_internal_link(href, href_to_fid) {
-                    format!(
-                        "{}kindle:pos:fid:{}:off:{:010}{}",
-                        caps.get(1).unwrap().as_str(),
-                        fid,
-                        0,
                         caps.get(3).unwrap().as_str()
                     )
                 } else {
@@ -1004,69 +1058,89 @@ fn build_image_path_lookup(
     path_to_recindex
 }
 
-/// Build the internal-link lookup: every spine HTML reference (full href
-/// and bare basename, raw and percent-decoded) maps to the 4-char base32
-/// fragment id of that file. The fragment id equals the file's position
-/// in `spine_hrefs` because kindling emits exactly one fragment per spine
-/// item. The first spine item wins on basename collisions.
-fn build_internal_link_lookup(spine_hrefs: &[String]) -> std::collections::HashMap<String, String> {
-    let mut map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    for (i, href) in spine_hrefs.iter().enumerate() {
-        let fid = encode_base32_4char(i);
-        let decoded = percent_decode_str(href);
-        map.entry(href.clone()).or_insert_with(|| fid.clone());
-        map.entry(decoded.clone()).or_insert_with(|| fid.clone());
-        if let Some(b) = href.rsplit('/').next() {
-            map.entry(b.to_string()).or_insert_with(|| fid.clone());
-        }
-        if let Some(b) = decoded.rsplit('/').next() {
-            map.entry(b.to_string()).or_insert_with(|| fid.clone());
-        }
-    }
-    map
+/// A `kindle:pos` link whose target byte offset is not known yet.
+///
+/// The URL is written at full width on the first pass so nothing shifts
+/// when the offset is filled in on the second.
+struct PendingPos {
+    /// Offset of `kindle:pos:` itself, relative to whichever string the
+    /// rewrite returned.
+    url_at: usize,
+    /// Target fragment in spine order, and the anchor inside it. `None`
+    /// for a whole-document link, which lands at offset 0.
+    target: (usize, Option<String>),
 }
 
-/// Resolve an `<a href>` value to a target fragment id, or `None` if it is
-/// an external link, a same-page anchor, or an unknown target (all left
-/// untouched). Strips any `#fragment` and a leading `./`.
-fn resolve_internal_link(
-    href: &str,
-    href_to_fid: &std::collections::HashMap<String, String>,
-) -> Option<String> {
-    let href = href.trim();
-    let lower = href.to_ascii_lowercase();
-    for scheme in [
-        "http://",
-        "https://",
-        "mailto:",
-        "kindle:",
-        "tel:",
-        "data:",
-        "javascript:",
-        "ftp://",
-    ] {
-        if lower.starts_with(scheme) {
-            return None;
+/// The pieces of a `kindle:pos:fid:FFFF:off:OOOOOOOOOO` URL. Both fields
+/// are fixed width, which is what lets the offset be filled in later
+/// without moving anything around it.
+const KINDLE_POS_SCHEME: &str = "kindle:pos:fid:";
+const KINDLE_POS_SEPARATOR: &str = ":off:";
+const KINDLE_POS_FID_LEN: usize = 4;
+const KINDLE_POS_OFF_LEN: usize = 10;
+/// Offset of the first of the offset characters within that URL.
+const KINDLE_POS_OFF_AT: usize =
+    KINDLE_POS_SCHEME.len() + KINDLE_POS_FID_LEN + KINDLE_POS_SEPARATOR.len();
+/// Total width of the URL, which a dead link is filled with instead.
+const KINDLE_POS_LEN: usize = KINDLE_POS_OFF_AT + KINDLE_POS_OFF_LEN;
+
+/// Rewrite every internal `<a href>` in one processed part to a
+/// `kindle:pos` URL, returning the rewritten string and the offsets still
+/// to be filled in.
+///
+/// The fragment id is known immediately — it is the target document's
+/// position in spine order, because kindling emits exactly one fragment per
+/// spine document — but the offset inside it is not, so it starts as ten
+/// `X` characters. A link that resolves to no document at all is written as
+/// a full-width run of `X`, which is the inert placeholder kindlegen uses
+/// for a link it reports as unresolved.
+///
+/// This must run after aid injection: the offsets recorded here are into
+/// the returned string, and injecting `aid` attributes afterwards would
+/// move them.
+fn replace_hrefs_with_kindle_pos(
+    html: &str,
+    doc_href: &str,
+    self_index: usize,
+    documents: &std::collections::HashMap<String, usize>,
+) -> (String, Vec<PendingPos>, usize) {
+    let hrefs = links::scan_hrefs(html);
+    if hrefs.is_empty() {
+        return (html.to_string(), Vec::new(), 0);
+    }
+    let mut out = String::with_capacity(html.len());
+    let mut pending: Vec<PendingPos> = Vec::new();
+    let mut unresolved = 0usize;
+    let mut cursor = 0usize;
+    for href in &hrefs {
+        match links::resolve(doc_href, self_index, &href.value, documents) {
+            links::Resolution::External => continue,
+            links::Resolution::Internal { file, fragment } => {
+                out.push_str(&html[cursor..href.start]);
+                out.push_str("href=\"");
+                pending.push(PendingPos {
+                    url_at: out.len(),
+                    target: (file, fragment),
+                });
+                out.push_str(KINDLE_POS_SCHEME);
+                out.push_str(&links::encode_base32(file, KINDLE_POS_FID_LEN));
+                out.push_str(KINDLE_POS_SEPARATOR);
+                out.push_str(&"X".repeat(KINDLE_POS_OFF_LEN));
+                out.push('"');
+                cursor = href.end;
+            }
+            links::Resolution::Unresolved => {
+                out.push_str(&html[cursor..href.start]);
+                out.push_str("href=\"");
+                out.push_str(&"X".repeat(KINDLE_POS_LEN));
+                out.push('"');
+                cursor = href.end;
+                unresolved += 1;
+            }
         }
     }
-    // Same-page anchor (no file part) — can't map to a file fid here.
-    if href.starts_with('#') {
-        return None;
-    }
-    let file = href.split('#').next().unwrap_or(href);
-    let file = file.strip_prefix("./").unwrap_or(file);
-    if file.is_empty() {
-        return None;
-    }
-    if let Some(f) = href_to_fid.get(file) {
-        return Some(f.clone());
-    }
-    let decoded = percent_decode_str(file);
-    if let Some(f) = href_to_fid.get(&decoded) {
-        return Some(f.clone());
-    }
-    let base = decoded.rsplit('/').next().unwrap_or(&decoded);
-    href_to_fid.get(base).cloned()
+    out.push_str(&html[cursor..]);
+    (out, pending, unresolved)
 }
 
 /// Minimal percent-decoder for href basename comparison (mirrors the one
@@ -2284,7 +2358,6 @@ mod tests {
             html,
             &mut counter,
             &lookup,
-            &std::collections::HashMap::new(),
             &std::collections::HashSet::new(),
             false,
         );
