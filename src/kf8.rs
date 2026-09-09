@@ -551,6 +551,19 @@ fn build_kf8_html(
     // exactly one fragment per spine document. Used to rewrite
     // `<a href="other.xhtml#frag">` to `kindle:pos:fid:FFFF:off:OOOOOOOOOO`.
     let documents = links::build_document_index(spine_hrefs);
+    // Spine documents this half does not emit. `build_book_mobi` drops a
+    // bare in-spine cover page here, because the metadata cover renders
+    // full-page, and a table of contents linking to it would otherwise
+    // point at nothing. Send those links to the start of the book instead.
+    let mut redirects: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    if !spine_hrefs.is_empty() {
+        for (_, href) in spine_items {
+            let key = links::normalize_path(&links::percent_decode(href));
+            if !documents.contains_key(&key) {
+                redirects.insert(key, 0);
+            }
+        }
+    }
 
     let mut skeleton_entries: Vec<SkeletonEntry> = Vec::new();
     let mut fragment_entries: Vec<FragmentEntry> = Vec::new();
@@ -604,7 +617,7 @@ fn build_kf8_html(
         //     anywhere in the part gets a recorded position.
         let doc_href = spine_hrefs.get(skel_idx).map(|s| s.as_str()).unwrap_or("");
         let (processed, pending, part_unresolved) =
-            replace_hrefs_with_kindle_pos(&processed, doc_href, skel_idx, &documents);
+            replace_hrefs_with_kindle_pos(&processed, doc_href, skel_idx, &documents, &redirects);
         unresolved += part_unresolved;
 
         // 2. Split into (skeleton, body_inner). The body tag is left
@@ -1116,6 +1129,7 @@ fn replace_hrefs_with_kindle_pos(
     doc_href: &str,
     self_index: usize,
     documents: &std::collections::HashMap<String, usize>,
+    redirects: &std::collections::HashMap<String, usize>,
 ) -> (String, Vec<PendingPos>, usize) {
     let hrefs = links::scan_hrefs(html);
     if hrefs.is_empty() {
@@ -1126,7 +1140,7 @@ fn replace_hrefs_with_kindle_pos(
     let mut unresolved = 0usize;
     let mut cursor = 0usize;
     for href in &hrefs {
-        match links::resolve(doc_href, self_index, &href.value, documents) {
+        match links::resolve(doc_href, self_index, &href.value, documents, redirects) {
             links::Resolution::Leave => continue,
             links::Resolution::Internal { file, fragment } => {
                 out.push_str(&html[cursor..href.start]);

@@ -169,11 +169,20 @@ pub(crate) fn build_document_index(hrefs: &[String]) -> HashMap<String, usize> {
 /// `doc_href` is the containing document's own manifest href, which is what
 /// makes `../Text/notes.xhtml` and a bare `#frag` mean different things in
 /// different documents.
+///
+/// `redirects` names documents that are in the spine but not in this half of
+/// the file, mapped to the document a link to them should land on instead.
+/// The KF8 half drops a bare in-spine cover page, because the metadata cover
+/// already renders full-page, and a table of contents that links to it would
+/// otherwise be pointing at nothing. The destination is not in doubt, so
+/// such a link goes to the start of the book rather than being killed. Pass
+/// an empty map where nothing is dropped.
 pub(crate) fn resolve(
     doc_href: &str,
     self_index: usize,
     href: &str,
     documents: &HashMap<String, usize>,
+    redirects: &HashMap<String, usize>,
 ) -> Resolution {
     let href = href.trim();
     if href.is_empty() || is_external_href(href) {
@@ -204,6 +213,13 @@ pub(crate) fn resolve(
     };
     let target = normalize_path(&joined);
 
+    if let Some(&file) = redirects.get(&target) {
+        // The document itself is gone, so any fragment inside it is too.
+        return Resolution::Internal {
+            file,
+            fragment: None,
+        };
+    }
     match documents.get(&target) {
         Some(&file) => Resolution::Internal { file, fragment },
         // Not in the spine. A manifest-only document is not in the text
@@ -362,12 +378,27 @@ fn for_each_tag<F: FnMut(&TagSpan, &str)>(html: &str, mut f: F) {
 /// rather than guessed at, so such a link keeps its href and stays inert
 /// instead of being rewritten to the wrong place.
 fn find_attr(attrs: &str, wanted: &str) -> Option<(usize, usize, String)> {
+    // Characters that can appear inside an attribute name. A name has to
+    // start after one of something else, otherwise the tail of a longer
+    // name reads as a name of its own and `data.href` is mistaken for
+    // `href`.
+    fn name_char(b: u8) -> bool {
+        b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b':' || b == b'.'
+    }
+
     let bytes = attrs.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
         // Skip to the start of an attribute name.
         while i < bytes.len() && !bytes[i].is_ascii_alphabetic() {
             i += 1;
+        }
+        if i > 0 && i < bytes.len() && name_char(bytes[i - 1]) {
+            // Mid-name, so not the start of one. Step over the rest of it.
+            while i < bytes.len() && name_char(bytes[i]) {
+                i += 1;
+            }
+            continue;
         }
         let name_start = i;
         while i < bytes.len()
@@ -551,14 +582,26 @@ mod tests {
     fn resolves_relative_paths_against_the_containing_document() {
         let d = docs(&["OEBPS/Text/ch1.xhtml", "OEBPS/Text/notes.xhtml"]);
         assert_eq!(
-            resolve("OEBPS/Text/ch1.xhtml", 0, "../Text/notes.xhtml#n1", &d),
+            resolve(
+                "OEBPS/Text/ch1.xhtml",
+                0,
+                "../Text/notes.xhtml#n1",
+                &d,
+                &HashMap::new()
+            ),
             Resolution::Internal {
                 file: 1,
                 fragment: Some("n1".to_string())
             }
         );
         assert_eq!(
-            resolve("OEBPS/Text/ch1.xhtml", 0, "notes.xhtml", &d),
+            resolve(
+                "OEBPS/Text/ch1.xhtml",
+                0,
+                "notes.xhtml",
+                &d,
+                &HashMap::new()
+            ),
             Resolution::Internal {
                 file: 1,
                 fragment: None
@@ -572,14 +615,14 @@ mod tests {
         // The same fragment name in two documents must not collide: each
         // resolves to the document that wrote it.
         assert_eq!(
-            resolve("Text/ch1.xhtml", 0, "#local", &d),
+            resolve("Text/ch1.xhtml", 0, "#local", &d, &HashMap::new()),
             Resolution::Internal {
                 file: 0,
                 fragment: Some("local".to_string())
             }
         );
         assert_eq!(
-            resolve("Text/ch2.xhtml", 1, "#local", &d),
+            resolve("Text/ch2.xhtml", 1, "#local", &d, &HashMap::new()),
             Resolution::Internal {
                 file: 1,
                 fragment: Some("local".to_string())
@@ -597,7 +640,11 @@ mod tests {
             "tel:+15550100",
             "kindle:pos:fid:0001:off:0000000000",
         ] {
-            assert_eq!(resolve("a.xhtml", 0, href, &d), Resolution::Leave, "{href}");
+            assert_eq!(
+                resolve("a.xhtml", 0, href, &d, &HashMap::new()),
+                Resolution::Leave,
+                "{href}"
+            );
         }
     }
 
@@ -605,7 +652,7 @@ mod tests {
     fn reports_documents_outside_the_spine_as_unresolved() {
         let d = docs(&["Text/a.xhtml"]);
         assert_eq!(
-            resolve("Text/a.xhtml", 0, "missing.xhtml#x", &d),
+            resolve("Text/a.xhtml", 0, "missing.xhtml#x", &d, &HashMap::new()),
             Resolution::Unresolved
         );
     }
@@ -617,7 +664,7 @@ mod tests {
         // working link and inflates the unresolved count.
         let d = docs(&["Text/a.xhtml", "Text/b.xhtml"]);
         assert_eq!(
-            resolve("Text/b.xhtml", 1, "#", &d),
+            resolve("Text/b.xhtml", 1, "#", &d, &HashMap::new()),
             Resolution::Internal {
                 file: 1,
                 fragment: None
@@ -630,8 +677,14 @@ mod tests {
         // `href=""` names no destination. Overwriting it reports a link the
         // author never wrote as broken.
         let d = docs(&["Text/a.xhtml"]);
-        assert_eq!(resolve("Text/a.xhtml", 0, "", &d), Resolution::Leave);
-        assert_eq!(resolve("Text/a.xhtml", 0, "   ", &d), Resolution::Leave);
+        assert_eq!(
+            resolve("Text/a.xhtml", 0, "", &d, &HashMap::new()),
+            Resolution::Leave
+        );
+        assert_eq!(
+            resolve("Text/a.xhtml", 0, "   ", &d, &HashMap::new()),
+            Resolution::Leave
+        );
     }
 
     #[test]
@@ -651,7 +704,13 @@ mod tests {
     fn resolves_percent_encoded_document_names() {
         let d = docs(&["Text/off spine.xhtml"]);
         assert_eq!(
-            resolve("Text/a.xhtml", 9, "off%20spine.xhtml#deep", &d),
+            resolve(
+                "Text/a.xhtml",
+                9,
+                "off%20spine.xhtml#deep",
+                &d,
+                &HashMap::new()
+            ),
             Resolution::Internal {
                 file: 0,
                 fragment: Some("deep".to_string())
@@ -665,7 +724,7 @@ mod tests {
         // containing document's own href, which can be encoded as well.
         let d = docs(&["My Text/a.xhtml", "My Text/b.xhtml"]);
         assert_eq!(
-            resolve("My%20Text/a.xhtml", 0, "b.xhtml#f", &d),
+            resolve("My%20Text/a.xhtml", 0, "b.xhtml#f", &d, &HashMap::new()),
             Resolution::Internal {
                 file: 1,
                 fragment: Some("f".to_string())
@@ -677,7 +736,7 @@ mod tests {
     fn decodes_percent_encoded_fragments() {
         let d = docs(&["a.xhtml", "b.xhtml"]);
         assert_eq!(
-            resolve("a.xhtml", 0, "b.xhtml#note%201", &d),
+            resolve("a.xhtml", 0, "b.xhtml#note%201", &d, &HashMap::new()),
             Resolution::Internal {
                 file: 1,
                 fragment: Some("note 1".to_string())
@@ -957,6 +1016,20 @@ mod tests {
     }
 
     #[test]
+    fn the_tail_of_a_longer_attribute_name_is_not_the_href() {
+        // `data-href` is caught by the name scan alone, but a separator the
+        // scan does not know about leaves `href` looking like a fresh name.
+        for html in [
+            r#"<a data.href="decoy.xhtml" href="real.xhtml">t</a>"#,
+            r#"<a x.href="decoy.xhtml" href="real.xhtml">t</a>"#,
+        ] {
+            let hrefs = scan_hrefs(html);
+            assert_eq!(hrefs.len(), 1, "{html}");
+            assert_eq!(hrefs[0].value, "real.xhtml", "{html}");
+        }
+    }
+
+    #[test]
     fn a_repeated_href_resolves_to_the_first() {
         let html = r#"<a href="one.xhtml" href="two.xhtml">t</a>"#;
         let hrefs = scan_hrefs(html);
@@ -1037,7 +1110,13 @@ mod tests {
     fn resolves_a_non_ascii_fragment_and_document_name() {
         let d = docs(&["Text/\u{2014}.xhtml"]);
         assert_eq!(
-            resolve("Text/a.xhtml", 0, "%E2%80%94.xhtml#%C4%99", &d),
+            resolve(
+                "Text/a.xhtml",
+                0,
+                "%E2%80%94.xhtml#%C4%99",
+                &d,
+                &HashMap::new()
+            ),
             Resolution::Internal {
                 file: 0,
                 fragment: Some("\u{119}".to_string())

@@ -2210,7 +2210,13 @@ fn replace_hrefs_with_filepos(
     let mut pending: Vec<PendingFilepos> = Vec::new();
     let mut cursor = 0usize;
     for href in &hrefs {
-        let resolution = links::resolve(doc_href, self_index, &href.value, documents);
+        let resolution = links::resolve(
+            doc_href,
+            self_index,
+            &href.value,
+            documents,
+            &std::collections::HashMap::new(),
+        );
         if resolution == links::Resolution::Leave {
             continue;
         }

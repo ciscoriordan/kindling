@@ -408,3 +408,63 @@ fn kf8_leaves_no_bare_fragment_links_behind() {
     // A whole-document link is offset zero, not a dead link.
     assert!(blob.contains("kindle:pos:fid:0000:off:0000000000"));
 }
+
+/// Build the cover-page fixture as a KF8 `.azw3` and parse it.
+fn build_cover_fixture() -> ParsedMobi {
+    let opf = fixture_dir("cover_page_links").join("cover_page_links.opf");
+    let tmp = std::env::temp_dir()
+        .join("kindling_links")
+        .join("coverpage");
+    let _ = fs::remove_dir_all(&tmp);
+    fs::create_dir_all(&tmp).unwrap();
+    let out = tmp.join("out.azw3");
+    let run = Command::new(kindling_bin())
+        .arg("build")
+        .arg(&opf)
+        .arg("-o")
+        .arg(&out)
+        .arg("--no-validate")
+        .output()
+        .expect("failed to spawn kindling-cli");
+    assert!(
+        run.status.success(),
+        "build failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let raw = fs::read(&out).unwrap();
+    parse_mobi_file(&raw).unwrap()
+}
+
+#[test]
+fn kf8_sends_a_link_to_the_dropped_cover_page_to_the_start_of_the_book() {
+    // The KF8 half drops a bare in-spine cover page, because the metadata
+    // cover renders full-page. A table of contents that lists the cover then
+    // points at a document the file does not contain. The destination is not
+    // in doubt, so the link goes to the start of the book rather than being
+    // written off as broken, which is what kindlegen does with it too.
+    let parsed = build_cover_fixture();
+    let kf8 = parsed.kf8_or_kf7();
+    let blob = String::from_utf8(extract_text_blob(&parsed, kf8)).unwrap();
+
+    assert!(
+        !blob.contains(&"X".repeat(34)),
+        "a link was written off as broken"
+    );
+    assert!(
+        blob.contains(r#"<a href="kindle:pos:fid:0000:off:0000000000""#),
+        "the cover link should reach the first document the file has"
+    );
+
+    // The control has to keep working: a link to a real chapter still lands
+    // on the element it names, not at the start of the book.
+    let parts: Vec<String> = reconstruct_parts_from_mobi(&parsed)
+        .expect("reconstruct")
+        .into_iter()
+        .map(|p| String::from_utf8(p).unwrap())
+        .collect();
+    let at = blob.find("kindle:pos:fid:0001:off:").expect("control link");
+    let off = decode_base32(&blob[at + 24..at + 34]);
+    let target = &parts[1];
+    let pos = body_content_start(target) + off;
+    assert_eq!(element_text(target, pos).trim(), "CHAPTER_MARK");
+}
