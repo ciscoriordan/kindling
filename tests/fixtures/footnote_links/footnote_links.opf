@@ -7,6 +7,7 @@
     <dc:identifier id="BookId">kindling-footnote-links-fixture</dc:identifier>
   </metadata>
   <manifest>
+    <item id="cover-img" href="Images/cover.jpg" media-type="image/jpeg" properties="cover-image"/>
     <item id="ch1" href="Text/ch1.xhtml" media-type="application/xhtml+xml"/>
     <item id="ch2" href="Text/ch2.xhtml" media-type="application/xhtml+xml"/>
     <item id="notes" href="Text/notes.xhtml" media-type="application/xhtml+xml"/>

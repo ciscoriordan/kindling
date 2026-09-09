@@ -14,6 +14,13 @@
 //! to the same place and still looks plausible. Each assertion below names
 //! the marker text it expects to find, so a wrong-but-valid offset fails
 //! rather than passing.
+//!
+//! Chapter one carries an image, and it sits between a link and that link's
+//! target on purpose. Rewriting an image `src` to a `recindex` shortens the
+//! document by nine bytes here, so if that rewrite ever moves back to after
+//! the offsets are measured, every target past the image is wrong by exactly
+//! that much and `legacy_mobi_filepos_targets_land_on_the_named_element`
+//! fails. Without the image the fixture cannot tell the two orderings apart.
 
 mod common;
 
