@@ -958,7 +958,19 @@ mod tests {
             find_record(&records, 113).is_none(),
             "EXTH 113 is asin; a series index must never be written there"
         );
-        println!("  \u{2713} 103/105 present, 112/113 never emitted");
+        // Every record that has ever been proposed as the series slot, so a
+        // future guess is caught by a test rather than by review (issue #48).
+        // None of these has a verified target: 504 is a second copy of the
+        // ASIN in the Amazon-delivered files here, 534 is Amazon's own
+        // input-pipeline tag, and 508/517/518/519 appear in no file anyone
+        // here has. Writing one would swap an unverified number for another.
+        for candidate in [504u32, 508, 517, 518, 519, 534] {
+            assert!(
+                find_record(&records, candidate).is_none(),
+                "EXTH {candidate} has no verified series meaning and must not be guessed at"
+            );
+        }
+        println!("  \u{2713} 103/105 present, no series record guessed at");
     }
 
     #[test]

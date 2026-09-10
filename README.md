@@ -541,6 +541,7 @@ EXTH records are type-length-value metadata entries in Record 0, following the M
 | 105 | Subject | Books | UTF-8 string | Maps to ComicInfo.xml `<Genre>` |
 | 106 | Publishing date | Both | UTF-8 string | |
 | 112 | Source identifier | Books | UTF-8 string | Calibre writes `calibre:<uuid>` here. Never written by kindling; it is not a series field |
+| 504, 508, 517-519, 534 | No verified meaning | - | - | Proposed at various times as the series slot. None is written, and a test pins that: 504 is a second copy of the ASIN in the Amazon-delivered files available here, 534 is Amazon's own input-pipeline tag, and 508/517/518/519 appear in no file anyone here has. kindlegen writes no series record either, though its binary dates from 2015 and the Kindle library's Series feature is later, so that is evidence about kindlegen rather than about the container (issue #48) |
 | 113 | ASIN | Books, comics | UTF-8 string | Written only alongside a 501. The pair names the device-side cover file (`system/thumbnails/thumbnail_<113>_<501>_portrait.jpg`), which is what the lock screen shows. Value is a UUID the EPUB already publishes, or one derived from its metadata so rebuilds stay stable (issue #26) |
 | 121 | KF8 boundary | Books | u32 BE | Record index of KF8 Record 0 |
 | 122 | Fixed layout | Books | `"true"` | Present only for fixed-layout content |
