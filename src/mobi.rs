@@ -408,6 +408,98 @@ fn build_dictionary_mobi(
         result
     };
 
+    // Offer the text to the huffdic encoder (issue #49).
+    //
+    // PalmDOC can only reach back 2047 bytes for a match, while a huffdic
+    // phrase dictionary is shared by the whole book, which is why every
+    // Amazon-published dictionary uses it. Which one wins depends on the
+    // book: entries that are near-duplicates of their neighbours suit
+    // PalmDOC's window very well, and varied ones do not. So both are built
+    // and the smaller kept, and the encoder itself declines whenever it
+    // cannot round trip its own output.
+    // `KINDLING_HUFFDIC` opts a dictionary into HUFF/CDIC compression, the
+    // same shape of toggle as KINDLING_FLATTEN_INFL. It is off by default
+    // because no Kindle has yet opened a huffdic file kindling wrote: the
+    // format here was derived from a kindlegen file and every record is
+    // checked back through kindling's own decoder, but that is not the same
+    // as a device reading one (issue #49).
+    let huffdic = matches!(
+        std::env::var("KINDLING_HUFFDIC").as_deref(),
+        Ok("1") | Ok("true")
+    );
+    let huffdic_encoded = if huffdic && !no_compress {
+        // The encoder needs the uncompressed chunks; text_records at this
+        // point holds their PalmDOC form.
+        let chunk = compute_chunk_size(text_content.len());
+        let plain: Vec<Vec<u8>> = split_on_utf8_boundaries(&text_content, chunk)
+            .iter()
+            .map(|&(start, end)| text_content[start..end].to_vec())
+            .collect();
+        crate::huffdic_encode::encode(&plain)
+    } else {
+        None
+    };
+    let huffdic_encoded = huffdic_encoded.filter(|e| {
+        let theirs: usize = e.records.iter().map(|r| r.len()).sum::<usize>()
+            + e.huff.len()
+            + e.cdics.iter().map(|c| c.len()).sum::<usize>();
+        let ours: usize = text_records.iter().map(|r| r.len()).sum();
+        if theirs >= ours {
+            eprintln!(
+                "huffdic would be {} bytes against PalmDOC's {}; keeping PalmDOC",
+                theirs, ours
+            );
+            false
+        } else {
+            eprintln!(
+                "Compressed text with huffdic: {} bytes, {:.0}% of PalmDOC's {}",
+                theirs,
+                theirs as f64 * 100.0 / ours as f64,
+                ours
+            );
+            true
+        }
+    });
+    let model_records: Vec<Vec<u8>> = match &huffdic_encoded {
+        Some(e) => std::iter::once(e.huff.clone())
+            .chain(e.cdics.iter().cloned())
+            .collect(),
+        None => Vec::new(),
+    };
+    let text_records = match &huffdic_encoded {
+        Some(e) => e
+            .records
+            .iter()
+            .map(|r| {
+                // record 0 declares extra_record_flags = 3, so every text
+                // record carries a multibyte-overlap byte and a TBS region
+                // whatever the compression is. The huffdic stream is not
+                // exempt: a reader strips these two bytes BEFORE handing the
+                // rest to the decompressor, so leaving them off means it
+                // strips two bytes of real bitstream instead.
+                //
+                // This is what a self-round-trip cannot catch, because the
+                // check decodes the bare stream the encoder just produced
+                // rather than the record as a reader will see it. calibre's
+                // decoder read the bare streams perfectly and its conversion
+                // pipeline, which strips first, lost more than half the text.
+                let mut rec = r.clone();
+                rec.push(0x00);
+                rec.push(0x81);
+                rec
+            })
+            .collect(),
+        None => text_records,
+    };
+    // The model sits directly after the text, so every record index past the
+    // text shifts by its size.
+    let num_model = model_records.len();
+    let huffdic_model = if num_model > 0 {
+        Some((text_records.len() + 1, num_model))
+    } else {
+        None
+    };
+
     // Build lookup terms + separate infl INDX data.
     //
     // `KINDLING_FLATTEN_INFL` env var (set to "1" or "true") makes the
@@ -480,14 +572,19 @@ fn build_dictionary_mobi(
         srcs_record.as_ref().map_or(0, |_| 1) + cmet_record.as_ref().map_or(0, |_| 1);
 
     // Calculate record indices
-    // Layout: record0 | text | image records | orth_INDX | infl_INDX | FLIS | FCIS | [SRCS] | [CMET] | EOF
+    // Layout: record0 | text | [HUFF + CDICs] | image records | orth_INDX | infl_INDX | FLIS | FCIS | [SRCS] | [CMET] | EOF
+    //
+    // The huffdic model sits directly after the text, which is where
+    // kindlegen puts it and where huff_rec_index points, so everything past
+    // the text moves along by the number of model records.
     let first_non_book = text_records.len() + 1;
+    let after_model = text_records.len() + 1 + num_model;
     let first_image_record = if num_image_records > 0 {
-        text_records.len() + 1
+        after_model
     } else {
         0xFFFFFFFF
     };
-    let orth_index_record = text_records.len() + 1 + num_image_records;
+    let orth_index_record = after_model + num_image_records;
     let infl_index_record = 0xFFFFFFFFusize;
     let flis_record = orth_index_record + indx_records.len();
     let fcis_record = flis_record + 1;
@@ -496,8 +593,13 @@ fn build_dictionary_mobi(
     } else {
         None
     };
-    let total_records =
-        1 + text_records.len() + num_image_records + indx_records.len() + 3 + num_optional;
+    let total_records = 1
+        + text_records.len()
+        + num_model
+        + num_image_records
+        + indx_records.len()
+        + 3
+        + num_optional;
 
     // Collect unique headword characters for fontsignature
     let mut headword_chars: HashSet<u32> = HashSet::new();
@@ -533,11 +635,13 @@ fn build_dictionary_mobi(
         creator_tag,
         None, // no doc_type for dictionaries
         0,    // unused: the dictionary EXTH (build_exth) writes its own 125
+        huffdic_model,
     );
 
     // Assemble all records
     let mut all_records = vec![record0];
     all_records.extend(text_records);
+    all_records.extend(model_records);
     all_records.extend(image_records);
     all_records.extend(indx_records);
     all_records.push(flis);
@@ -1267,6 +1371,7 @@ fn build_book_mobi(
             doc_type,
             // EXTH 125: resources live in the KF7 section of a dual file
             (num_image_records + num_font_records) as u32,
+            None, // books keep PalmDOC; huffdic is a dictionary option
         );
 
         // Build KF8 record 0 (version=8, KF8-relative indices)
@@ -4843,6 +4948,9 @@ fn build_record0(
     creator_tag: bool,
     doc_type: Option<&str>,
     resource_count: u32,
+    // `(first model record, model record count)` when the text is huffdic
+    // compressed; the count covers the HUFF record and its CDICs.
+    huffdic: Option<(usize, usize)>,
 ) -> Vec<u8> {
     let default_name = if is_dictionary { "Dictionary" } else { "Book" };
     let full_name = if opf.title.is_empty() {
@@ -4853,7 +4961,13 @@ fn build_record0(
     let full_name_bytes = full_name.as_bytes();
 
     // PalmDOC header (16 bytes)
-    let compression_type: u16 = if no_compress { 1 } else { 2 };
+    let compression_type: u16 = if huffdic.is_some() {
+        crate::huffcdic::COMPRESSION_HUFFDIC
+    } else if no_compress {
+        1
+    } else {
+        2
+    };
     // Declare the chunk size the splitter actually used. `compute_chunk_size`
     // scales past 4096 once the text would otherwise need more than 65000
     // records, and it is the same function `compress_text` /
@@ -4918,8 +5032,11 @@ fn build_record0(
     put32(&mut mobi, 84, mobi_locale_code(&opf.dict_out_language));
     put32(&mut mobi, 88, version); // min version = same as file version
     put32(&mut mobi, 92, first_image_record as u32); // first image record
-    put32(&mut mobi, 96, 0); // huffman record
-    put32(&mut mobi, 100, 0); // huffman count
+    // Where the huffdic model lives, when the text is compressed with one.
+    // Both are record numbers relative to this section's record 0.
+    let (huff_record, huff_count) = huffdic.unwrap_or((0, 0));
+    put32(&mut mobi, 96, huff_record as u32);
+    put32(&mut mobi, 100, huff_count as u32);
 
     // EXTH flags / locale marker at offset 112.
     // Dictionaries: 0x50 (bit 6 = EXTH present, bit 4 set) - matches Kindle Previewer output.

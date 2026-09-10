@@ -62,6 +62,126 @@ fn cli_split(args: &[&str]) -> (bool, String, String) {
     )
 }
 
+/// Write a dictionary source big enough to clear the encoder's size floor.
+fn write_big_dictionary(dir: &Path) -> PathBuf {
+    let vocab: Vec<&str> = "the of and a to in is was that for on with as by at from an be \
+         this which have or had not but were noun verb adjective adverb plural archaic \
+         figurative colloquial transitive intransitive sense usage compare especially"
+        .split_whitespace()
+        .collect();
+    let mut state = 0x243F6A8885A308D3u64;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let mut html = String::from(
+        "<html xmlns:idx=\"http://www.mobipocket.com/idx\" \
+         xmlns:mbp=\"http://www.mobipocket.com\"><head><title>Big</title></head>\
+         <body><mbp:frameset>\n",
+    );
+    for i in 0..1500u32 {
+        let hw = format!("hw{i:05}");
+        let n = 20 + (next() % 40) as usize;
+        let body: Vec<&str> = (0..n)
+            .map(|_| vocab[(next() % vocab.len() as u64) as usize])
+            .collect();
+        html.push_str(&format!(
+            "<idx:entry name=\"default\" scriptable=\"yes\"><idx:orth value=\"{hw}\">\
+             <b>{hw}</b></idx:orth><p><i>noun</i> {}.</p></idx:entry>\n",
+            body.join(" ")
+        ));
+    }
+    html.push_str("</mbp:frameset></body></html>");
+    std::fs::write(dir.join("content.html"), html).unwrap();
+
+    let opf = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf">
+  <metadata>
+    <dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">Big Dict</dc:title>
+    <dc:language xmlns:dc="http://purl.org/dc/elements/1.1/">en</dc:language>
+    <dc:creator xmlns:dc="http://purl.org/dc/elements/1.1/">Tester</dc:creator>
+    <x-metadata>
+      <DictionaryInLanguage>en</DictionaryInLanguage>
+      <DictionaryOutLanguage>en</DictionaryOutLanguage>
+      <DefaultLookupIndex>default</DefaultLookupIndex>
+    </x-metadata>
+  </metadata>
+  <manifest><item id="c" href="content.html" media-type="application/xhtml+xml"/></manifest>
+  <spine><itemref idref="c"/></spine>
+</package>"#;
+    let path = dir.join("content.opf");
+    std::fs::write(&path, opf).unwrap();
+    path
+}
+
+/// Writing huffdic, not just reading it (issue #49).
+///
+/// The assertion that matters is the same one the reading tests make, but in
+/// the other direction: a dictionary kindling compressed with HUFF/CDIC has
+/// to decompress to exactly what the PalmDOC build of the same source
+/// produces. `text_of` goes through the reader path, which strips each
+/// record's trailing entries before decompressing, and that is the part a
+/// round trip inside the encoder cannot check: record 0 declares
+/// `extra_record_flags = 3`, so a huffdic record that omitted those two bytes
+/// would have two bytes of real bitstream stripped off instead, and more than
+/// half the text would decode as rubbish.
+#[test]
+fn writes_a_huffdic_dictionary_that_reads_back_identically() {
+    let dir = std::env::temp_dir().join("kindling_huffdic_write");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let opf = write_big_dictionary(&dir);
+
+    let plain = dir.join("plain.mobi");
+    let huff = dir.join("huff.mobi");
+    let run = |out: &Path, huffdic: bool| {
+        let mut cmd = Command::new(kindling_bin());
+        cmd.arg("build")
+            .arg(&opf)
+            .arg("-o")
+            .arg(out)
+            .arg("--no-validate");
+        if huffdic {
+            cmd.env("KINDLING_HUFFDIC", "1");
+        } else {
+            cmd.env_remove("KINDLING_HUFFDIC");
+        }
+        let o = cmd.output().expect("spawn kindling-cli");
+        assert!(
+            o.status.success(),
+            "build failed: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+    };
+    run(&plain, false);
+    run(&huff, true);
+
+    // The huffdic build must actually have taken the huffdic path: the
+    // PalmDOC header's compression word is the first two bytes of record 0.
+    let huff_bytes = std::fs::read(&huff).unwrap();
+    let parsed = parse_mobi_file(&huff_bytes).expect("parse MOBI");
+    let record0 = parsed.palmdb.record(&huff_bytes, 0);
+    assert_eq!(
+        u16::from_be_bytes([record0[0], record0[1]]),
+        17480,
+        "the dictionary was not compressed with huffdic"
+    );
+    assert!(
+        huff_bytes.len() < std::fs::metadata(&plain).unwrap().len() as usize,
+        "huffdic should have produced the smaller file"
+    );
+
+    assert_eq!(
+        text_of(&huff),
+        text_of(&plain),
+        "huffdic text does not match the PalmDOC build of the same source"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The whole decoder in one assertion: the same dictionary compressed two
 /// different ways has to come back identical.
 #[test]

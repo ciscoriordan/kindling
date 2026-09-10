@@ -35,6 +35,7 @@ pub(crate) mod dict_css;
 pub(crate) mod exth;
 pub(crate) mod fonts;
 pub(crate) mod html_check;
+pub(crate) mod huffdic_encode;
 pub(crate) mod indx;
 pub(crate) mod kf8;
 pub(crate) mod links;
