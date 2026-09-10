@@ -428,6 +428,61 @@ def build_dict_e(root):
     return d, "dict-e.opf"
 
 
+def build_dict_g(root):
+    """#56 list markers: what a MOBI7 popup will actually draw.
+
+    reader.dict numbers senses with <ol> and letters or roman numerals its
+    sub-senses with list-style-type. kindling flattens every level to decimal
+    by writing value="N" on each <li>, because that is the one marker the
+    popup was known to draw (issue #16, device-verified). Whether anything
+    else works has never been tested, and two cheap possibilities have to be
+    ruled in or out before the code changes:
+
+      LIST-TYPE   <ol type="a"> with value="1" on each item. kindling passes
+                  `type` through today and kindlegen's own output proves the
+                  combination is legal MOBI7. If the renderer takes the glyph
+                  from `type` and the ordinal from `value`, nothing else is
+                  needed and the fix is one attribute.
+      LIST-TEXT   the marker written into the item text. This is what a
+                  compile-to-literal-markup fix would produce, and because
+                  kindling also writes value="1" on the same item, this entry
+                  shows whether the two stack into "1. a." — which is the
+                  failure mode that would make that fix unusable.
+      LIST-PLAIN  an ordinary decimal <ol>, the control. If this one draws no
+                  numbers either, the popup is ignoring list markup entirely
+                  and neither approach can work.
+
+    0.22.1 shipped <ol type="a"> on its own, with no value, and the device
+    drew nothing at all; that is why the decimal flattening exists. This probe
+    differs in pairing `type` with `value`, which is the combination that was
+    never tried.
+    """
+    d = os.path.join(root, "src", "dict-g")
+    os.makedirs(d, exist_ok=True)
+    body = (
+        "<p>LIST-TYPE, expect a. b. c.</p>"
+        '<ol type="a"><li>ALPHA item one</li><li>ALPHA item two</li>'
+        "<li>ALPHA item three</li></ol>"
+        "<p>LIST-TEXT, expect a. b. and NOT 1. a.</p>"
+        "<ol><li>a. TEXT item one</li><li>b. TEXT item two</li></ol>"
+        "<p>LIST-PLAIN control, expect 1. 2.</p>"
+        "<ol><li>PLAIN item one</li><li>PLAIN item two</li></ol>"
+        "<p>LIST-BULLET control, expect bullets.</p>"
+        "<ul><li>BULLET item one</li><li>BULLET item two</li></ul>"
+    )
+    entries = [entry("zlistprobe", body)]
+    entries += filler_entries()
+    open(os.path.join(d, "content.html"), "w", encoding="utf-8").write(
+        dict_html(entries, title="KD-G list markers"))
+    open(os.path.join(d, "dict-g.opf"), "w", encoding="utf-8").write(
+        dict_opf("KD-G list markers", ["content.html"], uid="kindling-device-g"))
+    write_common(d, "KD-G list markers",
+                 "Look up zlistprobe and read the four lists. Which markers appear "
+                 "decides whether lettered sub-senses can be rendered at all (issue 56).",
+                 uid="kindling-device-g")
+    return d, "dict-g.opf"
+
+
 def build_dict_f(root):
     """#53 popup scroll-through: the <hr/> -> <hr/><mbp:pagebreak/> fix.
 
@@ -669,6 +724,14 @@ def probe_book(root):
                 "Switch to KD-E first. Each of these must show its numbered body text. "
                 "A popup that opens but is blank is the bug.",
                 NOLIMIT_WORDS),
+        section(6, "6. List markers, in KD-G (issue 56)",
+                "Switch to KD-G. Look up zlistprobe. Four lists follow each other. "
+                "Report exactly what marker each item shows, including nothing at all. "
+                "LIST-TYPE should read a. b. c.; LIST-TEXT should read a. b. and NOT "
+                "1. a.; LIST-PLAIN should read 1. 2.; LIST-BULLET should show bullets. "
+                "If LIST-PLAIN has no numbers either, the popup is ignoring list "
+                "markup entirely and the other three answers do not matter.",
+                ["zlistprobe"], cols=1),
         section(5, "5. Popup boundary, in KD-F (issue 53)",
                 "Switch to KD-F. Look up zbleedfirst and scroll the popup to its very "
                 "bottom. The LAST LINE paragraph must be the end of the popup. Seeing "
@@ -755,7 +818,7 @@ def main():
     print("dictionaries")
     for builder, flags in ((build_dict_a, []), (build_dict_b, []), (build_dict_c, []),
                            (build_dict_d, []), (build_dict_e, ["--no-kindle-limits"]),
-                           (build_dict_f, [])):
+                           (build_dict_f, []), (build_dict_g, [])):
         d, opf = builder(out)
         stem = os.path.basename(d)
         target = os.path.join(ship, f"{stem}.mobi")
