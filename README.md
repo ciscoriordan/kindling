@@ -32,7 +32,7 @@ Pre-built binaries for Mac (Apple Silicon, Intel), Linux (x86_64), and Windows (
 - **Metadata rewrite**: `kindling rewrite-metadata` updates title, authors, publisher, description, language, ISBN, ASIN, publication date, tags, cover image, and the device content type on an existing MOBI/AZW3 in place without rebuilding from source. Byte-stable on no-op, idempotent, refuses DRM files (see [Rewrite metadata](#rewrite-metadata))
 - **Structural dump**: `kindling dump` prints the parsed structure of a MOBI/AZW3 (PalmDB, MOBI header, EXTH, INDX/ORDT tables, entry labels) as line-oriented `section.field = value` output, so two dumps can be compared with `diff` (see [Dump](#dump))
 - **Lookup simulator**: `kindling lookup <dict.mobi> <word>` reproduces the on-device dictionary search against a built MOBI (accent/case folding for Latin and Greek, literal matching for CJK/Arabic, query-side case folding for Cyrillic) and reports which stored form resolves. It is a build-side regression check, not a hardware oracle (see [Lookup simulator](#lookup-simulator))
-- **Reads huffdic (`-c2`) files**: text compressed with HUFF/CDIC (PalmDOC compression type 17480), which is what `kindlegen -c2` and every Amazon store dictionary use, is decompressed by [`src/huffcdic.rs`](src/huffcdic.rs), so `dump` reports the compression model and the bytes it decodes to instead of treating those records as opaque. kindling still writes PalmDOC only, and `-c2` in kindlegen compat mode says so (issue #49)
+- **Reads huffdic (`-c2`) files**: text compressed with HUFF/CDIC (PalmDOC compression type 17480), which is what `kindlegen -c2` and every Amazon store dictionary use, is decompressed by [`src/huffcdic.rs`](src/huffcdic.rs), so `dump` reports the compression model and the bytes it decodes to instead of treating those records as opaque. kindling can also write it, behind `KINDLING_HUFFDIC=1` (issue #49)
 - **Build-time HTML self-check**: every `build` runs a two-pass HTML balance check on the assembled MOBI text blob and on each individual PalmDB text record after splitting, catching regressions like dangling tags, `<hr/` corruption, and bold/italic state leaking across record boundaries (see [Build-time self-check](#build-time-self-check))
 - **UTF-8 and tag-safe record splitter**: every text record is exactly the declared record size, which the firmware relies on to route popup lookups, and the bytes that would otherwise straddle a record end are pushed into the next record by padding the last gap between two tags with spaces, so no record ends inside a multi-byte character or a tag
 - Drop-in *kindlegen* replacement (same CLI flags, same status codes)
@@ -599,6 +599,7 @@ kindling/
 │   ├── ordt.rs                  # Generated ORDT collation tables and label encoding (ja/zh/ko/ar)
 │   ├── palmdoc.rs               # PalmDOC LZ77 compression
 │   ├── huffcdic.rs              # HUFF/CDIC (huffdic) decompression, compression type 17480
+│   ├── huffdic_encode.rs        # HUFF/CDIC compression: phrase dictionary, Huffman tables, bitstreams
 │   ├── exth.rs                  # EXTH record encoding
 │   ├── vwi.rs                   # Variable-width integer encoding
 │   ├── links.rs                 # Internal link resolution shared by the filepos and kindle:pos writers

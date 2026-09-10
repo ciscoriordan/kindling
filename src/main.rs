@@ -705,13 +705,15 @@ fn parse_kindlegen_args() -> (PathBuf, Option<String>, bool, bool, bool, bool) {
                 i += 2;
             }
             "-c2" => {
-                // kindling reads HUFF/CDIC but does not write it, so this is
-                // one of the ignored flags that is worth saying out loud: the
-                // output is PalmDOC and a little larger than kindlegen's
-                // would have been. See issue #49 and src/huffcdic.rs.
+                // kindling can write HUFF/CDIC now, but not by default: no
+                // Kindle has yet opened one it wrote. Rather than turn it on
+                // silently from a compatibility flag, say where it lives.
+                // See issue #49, src/huffdic_encode.rs.
                 eprintln!(
-                    "note: -c2 asks for HUFF/CDIC compression, which kindling reads but does \
-                     not write. The output is PalmDOC compressed (-c1); nothing else changes."
+                    "note: -c2 asks for HUFF/CDIC compression. The output here is PalmDOC \
+                     compressed (-c1). kindling can write HUFF/CDIC for a dictionary with \
+                     KINDLING_HUFFDIC=1, which is off by default until it has been confirmed \
+                     on a device."
                 );
                 i += 1;
             }
