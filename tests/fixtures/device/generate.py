@@ -551,11 +551,13 @@ def footnote_book(root):
         files.append(f"ch{i}.html")
         open(os.path.join(d, f"ch{i}.html"), "w", encoding="utf-8").write(
             '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE html>\n'
-            '<html xmlns="http://www.w3.org/1999/xhtml"><head>'
+            '<html xmlns="http://www.w3.org/1999/xhtml" '
+            'xmlns:epub="http://www.idpf.org/2007/ops"><head>'
             '<meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>'
             f"<title>Chapter {i}</title></head><body>"
             f'<h1 {big}>CHAPTER {i}</h1>'
-            f'<p>{esc(para)}<a href="notes.html#ftn-{i}" id="ref-1">[1]</a></p>'
+            f'<p>{esc(para)}<a href="notes.html#ftn-{i}" id="ref-1" '
+            f'epub:type="noteref" role="doc-noteref">[1]</a></p>'
             f'<p>Tapping that marker must open a note that says NOTE FOR CHAPTER {i}. '
             f'Any other number means every chapter\'s footnote went to the same place.</p>'
             f'<p><a href="#end-{i}">Jump to the end of this chapter.</a> '
@@ -565,14 +567,16 @@ def footnote_book(root):
             "</body></html>\n")
 
     body = "".join(
-        f'<p id="ftn-{i}"><a href="ch{i}.html#ref-1" {big}>&#8592;</a> '
+        f'<p id="ftn-{i}" epub:type="footnote" role="doc-footnote">'
+        f'<a href="ch{i}.html#ref-1" {big}>&#8592;</a> '
         f'<span {big}>NOTE FOR CHAPTER {i}</span>. '
         f"The arrow must return to the marker in chapter {i}.</p>"
         for i in range(1, len(CHAPTER_TEXT) + 1))
     files.append("notes.html")
     open(os.path.join(d, "notes.html"), "w", encoding="utf-8").write(
         '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE html>\n'
-        '<html xmlns="http://www.w3.org/1999/xhtml"><head>'
+        '<html xmlns="http://www.w3.org/1999/xhtml" '
+        'xmlns:epub="http://www.idpf.org/2007/ops"><head>'
         '<meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>'
         "<title>Notes</title></head><body>"
         f'<h1 {big}>NOTES</h1>{body}</body></html>\n')
