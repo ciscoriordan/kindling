@@ -38,6 +38,13 @@ pub struct OPFData {
     /// `language` is just the "en" default. Book builds warn on false,
     /// since the device picks fonts by book language (issue #18).
     pub language_specified: bool,
+    /// The first `<dc:subject>`, if the OPF declares one. A dictionary has
+    /// to reach the device carrying `subject = "Dictionaries"` or the
+    /// firmware files it as an ordinary book and it never appears in the
+    /// lookup popup's dictionary picker. PyGlossary already writes
+    /// `<dc:Subject BASICCode="REF008000">Dictionaries</dc:Subject>`, and
+    /// kindling used to drop it on the floor.
+    pub subject: String,
     pub identifier: String,
     /// Every `<dc:identifier>` value in document order. Used as candidate
     /// keys for EPUB font deobfuscation (IDPF/Adobe algorithms key on the
@@ -84,6 +91,7 @@ impl OPFData {
             author: String::new(),
             language: String::from("en"),
             language_specified: false,
+            subject: String::new(),
             identifier: String::new(),
             dc_identifiers: Vec::new(),
             date: String::new(),
@@ -153,7 +161,9 @@ impl OPFData {
                                 }
                             }
                         }
-                        "title" | "creator" | "language" | "identifier" | "date" if in_metadata => {
+                        "title" | "creator" | "language" | "identifier" | "date" | "subject"
+                            if in_metadata =>
+                        {
                             current_tag = lower.clone();
                         }
                         "type" if in_metadata => {
@@ -309,6 +319,13 @@ impl OPFData {
                                 self.dc_identifiers.push(text);
                             }
                             "date" => self.date = text,
+                            // First one wins: an OPF may list several
+                            // subjects, and only the first reaches EXTH 105.
+                            "subject" => {
+                                if self.subject.is_empty() {
+                                    self.subject = text;
+                                }
+                            }
                             "type" => self.dc_types.push(text),
                             "DictionaryInLanguage" => self.dict_in_language = text,
                             "DictionaryOutLanguage" => self.dict_out_language = text,

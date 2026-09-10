@@ -580,6 +580,7 @@ pub fn build_exth(
     title: &str,
     author: &str,
     date: &str,
+    subject: &str,
     language: &str,
     dict_in_language: &str,
     dict_out_language: &str,
@@ -618,6 +619,29 @@ pub fn build_exth(
     };
     let exth542_hash = md5_hash(&title_bytes);
     records.push(exth_record(542, &exth542_hash[..4]));
+
+    // Subject (105). A sideloaded dictionary has to say it is one, or the
+    // firmware files it as an ordinary book and it never reaches the lookup
+    // popup's dictionary picker. Amazon's own dictionaries carry
+    // `subject = "Dictionaries"`, and so does every third-party one that
+    // works on device; kindling emitted no 105 at all, from any input,
+    // which is why a dictionary it built could be sideloaded, opened and
+    // read as a book but never selected to look words up in.
+    //
+    // The OPF's own `<dc:subject>` wins when it has one, which PyGlossary
+    // always writes. `dict_in_language` being set is what makes this a
+    // dictionary build, the same condition the 531/532 pair below uses, and
+    // a dictionary that declared no subject still has to carry one.
+    let subject_out = if !subject.is_empty() {
+        Some(subject)
+    } else if !dict_in_language.is_empty() {
+        Some("Dictionaries")
+    } else {
+        None
+    };
+    if let Some(subj) = subject_out {
+        records.push(exth_record(105, subj.as_bytes()));
+    }
 
     // Dictionary languages
     if !dict_in_language.is_empty() {
@@ -988,6 +1012,7 @@ mod tests {
             "Test Dict",
             "Author",
             "2026-01-01",
+            "",
             "en",
             "el",
             "en",

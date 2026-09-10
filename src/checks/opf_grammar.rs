@@ -971,6 +971,7 @@ mod tests {
         let _ = std::fs::write(&opf_path, b"<package version=\"3.0\"></package>");
 
         let opf = OPFData {
+            subject: String::new(),
             base_dir: tmp.clone(),
             title: String::new(),
             author: String::new(),

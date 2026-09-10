@@ -4577,6 +4577,7 @@ fn build_record0(
             full_name,
             &opf.author,
             &opf.date,
+            &opf.subject,
             &opf.language,
             &opf.dict_in_language,
             &opf.dict_out_language,
