@@ -508,7 +508,7 @@ fn build_dictionary_mobi(
     } else {
         &opf.title
     };
-    let palmdb = build_palmdb(title, &all_records);
+    let palmdb = build_palmdb(title, &all_records)?;
 
     std::fs::write(output_path, &palmdb)?;
     eprintln!("Wrote {} ({} bytes)", output_path.display(), palmdb.len());
@@ -1083,7 +1083,7 @@ fn build_book_mobi(
         };
         eprintln!("KF8-only: {} total records{}", all_records.len(), hd_str,);
 
-        let palmdb = build_palmdb(title, &all_records);
+        let palmdb = build_palmdb(title, &all_records)?;
         std::fs::write(output_path, &palmdb)?;
         eprintln!("Wrote {} ({} bytes)", output_path.display(), palmdb.len());
     } else {
@@ -1320,7 +1320,7 @@ fn build_book_mobi(
             hd_str,
         );
 
-        let palmdb = build_palmdb(title, &all_records);
+        let palmdb = build_palmdb(title, &all_records)?;
         std::fs::write(output_path, &palmdb)?;
         eprintln!("Wrote {} ({} bytes)", output_path.display(), palmdb.len());
     }
@@ -3339,6 +3339,33 @@ fn split_text_uncompressed(text_bytes: &[u8]) -> (Vec<Vec<u8>>, usize) {
 mod record_split_tests {
     use super::*;
 
+    /// A PalmDB header counts its records in 16 bits, so one record past
+    /// 65535 used to wrap the count and ship a file a Kindle could not open
+    /// (issue #47). 65536 four-byte records is under a megabyte, so this
+    /// needs no large build.
+    #[test]
+    fn palmdb_refuses_more_records_than_its_count_can_hold() {
+        let at_limit: Vec<Vec<u8>> = vec![vec![0u8; 4]; PALMDB_MAX_RECORDS];
+        let db = build_palmdb("T", &at_limit).expect("65535 records is a legal file");
+        assert_eq!(
+            u16::from_be_bytes([db[76], db[77]]) as usize,
+            PALMDB_MAX_RECORDS,
+            "the last legal count must survive intact"
+        );
+
+        let over: Vec<Vec<u8>> = vec![vec![0u8; 4]; PALMDB_MAX_RECORDS + 1];
+        let err = build_palmdb("T", &over)
+            .expect_err("one record past the limit must be refused, not wrapped");
+        // The message has to name the real limit; the count that wrapped to 0
+        // here is what used to reach disk looking like a finished book.
+        let msg = err.to_string();
+        assert!(msg.contains("65535"), "unhelpful message: {msg}");
+        assert!(
+            msg.contains("65536"),
+            "message should name the record count: {msg}"
+        );
+    }
+
     #[test]
     fn list_markers_numbered_like_kindlegen() {
         // reader-dict (issue #16): numbered senses are <ol>, lettered/roman
@@ -4954,9 +4981,36 @@ fn build_eof() -> Vec<u8> {
     vec![0xE9, 0x8E, 0x0D, 0x0A]
 }
 
+/// The most records a PalmDB header can address.
+///
+/// The record count at offset 76 is 16 bits wide, so 65535 is the last value
+/// it can hold. This is a hard limit of the container, not of any Kindle.
+const PALMDB_MAX_RECORDS: usize = 65535;
+
 /// Build the complete PalmDB file from a list of records.
-fn build_palmdb(title: &str, records: &[Vec<u8>]) -> Vec<u8> {
+///
+/// Refuses rather than wraps above [`PALMDB_MAX_RECORDS`] (issue #47). The
+/// count is written with `as u16`, so one record past the limit used to make
+/// the header say `total mod 65536`: 65536 records reported 0, and 69739
+/// reported 4203. Every record offset stayed correct, so the file looked
+/// well-formed and the reader simply could not see most of it, computing the
+/// last visible record's length as everything to the end of the file. That is
+/// the "Unable to Open Item" this produces on device.
+///
+/// This is the only place the count is written and every writer funnels
+/// through it, and the call comes before the file is written, so a book that
+/// crosses the limit leaves nothing on disk to mistake for a good build.
+fn build_palmdb(title: &str, records: &[Vec<u8>]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let num_records = records.len();
+    if num_records > PALMDB_MAX_RECORDS {
+        return Err(format!(
+            "{num_records} records exceeds the {PALMDB_MAX_RECORDS} a PalmDB header can \
+             address. Text, images and index records all count toward it. The Kindle file \
+             format cannot hold this in one file, so split the source into several books. \
+             Note that --legacy-mobi stores the text twice and roughly halves what fits."
+        )
+        .into());
+    }
     let header_size = 78 + num_records * 8 + 2;
 
     // Calculate record offsets
@@ -5049,7 +5103,7 @@ fn build_palmdb(title: &str, records: &[Vec<u8>]) -> Vec<u8> {
         output.extend_from_slice(rec);
     }
 
-    output
+    Ok(output)
 }
 
 /// Convert a language code to a MOBI locale code.

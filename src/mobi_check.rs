@@ -110,6 +110,34 @@ fn parse_palmdb(data: &[u8], report: &mut CheckReport) -> Option<PalmDb> {
         report.fail("PalmDB record count is 0");
         return None;
     }
+    // Catch a record count that wrapped its 16 bits (issue #47).
+    //
+    // The record list runs from offset 78 to the first record, with a 2-byte
+    // gap, so record 0's own offset says how many entries the list really
+    // holds. When that disagrees with the header AND the difference is an
+    // exact multiple of 65536, the writer had more than 65535 records and
+    // `as u16` truncated the count. Every offset in such a file is still
+    // right, so nothing else here notices: the reader simply sees the first
+    // `count mod 65536` records and reads the last one as everything to the
+    // end of the file.
+    //
+    // The multiple-of-65536 test is what keeps this from failing a file
+    // merely laid out differently. A producer that used another gap width
+    // would trip the inequality but not the congruence, and is left alone.
+    if let Some(off0) = read_u32_be(data, 78) {
+        let list_bytes = (off0 as usize).saturating_sub(80);
+        if list_bytes % 8 == 0 {
+            let implied = list_bytes / 8;
+            if implied != num_records && implied % 65536 == num_records {
+                report.fail(format!(
+                    "PalmDB record count wrapped: the header says {num_records} but the \
+                     record list holds {implied}. A Kindle reads only the first \
+                     {num_records} records and cannot open the rest of the book."
+                ));
+                return None;
+            }
+        }
+    }
     report.pass();
 
     let list_end = 78 + num_records * 8;
@@ -1103,6 +1131,69 @@ mod tests {
         assert!(
             !report.has_errors(),
             "expected no P0 errors, got: {:?}",
+            report.p0_errors
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file whose PalmDB record count wrapped its 16 bits reads as
+    /// well-formed: every offset is right, there are just far fewer records
+    /// than the writer put there (issue #47). The check has to notice, since
+    /// kindling can no longer produce one but older builds and other tools
+    /// can, and the file is already on someone's disk.
+    #[test]
+    fn test_check_fails_on_a_wrapped_record_count() {
+        let dir = std::env::temp_dir().join("kindling_mobi_check_wrapped");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let opf = make_book_fixture(&dir);
+        let out = dir.join("out.mobi");
+        crate::mobi::build_mobi(
+            &opf, &out, true, false, None, false, true, false, false, None, false, false, false,
+            false, false, // fold_accents
+            false, // force_user_fonts
+        )
+        .unwrap();
+
+        // Forge the exact shape a wrap produces. The record list and every
+        // offset stay consistent with a file that really has 65536 more
+        // records; only the header count loses its high bits, which is what
+        // `as u16` did. Building a genuine 65536-record book to get here
+        // would take a 268 MB source, and the check reads the count against
+        // record 0's offset, so widening the list is the same comparison.
+        let data = std::fs::read(&out).unwrap();
+        let real = read_u16_be(&data, 76).unwrap() as usize;
+        let list_end = 78 + real * 8;
+        let shift = 65536 * 8;
+
+        let mut forged_bytes = data[..list_end].to_vec();
+        forged_bytes.extend(std::iter::repeat_n(0u8, shift));
+        forged_bytes.extend_from_slice(&data[list_end..]);
+        for i in 0..real {
+            let at = 78 + i * 8;
+            let moved = read_u32_be(&forged_bytes, at).unwrap() + shift as u32;
+            forged_bytes[at..at + 4].copy_from_slice(&moved.to_be_bytes());
+        }
+        // The header count is left as it is: that is the wrap.
+        let forged = dir.join("wrapped.mobi");
+        std::fs::write(&forged, &forged_bytes).unwrap();
+
+        let report = check_mobi_file(
+            &forged,
+            &ExpectedMetadata {
+                title: Some("Test Book"),
+                author: Some("Alice Author"),
+                is_comic: false,
+                is_dictionary: false,
+            },
+        )
+        .expect("check should run");
+        assert!(
+            report
+                .p0_errors
+                .iter()
+                .any(|e| e.contains("record count wrapped")),
+            "a wrapped count must be a P0 error, got: {:?}",
             report.p0_errors
         );
         let _ = std::fs::remove_dir_all(&dir);
