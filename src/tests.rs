@@ -5895,6 +5895,94 @@ p { margin: 0.3em 0; }
         println!("  \u{2713} dictionary CSS compiled into inline popup markup");
     }
 
+    /// Everything outside an `<idx:entry>` used to be dropped in silence:
+    /// letter headings, a note between entries, the body of an entry the
+    /// parser rejects, a closing paragraph. The build exited 0 and the text
+    /// was simply not there (issue #42).
+    #[test]
+    fn test_dict_keeps_the_text_between_its_entries() {
+        let dir = TempDir::new("dict_gaps");
+        let opf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("dict_gaps")
+            .join("dict_gaps.opf");
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let text = extract_text_from_uncompressed_mobi(&data);
+
+        for expected in [
+            "LETTER_HEADING_A",
+            "USAGE_NOTE_BETWEEN_ENTRIES",
+            "REJECTED_NO_ORTH",
+            "LETTER_HEADING_C",
+            "CLOSING_CREDITS_PARAGRAPH",
+            // The file that carries idx markup but yields no usable entry has
+            // no entry to hang its text on, and used to be skipped whole.
+            "PREFACE_TEXT_MUST_SURVIVE",
+            "ALSO_REJECTED_HERE",
+        ] {
+            assert!(
+                text.contains(expected),
+                "{expected} was dropped from the blob:\n{text}"
+            );
+        }
+
+        // Replaying a run must not draw a second separator: every entry
+        // already ends with the pair, and the source writes its own between
+        // entries.
+        assert!(
+            !text.contains("<hr/><mbp:pagebreak/><hr/>"),
+            "doubled separator in:\n{text}"
+        );
+        assert!(
+            !text.contains("<mbp:pagebreak/><mbp:pagebreak/><h2>"),
+            "doubled page break before a heading in:\n{text}"
+        );
+        // The strip rewrites a file's <head> into a bare guide element, which
+        // has no business inside the body.
+        assert!(
+            !text.contains("<body><head>"),
+            "a stray head survived into the body:\n{text}"
+        );
+    }
+
+    /// The dangerous half of issue #42. A run sits between the previous
+    /// entry's separator and the next entry's first byte, which is inside the
+    /// window the anchor search scans, so a heading or a rejected entry's
+    /// prose can take the anchor that belongs to the entry after it. The
+    /// entry then indexes to the heading and its popup shows the wrong text,
+    /// which is issue #27's failure with a new cause.
+    #[test]
+    fn test_dict_entries_still_index_past_the_text_between_them() {
+        let dir = TempDir::new("dict_gaps_index");
+        let opf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("dict_gaps")
+            .join("dict_gaps.opf");
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let text = extract_text_from_uncompressed_mobi(&data);
+
+        // Each headword must sit at the start of its own entry, with the run
+        // that precedes it left behind rather than swallowed.
+        for (word, before) in [
+            ("apple", "LETTER_HEADING_A"),
+            ("banana", "USAGE_NOTE_BETWEEN_ENTRIES"),
+            ("cherry", "LETTER_HEADING_C"),
+        ] {
+            let entry_at = text
+                .find(&format!("<b>{word}</b>"))
+                .unwrap_or_else(|| panic!("{word} missing from:\n{text}"));
+            let run_at = text
+                .find(before)
+                .unwrap_or_else(|| panic!("{before} missing from:\n{text}"));
+            assert!(
+                run_at < entry_at,
+                "{before} should sit before {word}, not inside its entry"
+            );
+        }
+    }
+
     #[test]
     fn test_dict_front_matter_included() {
         let dir = TempDir::new("dict_front_matter");

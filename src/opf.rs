@@ -698,8 +698,32 @@ pub struct DictionaryEntry {
 /// kindlegen accepted both; PyGlossary emits the body form. We fall back to the
 /// body text when no `value=` attribute is present.
 pub fn parse_dictionary_html(html_path: &Path) -> Result<Vec<DictionaryEntry>, std::io::Error> {
+    parse_dictionary_html_with_gaps(html_path).map(|(entries, _)| entries)
+}
+
+/// Parse a dictionary file, keeping the content that sits BETWEEN its entries.
+///
+/// Anything outside an `<idx:entry>` used to be discarded here and never
+/// reached the book: letter headings, a usage note between entries, an image
+/// before the first entry, a closing credits paragraph, and the body of any
+/// entry the parser rejects (issue #42). The caller got entries and nothing
+/// else, so the loss was silent and the build exited 0.
+///
+/// The second return value holds those runs, `entries.len() + 1` of them:
+/// `gaps[i]` is the text immediately before entry `i`, and the last is
+/// whatever follows the final entry. Document scaffolding is clipped off the
+/// first and last, because `<html>`, `<head>` and `<mbp:frameset>` belong to
+/// the file rather than to its content and the assembler writes its own.
+pub fn parse_dictionary_html_with_gaps(
+    html_path: &Path,
+) -> Result<(Vec<DictionaryEntry>, Vec<String>), std::io::Error> {
     let content = std::fs::read_to_string(html_path)?;
     let mut entries = Vec::new();
+    let mut gaps: Vec<String> = Vec::new();
+    // Start of the run currently being accumulated. It only moves past an
+    // entry that was ACCEPTED: a rejected one stays inside the run, so its
+    // prose renders instead of vanishing.
+    let mut gap_start = 0usize;
 
     // Static regex compilation (avoids recompilation if called multiple times)
     use std::sync::OnceLock;
@@ -754,6 +778,7 @@ pub fn parse_dictionary_html(html_path: &Path) -> Result<Vec<DictionaryEntry>, s
             .map(|cap| unescape_html(cap.get(1).unwrap().as_str()))
             .collect();
 
+        gaps.push(content[gap_start..abs_start].to_string());
         entries.push(DictionaryEntry {
             headword,
             inflections,
@@ -761,9 +786,52 @@ pub fn parse_dictionary_html(html_path: &Path) -> Result<Vec<DictionaryEntry>, s
         });
 
         search_pos = close_pos + entry_close.len();
+        gap_start = search_pos;
+    }
+    gaps.push(content[gap_start..].to_string());
+
+    // The first run opens the document and the last closes it. Neither the
+    // wrappers nor the head belong in the middle of a merged blob, and the
+    // assembler adds its own `<mbp:frameset>` around everything.
+    if let Some(first) = gaps.first_mut() {
+        *first = clip_document_open(first);
+    }
+    if let Some(last) = gaps.last_mut() {
+        *last = clip_document_close(last);
     }
 
-    Ok(entries)
+    Ok((entries, gaps))
+}
+
+/// Drop everything up to and including the document's `<body>` and an opening
+/// `<mbp:frameset>`, leaving only content.
+fn clip_document_open(run: &str) -> String {
+    let mut rest = run;
+    for tag in ["<body", "<mbp:frameset"] {
+        if let Some(at) = find_tag_ci(rest, tag) {
+            if let Some(gt) = rest[at..].find('>') {
+                rest = &rest[at + gt + 1..];
+            }
+        }
+    }
+    rest.to_string()
+}
+
+/// Drop the document's closing wrappers from the end of the last run.
+fn clip_document_close(run: &str) -> String {
+    let mut end = run.len();
+    for tag in ["</mbp:frameset>", "</body>", "</html>"] {
+        if let Some(at) = find_tag_ci(&run[..end], tag) {
+            end = at;
+        }
+    }
+    run[..end].to_string()
+}
+
+/// Case-insensitive search for a tag opener.
+fn find_tag_ci(haystack: &str, needle: &str) -> Option<usize> {
+    let lower = haystack.to_ascii_lowercase();
+    lower.find(needle)
 }
 
 /// Extract headword from the body of the first `<idx:orth>...</idx:orth>` in

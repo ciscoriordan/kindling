@@ -192,8 +192,24 @@ fn build_dictionary_mobi(
     // (issue #54). Kept beside the entries rather than inside
     // DictionaryEntry, which several other builders also construct.
     let mut entry_files: Vec<usize> = Vec::new();
+    // The text between entries, which used to be discarded (issue #42). One
+    // run per entry, holding what came immediately before it, plus one tail
+    // run per file for whatever followed its last entry.
+    let mut entry_gaps: Vec<String> = Vec::new();
+    let mut tail_gaps: Vec<String> = Vec::new();
+    // Files that actually contributed entries. One that carries `<idx:entry>`
+    // markup but yields nothing usable has no entry to hang its text on, so
+    // it is read as front matter instead of skipped (issue #42).
+    let mut files_with_entries: std::collections::HashSet<usize> = std::collections::HashSet::new();
     for (file_index, html_path) in opf.get_content_html_paths().iter().enumerate() {
-        let entries = opf::parse_dictionary_html(html_path)?;
+        let (entries, mut gaps) = opf::parse_dictionary_html_with_gaps(html_path)?;
+        if entries.is_empty() {
+            continue;
+        }
+        files_with_entries.insert(file_index);
+        let tail = gaps.pop().unwrap_or_default();
+        tail_gaps.push(tail);
+        entry_gaps.extend(gaps);
         entry_files.extend(std::iter::repeat_n(file_index, entries.len()));
         all_entries.extend(entries);
     }
@@ -295,8 +311,16 @@ fn build_dictionary_mobi(
     // help text only ever promised to skip the 30 MB split and the file-count
     // warning. `kindle_limits` now controls exactly that and nothing else
     // (issue #41).
-    let (text_content, entry_needles, pending_links) =
-        build_text_content_by_letter(&opf, &all_entries, &entry_files, kindle_limits);
+    let (text_content, entry_needles, pending_links, entry_gap_texts) =
+        build_text_content_by_letter(
+            &opf,
+            &all_entries,
+            &entry_files,
+            &entry_gaps,
+            &tail_gaps,
+            &files_with_entries,
+            kindle_limits,
+        );
 
     // Insert the guide reference tag
     let text_content = insert_guide_reference(&text_content);
@@ -326,7 +350,12 @@ fn build_dictionary_mobi(
     // digits over ten placeholder bytes and changes no length, so every
     // offset computed here stays valid afterwards.
     eprintln!("Finding entry positions...");
-    let entry_positions = find_entry_positions(&text_content, &all_entries, &entry_needles)?;
+    let entry_positions = find_entry_positions(
+        &text_content,
+        &all_entries,
+        &entry_needles,
+        &entry_gap_texts,
+    )?;
 
     let text_content = resolve_dictionary_links(
         text_content,
@@ -2435,8 +2464,11 @@ fn build_text_content_by_letter(
     opf: &OPFData,
     entries: &[DictionaryEntry],
     entry_files: &[usize],
+    entry_gaps: &[String],
+    tail_gaps: &[String],
+    files_with_entries: &std::collections::HashSet<usize>,
     split: bool,
-) -> (Vec<u8>, Vec<Box<[u8]>>, Vec<PendingFilepos>) {
+) -> (Vec<u8>, Vec<Box<[u8]>>, Vec<PendingFilepos>, Vec<String>) {
     let doc_hrefs = opf.get_content_html_hrefs();
     let documents = links::build_document_index(&doc_hrefs);
     // Front-matter links come first in the merged body, so their placeholders
@@ -2455,6 +2487,7 @@ fn build_text_content_by_letter(
     // shipped with no CSS at all (issue #40).
     let head_re = Regex::new(r"(?s)<head\b[^>]*>.*?</head>").unwrap();
     let link_re = Regex::new(r"(?i)<link\b[^>]*>").unwrap();
+    let head_in_body_re = Regex::new(r"(?is)<head\b[^>]*>.*?</head>\s*").unwrap();
     let href_re = Regex::new(r#"(?i)\bhref\s*=\s*["']([^"']+)["']"#).unwrap();
     for (file_index, html_path) in opf.get_content_html_paths().iter().enumerate() {
         if let Ok(content) = std::fs::read_to_string(html_path) {
@@ -2498,10 +2531,24 @@ fn build_text_content_by_letter(
                 if content.contains("<mbp:frameset") {
                     has_frameset = true;
                 }
-                continue; // Skip dictionary files, they'll be handled by entry chunking
+                if files_with_entries.contains(&file_index) {
+                    // Its text arrives through the entry chunking below.
+                    continue;
+                }
+                // Carries idx markup but produced no entry, so nothing else
+                // will emit it. Read as front matter rather than dropped.
             }
-            // Non-dictionary file: clean it and extract body content
+            // Non-dictionary file: clean it and extract body content.
+            //
+            // strip_idx_markup removes the `<body>` tags before this runs, so
+            // body_re can never match here and the whole cleaned document is
+            // the body. That includes the `<head><guide></guide></head>` the
+            // strip rewrites the head into, which then sits inside the blob's
+            // own `<body>`. Drop it: the assembler writes the document's one
+            // real head, and a second one in mid-body is junk the reader has
+            // to skip past.
             let cleaned = strip_idx_markup(&content);
+            let cleaned = head_in_body_re.replace_all(&cleaned, "").into_owned();
             let body = match body_re.captures(&cleaned) {
                 Some(cap) => cap.get(1).unwrap().as_str().trim().to_string(),
                 None => cleaned,
@@ -2557,6 +2604,21 @@ fn build_text_content_by_letter(
         stripped_entries.push(text);
     }
 
+    // The runs between entries, cleaned the same way (issue #42). Every entry
+    // contribution already ends `<hr/><mbp:pagebreak/>`, so a run that starts
+    // with a separator of its own would draw a second one; the front of each
+    // run is trimmed of any mix of those and whitespace. Only the front: a
+    // break at the END of a run is the one that belongs before the next
+    // entry, and an entry contributes no leading break itself.
+    let stripped_gaps: Vec<String> = entry_gaps
+        .par_iter()
+        .map(|gap| trim_leading_separators(&strip_idx_markup(gap)))
+        .collect();
+    let stripped_tails: Vec<String> = tail_gaps
+        .par_iter()
+        .map(|gap| trim_leading_separators(&strip_idx_markup(gap)))
+        .collect();
+
     // Keep the opening bytes of each entry's own contribution to the blob.
     // These are what `find_entry_positions` anchors on: the exact byte string
     // this entry put into the text, rather than a guess at which markup shape
@@ -2569,15 +2631,20 @@ fn build_text_content_by_letter(
     let mut dict_sections: Vec<String> = Vec::new();
     let mut current_chunk = String::new();
 
-    for stripped in stripped_entries {
+    for (i, stripped) in stripped_entries.iter().enumerate() {
+        let gap = stripped_gaps.get(i).map(String::as_str).unwrap_or("");
         if split
             && !current_chunk.is_empty()
-            && current_chunk.len() + stripped.len() > KINDLE_HTML_SIZE_LIMIT
+            && current_chunk.len() + gap.len() + stripped.len() > KINDLE_HTML_SIZE_LIMIT
         {
             dict_sections.push(current_chunk);
             current_chunk = String::new();
         }
-        current_chunk.push_str(&stripped);
+        current_chunk.push_str(gap);
+        current_chunk.push_str(stripped);
+    }
+    for tail in &stripped_tails {
+        current_chunk.push_str(tail);
     }
     if !current_chunk.is_empty() {
         dict_sections.push(current_chunk);
@@ -2634,7 +2701,39 @@ fn build_text_content_by_letter(
     // Document order: front matter, then entries. The patch pass walks the
     // placeholders in the finished blob in the same order.
     front_matter_links.extend(entry_links);
-    (combined.into_bytes(), entry_needles, front_matter_links)
+    (
+        combined.into_bytes(),
+        entry_needles,
+        front_matter_links,
+        stripped_gaps,
+    )
+}
+
+/// Trim any run of whitespace, `<hr/>` and `<mbp:pagebreak/>` from the front
+/// of a between-entries run.
+///
+/// The entry before it already wrote that pair, so replaying the source's own
+/// separator here would draw it twice.
+fn trim_leading_separators(text: &str) -> String {
+    let mut rest = text.trim_start();
+    loop {
+        let before = rest;
+        for sep in [
+            "<hr/>",
+            "<hr />",
+            "<hr>",
+            "<mbp:pagebreak/>",
+            "<mbp:pagebreak />",
+        ] {
+            if let Some(stripped) = rest.strip_prefix(sep) {
+                rest = stripped.trim_start();
+            }
+        }
+        if rest.len() == before.len() {
+            break;
+        }
+    }
+    rest.to_string()
 }
 
 /// Remove `<link ... href="kindle:flow:...">` elements from KF7 text.
@@ -4059,12 +4158,28 @@ fn find_entry_positions(
     text_bytes: &[u8],
     entries: &[DictionaryEntry],
     needles: &[Box<[u8]>],
+    gaps: &[String],
 ) -> Result<Vec<(usize, usize)>, String> {
     let mut positions = Vec::with_capacity(entries.len());
     let mut search_start: usize = 0;
     let mut anchored = 0usize;
 
     for (idx, entry) in entries.iter().enumerate() {
+        // Step over the run of non-entry text that precedes this entry
+        // (issue #42). Without this the run sits inside the window the needle
+        // search scans, and a run that opens like the entry after it takes
+        // that entry's anchor: the stored offset then points at a letter
+        // heading or at the prose of a rejected entry, which is issue #27's
+        // failure with a new cause. The whole run is matched rather than a
+        // prefix, so this cannot land halfway. A miss leaves the cursor where
+        // it was, which is exactly today's behavior: an image inside a run is
+        // rewritten to a recindex after this text was captured, so its run
+        // will not be found and the search simply proceeds without the skip.
+        if let Some(gap) = gaps.get(idx).filter(|g| !g.is_empty()) {
+            if let Some(at) = find_entry_anchor(text_bytes, gap.as_bytes(), search_start) {
+                search_start = at + gap.len();
+            }
+        }
         // Exact anchor: the entry's own opening bytes. Entries are concatenated
         // into the blob in this order, so the first occurrence at or after the
         // cursor is this entry's, including when two entries share byte-for-byte
@@ -5812,7 +5927,7 @@ mod entry_anchor_tests {
             .collect();
         let (blob, needles, truth) = assemble(&bodies);
 
-        let positions = find_entry_positions(&blob, &entries, &needles).unwrap();
+        let positions = find_entry_positions(&blob, &entries, &needles, &[]).unwrap();
         for (i, (&(start, len), &want)) in positions.iter().zip(truth.iter()).enumerate() {
             assert_eq!(
                 start, want,
@@ -5839,7 +5954,7 @@ mod entry_anchor_tests {
             .collect();
         let (blob, needles, truth) = assemble(&bodies);
 
-        let positions = find_entry_positions(&blob, &entries, &needles).unwrap();
+        let positions = find_entry_positions(&blob, &entries, &needles, &[]).unwrap();
         assert_eq!(positions[0].0, truth[0]);
         assert_eq!(positions[2].0, truth[2]);
         assert_ne!(
@@ -5886,7 +6001,7 @@ mod entry_anchor_tests {
         let entries = vec![entry("alpha", bodies[0])];
         let (blob, _, truth) = assemble(&bodies);
 
-        let positions = find_entry_positions(&blob, &entries, &[]).unwrap();
+        let positions = find_entry_positions(&blob, &entries, &[], &[]).unwrap();
         assert_eq!(positions[0].0, truth[0]);
     }
 
@@ -5911,7 +6026,7 @@ mod entry_anchor_tests {
             .collect();
         let (blob, needles, truth) = assemble(&bodies);
 
-        let positions = find_entry_positions(&blob, &entries, &needles).unwrap();
+        let positions = find_entry_positions(&blob, &entries, &needles, &[]).unwrap();
         assert_eq!(positions[0].0, truth[0], "Alpha anchors on itself");
         assert_eq!(
             positions[1].0, truth[1],
@@ -5945,7 +6060,7 @@ mod entry_anchor_tests {
             .collect();
         let (blob, _, truth) = assemble(&bodies);
 
-        let positions = find_entry_positions(&blob, &entries, &[]).unwrap();
+        let positions = find_entry_positions(&blob, &entries, &[], &[]).unwrap();
         for (i, (&(start, len), &want)) in positions.iter().zip(truth.iter()).enumerate() {
             assert_eq!(start, want, "entry {i} must be found via its <big> wrapper");
             assert!(len > 0, "entry {i} must not be a blank span");
@@ -5963,7 +6078,7 @@ mod entry_anchor_tests {
             .collect();
         let (blob, _, truth) = assemble(&bodies);
 
-        let positions = find_entry_positions(&blob, &entries, &[]).unwrap();
+        let positions = find_entry_positions(&blob, &entries, &[], &[]).unwrap();
         assert_eq!(positions[0].0, truth[0]);
         assert_eq!(positions[1].0, truth[1]);
     }
@@ -6003,7 +6118,7 @@ mod unfound_entry_policy_tests {
             })
             .collect();
 
-        let positions = find_entry_positions(blob, &entries, &[])
+        let positions = find_entry_positions(blob, &entries, &[], &[])
             .expect("must not abort: the caller still needs an output file");
 
         assert_eq!(positions.len(), entries.len());
