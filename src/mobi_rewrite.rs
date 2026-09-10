@@ -131,6 +131,15 @@ pub struct MetadataUpdates {
     /// because the firmware needs the pair before it will draw a sideloaded
     /// book's cover on the lock screen (issue #35).
     pub doc_type: Option<String>,
+    /// EXTH 113, the book identifier the firmware keys a sideloaded cover on.
+    ///
+    /// Set it when the caller knows the book's identity, which a library
+    /// manager does and the file often does not: a kindling build from an OPF
+    /// stores the source `dc:identifier` nowhere, so the rewriter cannot
+    /// recover it from bytes and can only derive a stand-in. Supplying it is
+    /// the only way to make a rewrite agree with what a rebuild would write
+    /// (issue #46).
+    pub identifier: Option<String>,
 }
 
 impl MetadataUpdates {
@@ -148,6 +157,7 @@ impl MetadataUpdates {
             && self.subjects.is_none()
             && self.cover_image.is_none()
             && self.doc_type.is_none()
+            && self.identifier.is_none()
     }
 }
 
@@ -267,6 +277,10 @@ pub fn rewrite_mobi_metadata(
     // struct actually implies against the current file state. Dual-format
     // files get one plan per section: the two can disagree, and a file whose
     // KF7 half already matches is not a no-op if its KF8 half does not.
+    // A build from an EPUB embeds the source as a SRCS record, and that zip
+    // still holds the OPF's dc:identifier. It is the only place a rewriter
+    // can recover the real identity from bytes (issue #46).
+    let srcs_identifier = identifier_from_srcs(&input_bytes, &parsed.record_offsets);
     let has_cover = parsed.cover_record_idx.is_some();
     let has_thumb =
         parsed.thumb_record_idx.is_some() && parsed.thumb_record_idx != parsed.cover_record_idx;
@@ -280,9 +294,21 @@ pub fn rewrite_mobi_metadata(
              old cover is left in place. Rebuild from source to replace both."
         );
     }
-    let plan = plan_changes(&parsed.primary, has_cover, has_thumb, updates)?;
+    let plan = plan_changes(
+        &parsed.primary,
+        has_cover,
+        has_thumb,
+        srcs_identifier.as_deref(),
+        updates,
+    )?;
     let kf8_plan = match parsed.kf8.as_ref() {
-        Some(section) => Some(plan_changes(section, has_cover, has_thumb, updates)?),
+        Some(section) => Some(plan_changes(
+            section,
+            has_cover,
+            has_thumb,
+            srcs_identifier.as_deref(),
+            updates,
+        )?),
         None => None,
     };
 
@@ -738,6 +764,80 @@ impl Plan {
     }
 }
 
+/// Recover the source `dc:identifier` from an embedded SRCS record.
+///
+/// A build with `--embed-source` stores the whole input EPUB in one record,
+/// behind a 16-byte header, so the OPF inside it still names the book. This
+/// is the only identity a rewriter can read back out of a file: a build from
+/// a bare OPF embeds nothing and the identifier is genuinely absent, which is
+/// why `--identifier` exists.
+///
+/// Returns the first UUID-shaped identifier found, since that is the form
+/// EXTH 113 wants and the form `book_asin` would have passed through.
+fn identifier_from_srcs(input: &[u8], record_offsets: &[u32]) -> Option<String> {
+    const SRCS_HEADER_LEN: usize = 16;
+    for (i, &off) in record_offsets.iter().enumerate() {
+        let start = off as usize;
+        if input.len() < start + SRCS_HEADER_LEN || &input[start..start + 4] != b"SRCS" {
+            continue;
+        }
+        let end = record_offsets
+            .get(i + 1)
+            .map(|&e| e as usize)
+            .unwrap_or(input.len());
+        if end <= start + SRCS_HEADER_LEN {
+            continue;
+        }
+        let zip_bytes = &input[start + SRCS_HEADER_LEN..end];
+        let Ok(mut archive) = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes)) else {
+            continue;
+        };
+        for j in 0..archive.len() {
+            let Ok(mut entry) = archive.by_index(j) else {
+                continue;
+            };
+            if !entry.name().ends_with(".opf") {
+                continue;
+            }
+            let mut xml = String::new();
+            if std::io::Read::read_to_string(&mut entry, &mut xml).is_err() {
+                continue;
+            }
+            if let Some(id) = first_uuid_identifier(&xml) {
+                return Some(id);
+            }
+        }
+    }
+    None
+}
+
+/// Pull the first UUID-shaped `<dc:identifier>` out of an OPF.
+fn first_uuid_identifier(opf_xml: &str) -> Option<String> {
+    let mut rest = opf_xml;
+    while let Some(at) = rest.find("identifier") {
+        rest = &rest[at + "identifier".len()..];
+        let Some(gt) = rest.find('>') else { break };
+        let Some(lt) = rest[gt + 1..].find('<') else {
+            break;
+        };
+        let value = rest[gt + 1..gt + 1 + lt].trim();
+        let candidate = value
+            .strip_prefix("urn:uuid:")
+            .unwrap_or(value)
+            .to_ascii_lowercase();
+        // Same shape test book_asin applies before accepting one.
+        let looks_uuid = candidate.len() == 36
+            && candidate.chars().enumerate().all(|(i, c)| match i {
+                8 | 13 | 18 | 23 => c == '-',
+                _ => c.is_ascii_hexdigit(),
+            });
+        if looks_uuid {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 /// True when any record is a CRES (HD image container) record.
 fn has_hd_container(input: &[u8], record_offsets: &[u32]) -> bool {
     record_offsets.iter().any(|&off| {
@@ -756,6 +856,7 @@ fn plan_changes(
     section: &SectionView,
     has_cover_record: bool,
     has_thumb_record: bool,
+    srcs_identifier: Option<&str>,
     updates: &MetadataUpdates,
 ) -> Result<Plan, RewriteError> {
     let mut plan = Plan::default();
@@ -851,25 +952,35 @@ fn plan_changes(
             .map(str::to_owned)
             .filter(|s| !s.is_empty());
 
-        let identifier = existing_identifier.unwrap_or_else(|| {
-            let title = updates
-                .title
-                .clone()
-                .or_else(|| {
-                    existing
-                        .get(&EXTH_UPDATED_TITLE)
-                        .and_then(|v| v.first())
-                        .and_then(|b| String::from_utf8(b.to_vec()).ok())
-                })
-                .unwrap_or_default();
-            let author = existing
-                .get(&EXTH_CREATOR)
-                .and_then(|v| v.first())
-                .and_then(|b| String::from_utf8(b.to_vec()).ok())
-                .unwrap_or_default();
-            crate::exth::book_asin(&[], &title, &author)
-        });
+        let identifier = updates
+            .identifier
+            .clone()
+            .filter(|s| !s.is_empty())
+            .or(existing_identifier)
+            .or_else(|| srcs_identifier.map(str::to_owned))
+            .unwrap_or_else(|| {
+                let title = updates
+                    .title
+                    .clone()
+                    .or_else(|| {
+                        existing
+                            .get(&EXTH_UPDATED_TITLE)
+                            .and_then(|v| v.first())
+                            .and_then(|b| String::from_utf8(b.to_vec()).ok())
+                    })
+                    .unwrap_or_default();
+                let author = existing
+                    .get(&EXTH_CREATOR)
+                    .and_then(|v| v.first())
+                    .and_then(|b| String::from_utf8(b.to_vec()).ok())
+                    .unwrap_or_default();
+                crate::exth::book_asin(&[], &title, &author)
+            });
         plan_single(EXTH_ASIN_IDENTIFIER, Some(identifier.as_str()));
+    } else if let Some(identifier) = updates.identifier.as_deref() {
+        // Setting the identifier on its own is meaningful too: a book that
+        // already carries 501 needs only 113 corrected.
+        plan_single(EXTH_ASIN_IDENTIFIER, Some(identifier));
     }
 
     // Title: EXTH 503 (updated title), EXTH 542 (4-byte md5-derived hash of
@@ -2027,6 +2138,140 @@ mod tests {
             );
         }
         let _ = fs::remove_dir_all(input.parent().unwrap());
+    }
+
+    #[test]
+    fn reads_a_uuid_identifier_out_of_an_opf() {
+        let with_urn = r#"<metadata><dc:identifier id="bookid">urn:uuid:e7eefd61-439c-407d-ae78-8617ae233041</dc:identifier></metadata>"#;
+        assert_eq!(
+            first_uuid_identifier(with_urn).as_deref(),
+            Some("e7eefd61-439c-407d-ae78-8617ae233041")
+        );
+        // Bare, and uppercase, are both the same identifier.
+        let bare = "<dc:identifier>E7EEFD61-439C-407D-AE78-8617AE233041</dc:identifier>";
+        assert_eq!(
+            first_uuid_identifier(bare).as_deref(),
+            Some("e7eefd61-439c-407d-ae78-8617ae233041")
+        );
+        // A non-UUID identifier is not a stand-in for one: EXTH 113 wants the
+        // UUID shape, and the first such identifier in the file wins.
+        let mixed = r#"<dc:identifier>kindling-clean-book-fixture</dc:identifier>
+                       <dc:identifier>urn:uuid:11111111-2222-3333-4444-555555555555</dc:identifier>"#;
+        assert_eq!(
+            first_uuid_identifier(mixed).as_deref(),
+            Some("11111111-2222-3333-4444-555555555555")
+        );
+        assert_eq!(
+            first_uuid_identifier("<dc:identifier>isbn:123</dc:identifier>"),
+            None
+        );
+    }
+
+    /// A build from an EPUB keeps the source zip in a SRCS record, and its
+    /// OPF still names the book. That is the only identity a rewriter can
+    /// read back out of a file (issue #46).
+    #[test]
+    fn recovers_the_identifier_from_an_embedded_source_record() {
+        let opf = r#"<?xml version="1.0"?><package><metadata>
+            <dc:identifier id="bookid">urn:uuid:e7eefd61-439c-407d-ae78-8617ae233041</dc:identifier>
+            </metadata></package>"#;
+        let mut zip_bytes: Vec<u8> = Vec::new();
+        {
+            let mut w = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_bytes));
+            w.start_file::<_, ()>(
+                "OEBPS/content.opf",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+            std::io::Write::write_all(&mut w, opf.as_bytes()).unwrap();
+            w.finish().unwrap();
+        }
+
+        // One leading record, then the SRCS record: "SRCS" + 16-byte header.
+        let lead = vec![0u8; 32];
+        let mut srcs = b"SRCS".to_vec();
+        srcs.extend_from_slice(&0x10u32.to_be_bytes());
+        srcs.extend_from_slice(&(zip_bytes.len() as u32).to_be_bytes());
+        srcs.extend_from_slice(&1u32.to_be_bytes());
+        srcs.extend_from_slice(&zip_bytes);
+
+        let mut file = Vec::new();
+        let offsets = vec![0u32, lead.len() as u32];
+        file.extend_from_slice(&lead);
+        file.extend_from_slice(&srcs);
+
+        assert_eq!(
+            identifier_from_srcs(&file, &offsets).as_deref(),
+            Some("e7eefd61-439c-407d-ae78-8617ae233041")
+        );
+        // A file with no SRCS record has nothing to recover, which is the
+        // usual case for a build from a bare OPF.
+        assert_eq!(identifier_from_srcs(&lead, &[0]), None);
+    }
+
+    /// Without an explicit identifier the rewriter can only derive a stand-in
+    /// from title and author, and a rebuild of the same source writes
+    /// something else. The flag is what makes the two agree (issue #46).
+    #[test]
+    fn an_explicit_identifier_wins_over_the_derivation() {
+        let bytes = build_synthetic_mobi("T", &default_exth(), 0, make_jpeg(0x10));
+        let input = write_tmp("ident_in", &bytes);
+
+        let derived_out = tmp_path("ident_derived");
+        rewrite_mobi_metadata(
+            &input,
+            &derived_out,
+            &MetadataUpdates {
+                doc_type: Some("EBOK".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let chosen = "11111111-2222-3333-4444-555555555555";
+        let flag_out = tmp_path("ident_flag");
+        rewrite_mobi_metadata(
+            &input,
+            &flag_out,
+            &MetadataUpdates {
+                doc_type: Some("EBOK".to_string()),
+                identifier: Some(chosen.to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let read_113 = |p: &std::path::Path| -> String {
+            let data = fs::read(p).unwrap();
+            let parsed = parse_mobi(&data).unwrap();
+            parsed
+                .primary
+                .exth_records
+                .iter()
+                .find(|(t, _)| *t == EXTH_ASIN_IDENTIFIER)
+                .map(|(_, v)| String::from_utf8_lossy(v).into_owned())
+                .expect("EXTH 113")
+        };
+        assert_eq!(read_113(&flag_out), chosen);
+        assert_ne!(
+            read_113(&derived_out),
+            chosen,
+            "the derivation is a stand-in, so the flag must be what sets the real one"
+        );
+
+        // On its own, with no --doc-type, it still writes 113: a book that
+        // already has 501 needs only the identifier corrected.
+        let alone_out = tmp_path("ident_alone");
+        rewrite_mobi_metadata(
+            &input,
+            &alone_out,
+            &MetadataUpdates {
+                identifier: Some(chosen.to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(read_113(&alone_out), chosen);
     }
 
     // --- Negative tests: unchanged fields are not in the report ---

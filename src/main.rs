@@ -421,6 +421,19 @@ enum Commands {
         #[arg(long, value_name = "TYPE")]
         doc_type: Option<String>,
 
+        /// Set the book identifier (EXTH 113) explicitly.
+        ///
+        /// This is the record the firmware keys a sideloaded book's cover on,
+        /// and the one a rewrite cannot otherwise get right: a book built
+        /// from a bare OPF stores its source identifier nowhere, so without
+        /// this flag the rewriter can only derive a stand-in from the title
+        /// and author, and a rebuild of the same source would write something
+        /// else (issue #46). Pass the UUID the library already holds. When
+        /// the file was built from an EPUB, the identifier is recovered from
+        /// the embedded source automatically and this flag only overrides it.
+        #[arg(long, value_name = "UUID")]
+        identifier: Option<String>,
+
         /// New publication date (EXTH 106).
         #[arg(long = "publication-date")]
         publication_date: Option<String>,
@@ -1369,6 +1382,7 @@ fn main() {
                 isbn,
                 asin,
                 doc_type,
+                identifier,
                 publication_date,
                 subjects,
                 series,
@@ -1388,6 +1402,7 @@ fn main() {
                     isbn,
                     asin,
                     doc_type,
+                    identifier,
                     publication_date,
                     subjects,
                     series,
@@ -1916,6 +1931,7 @@ fn do_rewrite_metadata(
     isbn: Option<String>,
     asin: Option<String>,
     doc_type: Option<String>,
+    identifier: Option<String>,
     publication_date: Option<String>,
     subjects: Vec<String>,
     series: Option<String>,
@@ -1994,6 +2010,7 @@ fn do_rewrite_metadata(
         isbn,
         asin,
         doc_type,
+        identifier,
         publication_date,
         subjects: if subjects.is_empty() {
             None
