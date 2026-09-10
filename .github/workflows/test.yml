@@ -26,3 +26,37 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libarchive-tools
       - name: Run tests
         run: cargo test -- --show-output
+
+  # The structural EPUB tests cannot see a dangling href or an image resource
+  # that is not in the archive; only epubcheck can, and its test is #[ignore]d
+  # because it needs a JVM. It stayed unrun until someone ran it by hand, and
+  # when they did it found seven errors on one fixture (issues #55 and the
+  # image gap beside it). So it runs here.
+  epubcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install epubcheck
+        env:
+          # Pinned, and the checksum is checked: this downloads a jar and then
+          # runs it, so an unverified fetch would be a way into the build.
+          EPUBCHECK_VERSION: 5.2.1
+          EPUBCHECK_SHA256: 0532f6291faa2bb729dd253f958868a2a57dbd2c32f881a97c7c980c5940309e
+        run: |
+          set -euo pipefail
+          url="https://github.com/w3c/epubcheck/releases/download/v${EPUBCHECK_VERSION}/epubcheck-${EPUBCHECK_VERSION}.zip"
+          curl -sSL -o epubcheck.zip "$url"
+          echo "${EPUBCHECK_SHA256}  epubcheck.zip" | sha256sum --check --strict
+          unzip -q epubcheck.zip -d "$HOME/epubcheck"
+          jar="$HOME/epubcheck/epubcheck-${EPUBCHECK_VERSION}/epubcheck.jar"
+          test -f "$jar"
+          printf '#!/bin/sh\nexec java -jar "%s" "$@"\n' "$jar" > "$HOME/epubcheck/epubcheck"
+          chmod +x "$HOME/epubcheck/epubcheck"
+          echo "$HOME/epubcheck" >> "$GITHUB_PATH"
+      - name: Validate every EPUB variant
+        run: cargo test --test epub_conformance -- --ignored --nocapture

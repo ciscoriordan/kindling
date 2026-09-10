@@ -23,6 +23,12 @@
 //!   It requires `epubcheck` on `PATH` (override the command via the
 //!   `KINDLING_EPUBCHECK` environment variable, e.g. when its Java runtime is
 //!   not linked into `PATH`).
+//!
+//!   CI runs it in its own job, which installs a pinned epubcheck. It is
+//!   gated rather than always-on because it needs a JVM, and it went unrun
+//!   for long enough to matter: the always-on tests above cannot see a
+//!   dangling href or an image resource that is not in the archive, and the
+//!   first hand-run found seven of those on `footnote_links`.
 
 use std::collections::HashMap;
 use std::io::Read;
