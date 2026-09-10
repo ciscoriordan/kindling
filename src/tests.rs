@@ -5831,6 +5831,70 @@ mod tests {
         println!("  \u{2713} CSS <style> block preserved in dictionary text output");
     }
 
+    /// The lookup popup applies no stylesheet, so styling a dictionary through
+    /// CSS alone renders every entry in the reader's default face (issue #57).
+    /// The rules that have a legacy tag to compile to are resolved into the
+    /// entry markup at build time, the way kindlegen does it.
+    #[test]
+    fn test_dict_css_compiles_into_inline_markup() {
+        let dir = TempDir::new("dict_css_inlined");
+
+        let html = r#"<html><head><style type="text/css">
+u { font-size: 260%; font-weight: bold; }
+p { margin: 0.3em 0; }
+.def { color: red; }
+</style></head><body>
+<idx:entry><idx:orth value="zstyle"><b>zstyle</b></idx:orth><p><u>UNDER</u> plain</p></idx:entry>
+</body></html>"#;
+        fs::write(dir.path().join("content.html"), html).unwrap();
+
+        let opf = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf">
+  <metadata>
+    <dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">Inline CSS Dict</dc:title>
+    <dc:language xmlns:dc="http://purl.org/dc/elements/1.1/">en</dc:language>
+    <dc:creator xmlns:dc="http://purl.org/dc/elements/1.1/">Tester</dc:creator>
+    <x-metadata>
+      <DictionaryInLanguage>en</DictionaryInLanguage>
+      <DictionaryOutLanguage>en</DictionaryOutLanguage>
+      <DefaultLookupIndex>default</DefaultLookupIndex>
+    </x-metadata>
+  </metadata>
+  <manifest>
+    <item id="content" href="content.html" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="content"/>
+  </spine>
+</package>"#;
+        let opf_path = dir.path().join("content.opf");
+        fs::write(&opf_path, opf).unwrap();
+
+        let data = build_mobi_bytes(&opf_path, dir.path(), true, false, None);
+        let text = extract_text_from_uncompressed_mobi(&data);
+
+        // Exactly what kindlegen writes for this rule.
+        assert!(
+            text.contains(r#"<u><font size="+3"><b>UNDER</b></font></u>"#),
+            "font-size and font-weight should reach the entry as inline markup, got: {}",
+            &text[..text.len().min(800)]
+        );
+        // A compiled declaration must not also remain in the sheet, or a
+        // reader that does apply CSS renders the effect twice.
+        assert!(
+            !text.contains("font-size"),
+            "compiled declarations should leave the stylesheet, got: {}",
+            &text[..text.len().min(800)]
+        );
+        // Everything the popup cannot express still ships.
+        assert!(
+            text.contains("margin: 0.3em 0") && text.contains(".def"),
+            "uncompiled rules should survive, got: {}",
+            &text[..text.len().min(800)]
+        );
+        println!("  \u{2713} dictionary CSS compiled into inline popup markup");
+    }
+
     #[test]
     fn test_dict_front_matter_included() {
         let dir = TempDir::new("dict_front_matter");

@@ -31,6 +31,7 @@ pub mod validate;
 pub(crate) mod cbr;
 pub(crate) mod checks;
 pub(crate) mod cncx;
+pub(crate) mod dict_css;
 pub(crate) mod exth;
 pub(crate) mod fonts;
 pub(crate) mod html_check;

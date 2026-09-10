@@ -2325,10 +2325,23 @@ fn build_text_content_by_letter(
     // (~500k entries * ~20 regex passes each). Parallelise the pure function
     // with rayon, then stitch chunks serially to preserve entry ordering and
     // the 30MB section boundary math.
+    //
+    // The stylesheet is compiled into inline legacy markup first (issue #57).
+    // The Kindle lookup popup applies no CSS at all, so a dictionary whose
+    // styling lives in a `<style>` block renders in the reader's default face
+    // no matter how the sheet is written. kindlegen resolves the rules at
+    // build time instead, and this does the same. It runs before the strip so
+    // that rules written against `idx:orth` and friends still find their
+    // elements; the tags they produce survive the strip, which only removes
+    // the `idx:` markup itself.
     use rayon::prelude::*;
+    let compiled_css = crate::dict_css::compile_style_blocks(&dict_styles.concat());
     let stripped_entries: Vec<String> = entries
         .par_iter()
-        .map(|entry| strip_idx_markup(&entry.html_content))
+        .map(|entry| {
+            let inlined = crate::dict_css::apply(&entry.html_content, &compiled_css.effects);
+            strip_idx_markup(&inlined)
+        })
         .collect();
 
     // Keep the opening bytes of each entry's own contribution to the blob.
@@ -2396,7 +2409,11 @@ fn build_text_content_by_letter(
         format!("{}<mbp:pagebreak/>{}", fm_body, dict_body)
     };
 
-    let style_block = defer_escaped_colon_rules(&dict_styles.concat());
+    // Whatever the compile could not turn into markup still ships, so the
+    // book view keeps its margins and its indentation. The declarations that
+    // did compile are gone from it, or the book view would apply the rule and
+    // the inline tag both and render the effect twice.
+    let style_block = defer_escaped_colon_rules(&compiled_css.residual_css);
     let combined = format!(
         "<html><head>{}<guide></guide></head><body>{}  <mbp:pagebreak/></body></html>",
         style_block, merged_body
@@ -2810,14 +2827,20 @@ fn strip_idx_markup(html: &str) -> String {
 
     // Restore important spaces (cheap literal replaces)
     let mut result = result.into_owned();
+    //
+    // Only before an opening tag. A headword is followed by the definition
+    // body, never by a closing tag, so `</b></p>` and `</b></font>` need no
+    // separator and reading one in just puts a stray space at the end of a
+    // styled run. That shape is common now that dictionary CSS compiles into
+    // inline `<b>` and `<font>` markup (issue #57).
     if result.contains("</b><") {
-        result = result.replace("</b><", "</b> <");
+        result = restore_space_before_open_tag(&result, "</b>");
     }
     // Same restore for the <big> headword wrapper PyGlossary uses on non-Latin
     // scripts, for kindlegen parity and so is_entry_boundary sees the same
     // `/> ` separator it sees on <b> dictionaries (issue #22).
     if result.contains("</big><") {
-        result = result.replace("</big><", "</big> <");
+        result = restore_space_before_open_tag(&result, "</big>");
     }
     if result.contains("</p><hr") {
         result = result.replace("</p><hr", "</p> <hr");
@@ -2830,6 +2853,27 @@ fn strip_idx_markup(html: &str) -> String {
     }
 
     result.trim().to_string()
+}
+
+/// Put a space back between `tag` and the opening tag that follows it.
+///
+/// `strip_idx_markup` collapses whitespace around tags, which welds a
+/// headword to the first word of its definition. This restores the gap, but
+/// only where the next tag opens an element: before `</p>` or `</font>` the
+/// space is not a separator, just a stray byte at the end of a run.
+fn restore_space_before_open_tag(text: &str, tag: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(tag) {
+        let after = at + tag.len();
+        out.push_str(&rest[..after]);
+        if rest[after..].starts_with('<') && !rest[after..].starts_with("</") {
+            out.push(' ');
+        }
+        rest = &rest[after..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Clean book HTML for non-dictionary content.
