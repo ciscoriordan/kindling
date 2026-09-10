@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookId">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="BookId">kindling-dict-xrefs-fixture</dc:identifier>
+    <dc:title>Cross-reference Dictionary</dc:title>
+    <dc:language>en</dc:language>
+    <dc:creator>Kindling Test Suite</dc:creator>
+    <x-metadata>
+      <DictionaryInLanguage>en</DictionaryInLanguage>
+      <DictionaryOutLanguage>en</DictionaryOutLanguage>
+      <DefaultLookupIndex>default</DefaultLookupIndex>
+    </x-metadata>
+  </metadata>
+  <manifest>
+    <item id="c1" href="content_01.html" media-type="application/xhtml+xml"/>
+    <item id="c2" href="content_02.html" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine><itemref idref="c1"/><itemref idref="c2"/></spine>
+</package>

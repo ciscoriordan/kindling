@@ -186,8 +186,15 @@ fn build_dictionary_mobi(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Parse all dictionary entries from HTML content
     let mut all_entries: Vec<DictionaryEntry> = Vec::new();
-    for html_path in opf.get_content_html_paths() {
-        let entries = opf::parse_dictionary_html(&html_path)?;
+    // Which spine file each entry came from. A cross-reference written as a
+    // bare `#frag` means the fragment in its OWN file, so the merged blob
+    // cannot resolve links without remembering where each entry started out
+    // (issue #54). Kept beside the entries rather than inside
+    // DictionaryEntry, which several other builders also construct.
+    let mut entry_files: Vec<usize> = Vec::new();
+    for (file_index, html_path) in opf.get_content_html_paths().iter().enumerate() {
+        let entries = opf::parse_dictionary_html(html_path)?;
+        entry_files.extend(std::iter::repeat_n(file_index, entries.len()));
         all_entries.extend(entries);
     }
 
@@ -288,8 +295,8 @@ fn build_dictionary_mobi(
     // help text only ever promised to skip the 30 MB split and the file-count
     // warning. `kindle_limits` now controls exactly that and nothing else
     // (issue #41).
-    let (text_content, entry_needles) =
-        build_text_content_by_letter(&opf, &all_entries, kindle_limits);
+    let (text_content, entry_needles, pending_links) =
+        build_text_content_by_letter(&opf, &all_entries, &entry_files, kindle_limits);
 
     // Insert the guide reference tag
     let text_content = insert_guide_reference(&text_content);
@@ -312,6 +319,22 @@ fn build_dictionary_mobi(
     // is invisible in HTML rendering and harmless to find_entry_positions
     // because we run that AFTER padding.
     let text_content = pad_text_for_chunking(&text_content, RECORD_SIZE);
+
+    // Find where each entry landed. This has to happen before the records
+    // are cut, because the cross-reference patch below needs those offsets
+    // and the records have to hold the patched bytes. Patching writes ten
+    // digits over ten placeholder bytes and changes no length, so every
+    // offset computed here stays valid afterwards.
+    eprintln!("Finding entry positions...");
+    let entry_positions = find_entry_positions(&text_content, &all_entries, &entry_needles)?;
+
+    let text_content = resolve_dictionary_links(
+        text_content,
+        &all_entries,
+        &entry_files,
+        &entry_positions,
+        &pending_links,
+    );
 
     // Self-check: validate the final HTML blob before we split it into
     // records. This is the last chance to notice structural corruption
@@ -355,10 +378,6 @@ fn build_dictionary_mobi(
         );
         result
     };
-
-    // Find entry positions in the stripped text
-    eprintln!("Finding entry positions...");
-    let entry_positions = find_entry_positions(&text_content, &all_entries, &entry_needles)?;
 
     // Build lookup terms + separate infl INDX data.
     //
@@ -2245,6 +2264,162 @@ fn replace_hrefs_with_filepos(
     (out, pending)
 }
 
+/// Fill in the `filepos` digits of a dictionary's cross-references.
+///
+/// A dictionary's entries are merged into one blob, but its links were
+/// written against separate source files, so resolution is per file: a bare
+/// `#word` means that fragment in the file the link was written in. kindlegen
+/// behaves the same way, and two files that each define `#dup` resolve to
+/// their own copy rather than to whichever came first. Resolving book-wide
+/// would send one of them to the wrong entry, which reads as a working link
+/// to the wrong definition, and that is worse than a dead one.
+///
+/// The fragments a dictionary actually uses mostly do not survive as anchors.
+/// PyGlossary and reader.dict put `id="hw_<headword>"` on the `<idx:entry>`
+/// element, and stripping that element for the MOBI text takes the id with
+/// it, so the blob has nothing carrying the name. kindlegen has the same hole
+/// and writes a dead link. Here each entry's own start offset stands in for
+/// its `hw_<headword>` and for whatever id its `<idx:entry>` tag carried, so
+/// the link lands on the entry the fragment names. An anchor that really did
+/// survive inside an entry body wins over that fallback, since it is more
+/// precise.
+fn resolve_dictionary_links(
+    text: Vec<u8>,
+    entries: &[DictionaryEntry],
+    entry_files: &[usize],
+    entry_positions: &[(usize, usize)],
+    pending: &[PendingFilepos],
+) -> Vec<u8> {
+    if pending.is_empty() {
+        return text;
+    }
+    let placeholder = format!("filepos={}", "X".repeat(FILEPOS_DIGITS));
+
+    // Per source file: fragment name -> absolute offset in the blob.
+    let mut per_file: Vec<std::collections::HashMap<String, usize>> = Vec::new();
+    let mut file_start: Vec<Option<usize>> = Vec::new();
+    let ensure = |v: &mut Vec<std::collections::HashMap<String, usize>>,
+                  s: &mut Vec<Option<usize>>,
+                  i: usize| {
+        while v.len() <= i {
+            v.push(std::collections::HashMap::new());
+            s.push(None);
+        }
+    };
+
+    // Anchors that survived inside an entry body, attributed to the file the
+    // entry came from. Scanned per entry rather than over the whole blob so
+    // each one lands in the right file's table.
+    let blob = String::from_utf8_lossy(&text);
+    for (i, &(start, len)) in entry_positions.iter().enumerate() {
+        let file = entry_files.get(i).copied().unwrap_or(0);
+        ensure(&mut per_file, &mut file_start, file);
+        if file_start[file].is_none() {
+            file_start[file] = Some(start);
+        }
+        let end = (start + len).min(blob.len());
+        if start < end && blob.is_char_boundary(start) && blob.is_char_boundary(end) {
+            for anchor in links::scan_anchors(&blob[start..end]) {
+                per_file[file]
+                    .entry(anchor.name)
+                    .or_insert(start + anchor.offset);
+            }
+        }
+    }
+    // Then the entry-start fallbacks, which do not displace a real anchor.
+    for (i, &(start, _)) in entry_positions.iter().enumerate() {
+        let Some(entry) = entries.get(i) else {
+            continue;
+        };
+        let file = entry_files.get(i).copied().unwrap_or(0);
+        ensure(&mut per_file, &mut file_start, file);
+        if !entry.headword.is_empty() {
+            per_file[file]
+                .entry(format!("hw_{}", entry.headword))
+                .or_insert(start);
+        }
+        if let Some(id) = idx_entry_id(&entry.html_content) {
+            per_file[file].entry(id).or_insert(start);
+        }
+    }
+
+    let mut bytes = text;
+    let mut unresolved = 0usize;
+    let mut cursor = 0usize;
+    for link in pending {
+        // Placeholders appear in the blob in the same order they were
+        // recorded. Finding them by scanning rather than by arithmetic is
+        // what makes this immune to the image rewrite and the record padding,
+        // both of which shift bytes inside entries after the placeholder was
+        // written.
+        let Some(rel) = find_bytes(&bytes[cursor..], placeholder.as_bytes()) else {
+            unresolved += pending.len();
+            break;
+        };
+        let at = cursor + rel + "filepos=".len();
+        cursor = at + FILEPOS_DIGITS;
+
+        let resolved = match &link.target {
+            Some((file, None)) => file_start.get(*file).copied().flatten(),
+            Some((file, Some(fragment))) => {
+                per_file.get(*file).and_then(|m| m.get(fragment).copied())
+            }
+            None => None,
+        };
+        match resolved {
+            Some(offset) => {
+                let digits = format!("{:0width$}", offset, width = FILEPOS_DIGITS);
+                bytes[at..at + FILEPOS_DIGITS].copy_from_slice(digits.as_bytes());
+            }
+            None => unresolved += 1,
+        }
+    }
+    if unresolved > 0 {
+        eprintln!(
+            "{} dictionary cross-reference(s) could not be resolved and will not navigate; \
+             they name a file outside the spine or a headword this dictionary does not have",
+            unresolved
+        );
+    }
+    bytes
+}
+
+/// The `id` on an entry's `<idx:entry>` open tag, which the strip removes.
+///
+/// reader.dict writes the entry's own anchor there, so it is the only place
+/// left to read the name a cross-reference is aiming at.
+fn idx_entry_id(html: &str) -> Option<String> {
+    let at = html.find("<idx:entry")?;
+    let end = html[at..].find('>')? + at;
+    let tag = &html[at..end];
+    for attr in ["id", "name"] {
+        let pattern = format!("{attr}=");
+        let mut search = tag;
+        let mut base = 0usize;
+        while let Some(p) = search.find(&pattern) {
+            let abs = base + p;
+            let before_ok = abs == 0
+                || !tag.as_bytes()[abs - 1].is_ascii_alphanumeric()
+                    && tag.as_bytes()[abs - 1] != b'-'
+                    && tag.as_bytes()[abs - 1] != b'_';
+            let rest = &tag[abs + pattern.len()..];
+            let quote = rest.chars().next()?;
+            if before_ok && (quote == '"' || quote == '\'') {
+                let value = &rest[1..];
+                if let Some(close) = value.find(quote) {
+                    let v = &value[..close];
+                    if !v.is_empty() {
+                        return Some(v.to_string());
+                    }
+                }
+            }
+            base = abs + pattern.len();
+            search = &tag[base..];
+        }
+    }
+    None
+}
+
 /// Build text content for a dictionary, splitting at entry boundaries to stay
 /// under Amazon's per-HTML-file size limit.
 ///
@@ -2259,8 +2434,14 @@ fn replace_hrefs_with_filepos(
 fn build_text_content_by_letter(
     opf: &OPFData,
     entries: &[DictionaryEntry],
+    entry_files: &[usize],
     split: bool,
-) -> (Vec<u8>, Vec<Box<[u8]>>) {
+) -> (Vec<u8>, Vec<Box<[u8]>>, Vec<PendingFilepos>) {
+    let doc_hrefs = opf.get_content_html_hrefs();
+    let documents = links::build_document_index(&doc_hrefs);
+    // Front-matter links come first in the merged body, so their placeholders
+    // are the first ones the patch pass meets.
+    let mut front_matter_links: Vec<PendingFilepos> = Vec::new();
     // Collect non-dictionary spine items (front matter) and extract styles
     let mut front_matter_sections: Vec<String> = Vec::new();
     let mut dict_styles: Vec<String> = Vec::new();
@@ -2275,8 +2456,8 @@ fn build_text_content_by_letter(
     let head_re = Regex::new(r"(?s)<head\b[^>]*>.*?</head>").unwrap();
     let link_re = Regex::new(r"(?i)<link\b[^>]*>").unwrap();
     let href_re = Regex::new(r#"(?i)\bhref\s*=\s*["']([^"']+)["']"#).unwrap();
-    for html_path in opf.get_content_html_paths() {
-        if let Ok(content) = std::fs::read_to_string(&html_path) {
+    for (file_index, html_path) in opf.get_content_html_paths().iter().enumerate() {
+        if let Ok(content) = std::fs::read_to_string(html_path) {
             if content.contains("<idx:entry") {
                 // Collect styles from EVERY dictionary file, not just the first.
                 // A dictionary split across files used to lose every sheet after
@@ -2321,11 +2502,15 @@ fn build_text_content_by_letter(
             }
             // Non-dictionary file: clean it and extract body content
             let cleaned = strip_idx_markup(&content);
-            if let Some(cap) = body_re.captures(&cleaned) {
-                front_matter_sections.push(cap.get(1).unwrap().as_str().trim().to_string());
-            } else {
-                front_matter_sections.push(cleaned);
-            }
+            let body = match body_re.captures(&cleaned) {
+                Some(cap) => cap.get(1).unwrap().as_str().trim().to_string(),
+                None => cleaned,
+            };
+            let doc_href = doc_hrefs.get(file_index).map(|s| s.as_str()).unwrap_or("");
+            let (body, pending) =
+                replace_hrefs_with_filepos(&body, doc_href, file_index, &documents);
+            front_matter_links.extend(pending);
+            front_matter_sections.push(body);
         }
     }
 
@@ -2347,13 +2532,30 @@ fn build_text_content_by_letter(
     // the `idx:` markup itself.
     use rayon::prelude::*;
     let compiled_css = crate::dict_css::compile_style_blocks(&dict_styles.concat());
-    let stripped_entries: Vec<String> = entries
+    // Cross-references are rewritten here, per entry, and deliberately before
+    // the needles below are cut: replacing an href changes the entry's byte
+    // length, and a needle taken from the pre-rewrite text would match
+    // nothing in the finished blob, which is issue #27 all over again. What
+    // goes in is the fixed-width `filepos=XXXXXXXXXX` placeholder, so from
+    // this point on nothing changes length again and the digits can be filled
+    // in once the entry offsets are known (issue #54).
+    let rewritten: Vec<(String, Vec<PendingFilepos>)> = entries
         .par_iter()
-        .map(|entry| {
+        .enumerate()
+        .map(|(i, entry)| {
             let inlined = crate::dict_css::apply(&entry.html_content, &compiled_css.effects);
-            strip_idx_markup(&inlined)
+            let stripped = strip_idx_markup(&inlined);
+            let file = entry_files.get(i).copied().unwrap_or(0);
+            let doc_href = doc_hrefs.get(file).map(|s| s.as_str()).unwrap_or("");
+            replace_hrefs_with_filepos(&stripped, doc_href, file, &documents)
         })
         .collect();
+    let mut entry_links: Vec<PendingFilepos> = Vec::new();
+    let mut stripped_entries: Vec<String> = Vec::with_capacity(rewritten.len());
+    for (text, pending) in rewritten {
+        entry_links.extend(pending);
+        stripped_entries.push(text);
+    }
 
     // Keep the opening bytes of each entry's own contribution to the blob.
     // These are what `find_entry_positions` anchors on: the exact byte string
@@ -2429,7 +2631,10 @@ fn build_text_content_by_letter(
         "<html><head>{}<guide></guide></head><body>{}  <mbp:pagebreak/></body></html>",
         style_block, merged_body
     );
-    (combined.into_bytes(), entry_needles)
+    // Document order: front matter, then entries. The patch pass walks the
+    // placeholders in the finished blob in the same order.
+    front_matter_links.extend(entry_links);
+    (combined.into_bytes(), entry_needles, front_matter_links)
 }
 
 /// Remove `<link ... href="kindle:flow:...">` elements from KF7 text.

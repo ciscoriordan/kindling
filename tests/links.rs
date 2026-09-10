@@ -410,6 +410,127 @@ fn kf8_leaves_no_bare_fragment_links_behind() {
 }
 
 /// Build the cover-page fixture as a KF8 `.azw3` and parse it.
+// ---------------------------------------------------------------------------
+// Dictionary cross-references (issue #54)
+// ---------------------------------------------------------------------------
+
+fn build_dict_xrefs(slot: &str) -> ParsedMobi {
+    let opf = fixture_dir("dict_xrefs").join("dict_xrefs.opf");
+    // Its own directory per test: these run on parallel threads, and a
+    // shared output path means one test deletes the file another is reading.
+    let tmp = std::env::temp_dir().join("kindling_links").join(slot);
+    let _ = fs::remove_dir_all(&tmp);
+    fs::create_dir_all(&tmp).unwrap();
+    let out = tmp.join("out.mobi");
+    let run = Command::new(kindling_bin())
+        .arg("build")
+        .arg(&opf)
+        .arg("-o")
+        .arg(&out)
+        .arg("--no-validate")
+        .arg("--no-compress")
+        .output()
+        .expect("failed to spawn kindling-cli");
+    assert!(
+        run.status.success(),
+        "build failed: {:?}\n--stderr--\n{}",
+        run.status.code(),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let raw = fs::read(&out).unwrap_or_else(|e| panic!("read {}: {e}", out.display()));
+    parse_mobi_file(&raw).unwrap_or_else(|e| panic!("parse {}: {e}", out.display()))
+}
+
+fn dict_blob(slot: &str) -> String {
+    let parsed = build_dict_xrefs(slot);
+    let kf7 = &parsed.kf7;
+    String::from_utf8(extract_text_blob(&parsed, kf7)).expect("blob is UTF-8")
+}
+
+/// A cross-reference names a headword, and the anchor that headword was
+/// written on does not survive: reader.dict puts `id="hw_<headword>"` on the
+/// `<idx:entry>` element and the MOBI strip removes that element. The link
+/// has to reach the entry anyway.
+#[test]
+fn a_dictionary_cross_reference_reaches_the_entry_it_names() {
+    let blob = dict_blob("xref_entry");
+    let links = kf7_links(&blob);
+
+    for (label, expect) in [
+        ("zeta", "<b>zeta</b>"),
+        ("beta", "<b>beta</b>"),
+        ("alpha", "<b>alpha</b>"),
+    ] {
+        let link = links
+            .iter()
+            .find(|l| l.label == label)
+            .unwrap_or_else(|| panic!("no link labelled {label:?} in:\n{blob}"));
+        let at = link
+            .target
+            .unwrap_or_else(|| panic!("{label} was left unresolved"));
+        assert!(
+            blob[at..].starts_with(expect),
+            "{label} landed at {at} on {:?}, not on {expect}",
+            &blob[at..(at + 40).min(blob.len())]
+        );
+    }
+}
+
+/// Both source files define `<a id="dup">`. A resolver with one book-wide
+/// fragment table sends both `#dup` links to whichever it saw first, which
+/// is a live link to the wrong definition. kindlegen resolves these per
+/// file and so must kindling.
+#[test]
+fn a_bare_fragment_stays_in_the_file_that_wrote_it() {
+    let blob = dict_blob("xref_perfile");
+    let links = kf7_links(&blob);
+
+    for (label, expect) in [
+        ("TO_DUP_ONE", "DUPANCHOR_ONE"),
+        ("TO_DUP_TWO", "DUPANCHOR_TWO"),
+    ] {
+        let link = links
+            .iter()
+            .find(|l| l.label == label)
+            .unwrap_or_else(|| panic!("no link labelled {label:?} in:\n{blob}"));
+        let at = link
+            .target
+            .unwrap_or_else(|| panic!("{label} was left unresolved"));
+        assert_eq!(
+            element_text(&blob, at),
+            expect,
+            "{label} landed at {at} on the wrong file's anchor"
+        );
+    }
+}
+
+/// A fragment naming a headword the dictionary does not have stays inert,
+/// and keeps its width so nothing after it moves.
+#[test]
+fn a_cross_reference_to_a_missing_headword_stays_dead() {
+    let blob = dict_blob("xref_dead");
+    let dead = kf7_links(&blob)
+        .into_iter()
+        .find(|l| l.label == "DEAD")
+        .expect("the fixture's dead link");
+    assert!(dead.target.is_none(), "a missing headword must not resolve");
+    assert!(
+        blob.contains(&format!("filepos={}", "X".repeat(10))),
+        "an unresolved link keeps the same-width inert marker"
+    );
+}
+
+/// Every internal link is rewritten: a MOBI6 reader ignores href entirely,
+/// so one left behind is dead however well-formed it looks.
+#[test]
+fn no_dictionary_cross_reference_keeps_its_href() {
+    let blob = dict_blob("xref_href");
+    assert!(
+        !blob.contains("href="),
+        "an href survived into the dictionary blob:\n{blob}"
+    );
+}
+
 fn build_cover_fixture() -> ParsedMobi {
     let opf = fixture_dir("cover_page_links").join("cover_page_links.opf");
     let tmp = std::env::temp_dir()
