@@ -1797,7 +1797,7 @@ fn encode_under_cap(img: &image::DynamicImage, quality: u8) -> Option<Vec<u8>> {
 ///
 /// Returns None if the input cannot be decoded; the caller should fall back
 /// to emitting no thumbnail rather than failing the build.
-fn build_thumbnail_record(cover_bytes: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn build_thumbnail_record(cover_bytes: &[u8]) -> Option<Vec<u8>> {
     // Target bounding box. Calibre's AZW3 output uses 160x240 for thumbnails
     // on a typical 2:3 cover, which gives about 10 KB per JPEG at q80.
     const THUMB_BOX_W: u32 = 330;
@@ -1813,6 +1813,17 @@ fn build_thumbnail_record(cover_bytes: &[u8]) -> Option<Vec<u8>> {
         let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(cursor, THUMB_QUALITY);
         encoder.set_pixel_density(JFIF_DPI);
         thumb.write_with_encoder(encoder).ok()?;
+    }
+    // The tile is an image record like any other, so it is bound by the same
+    // 128 KB cap that closes the reader when a record exceeds it (issue #25).
+    // A 330x470 JPEG is normally a few kilobytes, but a sufficiently noisy
+    // cover can encode past the cap at quality 80, and kindling would then
+    // have written the offending record itself.
+    if buf.len() > LD_IMAGE_MAX_BYTES {
+        if let Some(fit) = fit_ld_image(&buf, THUMB_QUALITY) {
+            return Some(fit.data);
+        }
+        return None;
     }
     Some(buf)
 }

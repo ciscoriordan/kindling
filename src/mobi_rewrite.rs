@@ -10,8 +10,11 @@
 //! Intended callers are downstream library-manager consumers that let users
 //! edit book metadata (title, authors, tags, description, cover) and
 //! need the changes to land inside the MOBI/AZW3 without a lossy round trip
-//! through EPUB rebuild. Book content records (text, non-cover images,
-//! indices, INDX, FLIS, FCIS, SRCS) are never touched.
+//! through EPUB rebuild. Book content records (text, indices, INDX, FLIS,
+//! FCIS, SRCS) are never touched, and neither is any image except the two
+//! that belong to the cover: replacing the cover also regenerates the library
+//! thumbnail beside it, since a tile made from the old cover is what the
+//! library would keep showing.
 //!
 //! ## Guarantees
 //!
@@ -106,8 +109,12 @@ const PALMDB_NUM_RECORDS_OFFSET: usize = 76;
 ///
 /// `cover_image` accepts raw image bytes (JPEG, PNG, or GIF are the formats
 /// the Kindle ingest pipeline handles). The bytes replace the existing cover
-/// image record in place. The target MOBI must already have a cover (EXTH
-/// 201 present) for this to succeed.
+/// image record; one over the 128 KB a Kindle can decode is re-encoded to fit
+/// first, the same way a build does it, so the flag cannot install a record
+/// that closes the reader. The target MOBI must already have a cover (EXTH
+/// 201 present) for this to succeed. When the file also has a library
+/// thumbnail (EXTH 202), that tile is regenerated from the new cover, because
+/// a tile still showing the previous cover is what the library displays.
 #[derive(Debug, Clone, Default)]
 pub struct MetadataUpdates {
     pub title: Option<String>,
@@ -261,9 +268,21 @@ pub fn rewrite_mobi_metadata(
     // files get one plan per section: the two can disagree, and a file whose
     // KF7 half already matches is not a no-op if its KF8 half does not.
     let has_cover = parsed.cover_record_idx.is_some();
-    let plan = plan_changes(&parsed.primary, has_cover, updates)?;
+    let has_thumb =
+        parsed.thumb_record_idx.is_some() && parsed.thumb_record_idx != parsed.cover_record_idx;
+    // A book with an HD image container keeps a full-resolution copy of each
+    // picture in a CRES record, and nothing here rewrites those. Replacing
+    // the cover leaves the old image behind at HD, which a device may prefer.
+    // Say so rather than let it pass silently (issue #45).
+    if updates.cover_image.is_some() && has_hd_container(&input_bytes, &parsed.record_offsets) {
+        eprintln!(
+            "Warning: this book has an HD image container; the full-resolution copy of the \
+             old cover is left in place. Rebuild from source to replace both."
+        );
+    }
+    let plan = plan_changes(&parsed.primary, has_cover, has_thumb, updates)?;
     let kf8_plan = match parsed.kf8.as_ref() {
-        Some(section) => Some(plan_changes(section, has_cover, updates)?),
+        Some(section) => Some(plan_changes(section, has_cover, has_thumb, updates)?),
         None => None,
     };
 
@@ -706,6 +725,9 @@ struct Plan {
     /// New cover image bytes, if a cover update was requested and the file
     /// has an existing cover record. None means leave the cover alone.
     new_cover_bytes: Option<Vec<u8>>,
+    /// The library-tile thumbnail regenerated from a replaced cover, when the
+    /// file has an EXTH 202 record to put it in (issue #45).
+    new_thumb_bytes: Option<Vec<u8>>,
 }
 
 impl Plan {
@@ -714,6 +736,14 @@ impl Plan {
             && self.new_full_name.is_none()
             && self.new_cover_bytes.is_none()
     }
+}
+
+/// True when any record is a CRES (HD image container) record.
+fn has_hd_container(input: &[u8], record_offsets: &[u32]) -> bool {
+    record_offsets.iter().any(|&off| {
+        let at = off as usize;
+        input.len() >= at + 4 && &input[at..at + 4] == b"CRES"
+    })
 }
 
 /// Plan the mutations for ONE section.
@@ -725,6 +755,7 @@ impl Plan {
 fn plan_changes(
     section: &SectionView,
     has_cover_record: bool,
+    has_thumb_record: bool,
     updates: &MetadataUpdates,
 ) -> Result<Plan, RewriteError> {
     let mut plan = Plan::default();
@@ -987,7 +1018,31 @@ fn plan_changes(
         if !is_recognized_image(new_cover) {
             return Err(RewriteError::UnsupportedCoverFormat);
         }
-        plan.new_cover_bytes = Some(new_cover.clone());
+        // Hold the cover to the same 128 KB record cap the build path
+        // enforces. An image record over it closes the reader mid-book
+        // (issue #25), and --cover was the one way to put one there.
+        plan.new_cover_bytes = Some(
+            match crate::mobi::fit_ld_image(new_cover, crate::mobi::LD_DEFAULT_QUALITY) {
+                Some(fit) => {
+                    eprintln!("cover: {}", fit.describe(crate::mobi::LD_DEFAULT_QUALITY));
+                    fit.data
+                }
+                None => new_cover.clone(),
+            },
+        );
+        // Regenerate the library tile from the cover the caller supplied,
+        // not from the fitted record, so the tile is not a copy of a copy.
+        // Without this the tile kept showing the previous cover: EXTH 202
+        // points at its own record, and only 201's was being replaced.
+        if has_thumb_record {
+            match crate::mobi::build_thumbnail_record(new_cover) {
+                Some(thumb) => plan.new_thumb_bytes = Some(thumb),
+                None => eprintln!(
+                    "Warning: could not decode the new cover to regenerate the library \
+                     thumbnail; EXTH 202 still holds a tile made from the old cover"
+                ),
+            }
+        }
         // The change is recorded as a Replaced EXTH change so the caller's
         // audit log records the cover update too. We key it by EXTH_COVER_OFFSET.
         // Matching check is done later against actual record bytes.
@@ -1056,6 +1111,23 @@ fn rebuild_section_record(old: &[u8], section: &SectionView, plan: &Plan) -> Vec
     while rebuilt.len() % 4 != 0 {
         rebuilt.push(0x00);
     }
+    // Keep the record at the size it arrived at (issue #44).
+    //
+    // Record 0 ships with a large run of trailing zeros: kindling writes 8892
+    // bytes and kindlegen writes 8788 to 8832, in both cases so that a
+    // DualMetaFix-style tool can add EXTH records later without moving every
+    // record after it. Rebuilding only to a 4-byte boundary threw that away,
+    // taking a 15 KB book down to 7 KB and a dual .mobi down by about 16 KB,
+    // because both its section records come through here.
+    //
+    // Growing back to the input's own size rather than to kindling's 8892
+    // means a kindlegen file keeps its 8792 and a foreign file with a
+    // genuinely small record 0 stays small. A rewriter should not hold an
+    // opinion about a number it did not choose. Metadata that outgrows the
+    // old record still expands it, as before.
+    if rebuilt.len() < old.len() {
+        rebuilt.resize(old.len(), 0x00);
+    }
 
     put_u32_be(
         &mut rebuilt,
@@ -1121,6 +1193,10 @@ fn apply_plan(
             rebuilt.clone()
         } else if plan.new_cover_bytes.is_some() && Some(i) == parsed.cover_record_idx {
             plan.new_cover_bytes.clone().unwrap()
+        } else if plan.new_thumb_bytes.is_some() && Some(i) == parsed.thumb_record_idx {
+            // Checked after the cover, so a file whose 201 and 202 resolve to
+            // the same record keeps the cover there rather than a thumbnail.
+            plan.new_thumb_bytes.clone().unwrap()
         } else {
             input[start..end].to_vec()
         };
@@ -1803,6 +1879,154 @@ mod tests {
             out_bytes.len()
         };
         assert_eq!(&out_bytes[start..end], &new_cover[..]);
+    }
+
+    /// Encode a solid-color JPEG the `image` crate can read back, which the
+    /// `make_jpeg` stub deliberately cannot: the thumbnail path has to decode
+    /// the cover to regenerate the tile.
+    fn solid_jpeg(w: u32, h: u32, rgb: [u8; 3]) -> Vec<u8> {
+        let img = image::RgbImage::from_pixel(w, h, image::Rgb(rgb));
+        let mut buf: Vec<u8> = Vec::new();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(
+                &mut std::io::Cursor::new(&mut buf),
+                image::ImageFormat::Jpeg,
+            )
+            .unwrap();
+        buf
+    }
+
+    /// Build a real book with a real cover, so the cover and thumbnail
+    /// records are genuine images rather than magic bytes.
+    fn build_book_with_cover(tag: &str, rgb: [u8; 3]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("kindling_rewrite_{tag}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("content.html"),
+            r#"<html><head><title>T</title></head><body><h1>Ch</h1><p>Hi.</p></body></html>"#,
+        )
+        .unwrap();
+        fs::write(dir.join("cover.jpg"), solid_jpeg(600, 800, rgb)).unwrap();
+        let opf = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf">
+  <metadata>
+    <dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">Cover Book</dc:title>
+    <dc:language xmlns:dc="http://purl.org/dc/elements/1.1/">en</dc:language>
+    <dc:creator xmlns:dc="http://purl.org/dc/elements/1.1/">Alice Author</dc:creator>
+    <meta name="cover" content="coverimg"/>
+  </metadata>
+  <manifest>
+    <item id="content" href="content.html" media-type="application/xhtml+xml"/>
+    <item id="coverimg" href="cover.jpg" media-type="image/jpeg"/>
+  </manifest>
+  <spine>
+    <itemref idref="content"/>
+  </spine>
+</package>"#;
+        let opf_path = dir.join("content.opf");
+        fs::write(&opf_path, opf).unwrap();
+        let out = dir.join("book.azw3");
+        crate::mobi::build_mobi(
+            &opf_path,
+            &out,
+            true,
+            false,
+            None,
+            false,
+            true,
+            false,
+            false,
+            Some("ebok"),
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        )
+        .expect("build should succeed");
+        out
+    }
+
+    fn record_bytes(data: &[u8], parsed: &ParsedMobi, idx: usize) -> Vec<u8> {
+        let start = parsed.record_offsets[idx] as usize;
+        let end = if idx + 1 < parsed.record_offsets.len() {
+            parsed.record_offsets[idx + 1] as usize
+        } else {
+            data.len()
+        };
+        data[start..end].to_vec()
+    }
+
+    /// Record 0 ships with a long run of trailing zeros so a later tool can
+    /// insert EXTH records without moving every record after it. Rebuilding
+    /// it to a bare 4-byte boundary threw that away and took a 15 KB book
+    /// down to 7 KB (issue #44).
+    #[test]
+    fn record_zero_keeps_the_padding_it_arrived_with() {
+        let input = build_book_with_cover("pad44", [128, 128, 128]);
+        let output = input.with_file_name("padded_out.azw3");
+        let updates = MetadataUpdates {
+            title: Some("Retitled".to_string()),
+            ..Default::default()
+        };
+        rewrite_mobi_metadata(&input, &output, &updates).unwrap();
+
+        let before = fs::read(&input).unwrap();
+        let after = fs::read(&output).unwrap();
+        let pb = parse_mobi(&before).unwrap();
+        let pa = parse_mobi(&after).unwrap();
+        assert_eq!(
+            record_bytes(&before, &pb, 0).len(),
+            record_bytes(&after, &pa, 0).len(),
+            "record 0 must keep its size when the metadata fits in it"
+        );
+        // A shorter title than the original, so nothing grew: the whole file
+        // should come out the same length.
+        assert_eq!(
+            before.len(),
+            after.len(),
+            "the file should not shrink when only a header field changed"
+        );
+        let _ = fs::remove_dir_all(input.parent().unwrap());
+    }
+
+    /// EXTH 202 points at its own image record, and only 201's was being
+    /// replaced, so the library went on showing a tile made from the previous
+    /// cover (issue #45).
+    #[test]
+    fn replacing_the_cover_regenerates_the_library_thumbnail() {
+        let input = build_book_with_cover("thumb45", [128, 128, 128]);
+        let output = input.with_file_name("thumb_out.azw3");
+        let green = solid_jpeg(600, 800, [1, 180, 0]);
+        let updates = MetadataUpdates {
+            cover_image: Some(green.clone()),
+            ..Default::default()
+        };
+        let report = rewrite_mobi_metadata(&input, &output, &updates).unwrap();
+        assert!(report.cover_updated);
+
+        let after = fs::read(&output).unwrap();
+        let pa = parse_mobi(&after).unwrap();
+        let cover_idx = pa.cover_record_idx.expect("cover record");
+        let thumb_idx = pa.thumb_record_idx.expect("thumbnail record");
+        assert_ne!(cover_idx, thumb_idx, "fixture must have a separate tile");
+
+        for (what, idx) in [("cover", cover_idx), ("thumbnail", thumb_idx)] {
+            let bytes = record_bytes(&after, &pa, idx);
+            let img = image::load_from_memory(&bytes)
+                .unwrap_or_else(|e| panic!("{what} record should decode: {e}"))
+                .to_rgb8();
+            let (w, h) = img.dimensions();
+            let px = img.get_pixel(w / 2, h / 2).0;
+            // JPEG is lossy, so check the hue rather than the exact triple.
+            assert!(
+                px[1] > 120 && px[0] < 90 && px[2] < 90,
+                "{what} still shows the old cover: center pixel {px:?}"
+            );
+        }
+        let _ = fs::remove_dir_all(input.parent().unwrap());
     }
 
     // --- Negative tests: unchanged fields are not in the report ---
