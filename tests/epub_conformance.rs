@@ -256,6 +256,23 @@ fn hrefs_in(doc: &str) -> Vec<String> {
     out
 }
 
+/// Every `src="..."` value in a document, in order.
+fn srcs_in(doc: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = doc;
+    while let Some(at) = rest.find("src=\"") {
+        rest = &rest[at + 5..];
+        match rest.find('"') {
+            Some(end) => {
+                out.push(rest[..end].to_string());
+                rest = &rest[end + 1..];
+            }
+            None => break,
+        }
+    }
+    out
+}
+
 fn has_anchor(doc: &str, fragment: &str) -> bool {
     doc.contains(&format!("id=\"{fragment}\"")) || doc.contains(&format!("name=\"{fragment}\""))
 }
@@ -373,6 +390,63 @@ fn links_that_cannot_land_are_handled_rather_than_left_dangling() {
     assert!(ch1.contains("href=\"https://example.org/\""));
     assert!(ch2.contains("href=\"\""));
     assert!(ch1.contains("href=\"#local\"") && ch2.contains("href=\"#local\""));
+}
+
+// ---------------------------------------------------------------------------
+// Images
+// ---------------------------------------------------------------------------
+//
+// The exporter carried no image resources at all, so every `<img>` in an
+// exported book pointed at a file the archive did not contain: no cover, no
+// illustrations, and RSC-007 from epubcheck for each one.
+
+#[test]
+fn images_are_carried_into_the_archive_and_declared() {
+    let e = build_to("e3images", |p| {
+        build_epub3(&footnote_opf(), p, &EpubMeta::default()).unwrap();
+    });
+    assert!(
+        e.names.iter().any(|n| n.starts_with("OEBPS/images/")),
+        "no image reached the archive: {:?}",
+        e.names
+    );
+    let opf = e.opf();
+    assert!(
+        opf.contains("media-type=\"image/jpeg\""),
+        "image not declared in the manifest:\n{opf}"
+    );
+    // The fixture's only image is the book's cover, so EPUB3 must mark it.
+    assert!(
+        opf.contains("properties=\"cover-image\""),
+        "cover image not marked:\n{opf}"
+    );
+    // Every src now names a file the archive holds.
+    for (name, text) in e.named_content_docs() {
+        for src in srcs_in(text) {
+            assert!(
+                e.names.contains(&format!("OEBPS/{src}")),
+                "{name}: img src {src:?} names a missing file"
+            );
+        }
+    }
+}
+
+#[test]
+fn epub2_names_its_cover_through_the_metadata() {
+    // EPUB 2.0.1 has no cover-image property; the cover is a manifest id
+    // named from a <meta name="cover">.
+    let e = build_to("e2images", |p| {
+        build_epub2(&footnote_opf(), p, &EpubMeta::default()).unwrap();
+    });
+    let opf = e.opf();
+    assert!(
+        opf.contains("<meta name=\"cover\" content=\"img_01\"/>"),
+        "EPUB2 cover meta missing:\n{opf}"
+    );
+    assert!(
+        !opf.contains("cover-image"),
+        "properties=\"cover-image\" is EPUB3 only:\n{opf}"
+    );
 }
 
 #[test]
@@ -562,7 +636,19 @@ fn epubcheck_validates_all_variants() {
     build_epub3(&dict_opf(), &e3d, &EpubMeta::default()).unwrap();
     assert_epubcheck(&cmd, &e3d, "3.3");
 
-    for p in [e2, e3b, e3d] {
+    // The clean fixtures have neither cross-document links nor images, so
+    // they cannot catch a dangling href or a missing picture. footnote_links
+    // has both, and epubcheck is the authority the issues were reported
+    // against (RSC-007 for each of them).
+    let e2l = out_path("ec2links");
+    build_epub2(&footnote_opf(), &e2l, &EpubMeta::default()).unwrap();
+    assert_epubcheck(&cmd, &e2l, "2.0.1");
+
+    let e3l = out_path("ec3links");
+    build_epub3(&footnote_opf(), &e3l, &EpubMeta::default()).unwrap();
+    assert_epubcheck(&cmd, &e3l, "3.3");
+
+    for p in [e2, e3b, e3d, e2l, e3l] {
         let _ = std::fs::remove_file(&p);
     }
 }

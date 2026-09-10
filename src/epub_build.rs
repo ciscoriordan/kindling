@@ -190,7 +190,8 @@ pub fn build_epub2(
         opf.language.clone()
     };
 
-    let docs = build_book_documents(opf, &title, &language)?;
+    let (images, image_index) = collect_images(opf);
+    let docs = build_book_documents(opf, &title, &language, &images, &image_index)?;
     if docs.is_empty() {
         return Err("No content documents found for EPUB output".into());
     }
@@ -198,7 +199,7 @@ pub fn build_epub2(
     let mut files: Vec<ZipEntry> = Vec::new();
 
     // content.opf (EPUB2)
-    let opf_xml = render_epub2_opf(&title, &author, &identifier, &language, &docs);
+    let opf_xml = render_epub2_opf(&title, &author, &identifier, &language, &docs, &images);
     files.push(ZipEntry::text("OEBPS/content.opf", opf_xml));
 
     // toc.ncx
@@ -212,6 +213,7 @@ pub fn build_epub2(
             d.xhtml.clone(),
         ));
     }
+    push_images(&mut files, &images);
 
     write_epub(out_path, &files)?;
     Ok(())
@@ -252,7 +254,8 @@ fn build_epub3_book(
         opf.language.clone()
     };
 
-    let docs = build_book_documents(opf, &title, &language)?;
+    let (images, image_index) = collect_images(opf);
+    let docs = build_book_documents(opf, &title, &language, &images, &image_index)?;
     if docs.is_empty() {
         return Err("No content documents found for EPUB output".into());
     }
@@ -262,7 +265,7 @@ fn build_epub3_book(
     let nav_xhtml = render_nav(&title, &language, &docs);
     files.push(ZipEntry::text("OEBPS/nav.xhtml", nav_xhtml));
 
-    let opf_xml = render_epub3_book_opf(&title, &author, &identifier, &language, &docs);
+    let opf_xml = render_epub3_book_opf(&title, &author, &identifier, &language, &docs, &images);
     files.push(ZipEntry::text("OEBPS/content.opf", opf_xml));
 
     for d in &docs {
@@ -271,6 +274,7 @@ fn build_epub3_book(
             d.xhtml.clone(),
         ));
     }
+    push_images(&mut files, &images);
 
     write_epub(out_path, &files)?;
     Ok(())
@@ -325,6 +329,8 @@ fn build_epub3_dictionary(
     };
 
     let html_paths = opf.get_content_html_paths();
+    let html_hrefs = opf.get_content_html_hrefs();
+    let (images, image_index) = collect_images(opf);
 
     // Phase 1: parse every file, assign each entry a globally-unique anchor and
     // a stable output filename, and build a headword -> (filename, anchor) map
@@ -333,6 +339,9 @@ fn build_epub3_dictionary(
     struct ParsedFile {
         filename: String,
         title: String,
+        /// The source document's manifest href, which is what an `<img src>`
+        /// inside an entry is relative to.
+        href: String,
         entries: Vec<(DictionaryEntry, String)>, // (entry, anchor)
     }
     let mut parsed: Vec<ParsedFile> = Vec::new();
@@ -343,7 +352,7 @@ fn build_epub3_dictionary(
         std::collections::HashMap::new();
     let mut file_index = 0usize;
 
-    for html_path in &html_paths {
+    for (file_pos, html_path) in html_paths.iter().enumerate() {
         let entries = opf::parse_dictionary_html(html_path)?;
         if entries.is_empty() {
             continue;
@@ -381,6 +390,7 @@ fn build_epub3_dictionary(
         parsed.push(ParsedFile {
             filename,
             title: doc_title,
+            href: html_hrefs.get(file_pos).cloned().unwrap_or_default(),
             entries: kept,
         });
     }
@@ -398,6 +408,7 @@ fn build_epub3_dictionary(
         for (e, anchor) in &pf.entries {
             let body_html =
                 rewrite_crossrefs(&clean_entry_body(&e.html_content, &e.headword), &xref_map);
+            let body_html = rewrite_img_srcs(&body_html, &pf.href, &images, &image_index);
             body.push_str("    <article epub:type=\"dictentry\" id=\"");
             body.push_str(anchor);
             body.push_str("\"><dfn>");
@@ -428,7 +439,15 @@ fn build_epub3_dictionary(
     let skm_xml = render_skm(&src_lang, &docs);
     files.push(ZipEntry::text("OEBPS/skm.xml", skm_xml));
 
-    let opf_xml = render_epub3_dict_opf(&title, &author, &identifier, &src_lang, &tgt_lang, &docs);
+    let opf_xml = render_epub3_dict_opf(
+        &title,
+        &author,
+        &identifier,
+        &src_lang,
+        &tgt_lang,
+        &docs,
+        &images,
+    );
     files.push(ZipEntry::text("OEBPS/content.opf", opf_xml));
 
     for d in &docs {
@@ -437,6 +456,7 @@ fn build_epub3_dictionary(
             d.xhtml.clone(),
         ));
     }
+    push_images(&mut files, &images);
 
     write_epub(out_path, &files)?;
     Ok(())
@@ -458,6 +478,138 @@ struct BookDoc {
     xhtml: String,
 }
 
+/// One image carried into the exported archive.
+///
+/// The export flattens names the way it does for documents: a source tree of
+/// `Images/`, `Photos/` and `../art/` collapses to `images/img_NN.ext`, which
+/// sidesteps duplicate basenames, `..` above the OPF, percent-encoding, and
+/// filesystems that disagree about case. Nothing outside this struct ever
+/// sees the source path again.
+struct ImageRes {
+    /// Zip entry name, e.g. `OEBPS/images/img_01.jpg`.
+    entry_name: String,
+    /// Manifest href, relative to the content documents: `images/img_01.jpg`.
+    href: String,
+    /// Manifest id.
+    id: String,
+    media_type: String,
+    data: Vec<u8>,
+    /// True for the item the OPF names as the book's cover.
+    is_cover: bool,
+}
+
+/// Read every image the book declares, plus the ones it only references, and
+/// give each an exported name.
+///
+/// The map is keyed on the manifest-style href with `.`/`..` resolved and
+/// percent-escapes decoded, which is the same key `<img src>` resolves to, so
+/// a picture written as `../Images/cover.jpg` from inside `Text/` finds the
+/// manifest's `Images/cover.jpg`.
+fn collect_images(opf: &OPFData) -> (Vec<ImageRes>, HashMap<String, usize>) {
+    let cover = opf
+        .get_cover_image_href()
+        .map(|h| crate::links::normalize_path(&crate::links::percent_decode(&h)));
+    let mut images: Vec<ImageRes> = Vec::new();
+    let mut index: HashMap<String, usize> = HashMap::new();
+    // Declared items first, so a manifest id decides the order; anything only
+    // an `<img>` mentions follows, the way the MOBI builder treats them.
+    let declared = opf.get_image_items();
+    let undeclared = opf.find_unreferenced_images();
+    for (href, media_type) in declared.into_iter().chain(undeclared) {
+        let key = crate::links::normalize_path(&crate::links::percent_decode(&href));
+        if key.is_empty() || index.contains_key(&key) {
+            continue;
+        }
+        let Ok(data) = fs::read(opf.base_dir.join(&key)) else {
+            continue;
+        };
+        let ext = key
+            .rsplit('.')
+            .next()
+            .filter(|e| e.len() <= 5)
+            .unwrap_or("img");
+        let n = images.len() + 1;
+        index.insert(key.clone(), images.len());
+        images.push(ImageRes {
+            entry_name: format!("OEBPS/images/img_{:02}.{}", n, ext.to_ascii_lowercase()),
+            href: format!("images/img_{:02}.{}", n, ext.to_ascii_lowercase()),
+            id: format!("img_{:02}", n),
+            media_type,
+            data,
+            is_cover: cover.as_deref() == Some(key.as_str()),
+        });
+    }
+    (images, index)
+}
+
+/// Point every `<img src>` at the name the export gave that image, and drop
+/// the picture entirely when the file is not in the archive.
+///
+/// An `<img>` whose `src` names nothing is invalid HTML, and epubcheck rejects
+/// a `src` that resolves to no resource, so there is no halfway state to leave
+/// one in: either the image ships and the tag points at it, or the tag goes.
+fn rewrite_img_srcs(
+    body: &str,
+    doc_href: &str,
+    images: &[ImageRes],
+    index: &HashMap<String, usize>,
+) -> String {
+    // Attribute ranges and tag ranges both come back in document order, so
+    // one cursor through the attribute list keeps them paired without a
+    // second scan.
+    let srcs = crate::links::scan_attr(body, "img", "src");
+    if srcs.is_empty() {
+        return body.to_string();
+    }
+    let dir = crate::links::parent_dir(doc_href);
+    let mut edits: Vec<(usize, usize, String)> = Vec::new();
+    let mut next = 0usize;
+    crate::links::for_each_tag(body, |tag, _attrs| {
+        if tag.closing || tag.name != "img" {
+            return;
+        }
+        // The src attribute inside this tag, if it has one.
+        while next < srcs.len() && srcs[next].start < tag.start {
+            next += 1;
+        }
+        let src = match srcs.get(next).filter(|s| s.end <= tag.end) {
+            Some(s) => s,
+            // No src at all: nothing to point anywhere, so the tag goes.
+            None => {
+                edits.push((tag.start, tag.end, String::new()));
+                return;
+            }
+        };
+        next += 1;
+        if crate::links::is_external_href(&src.value) {
+            return;
+        }
+        let (path, _) = crate::links::split_href(&src.value);
+        let joined = if dir.is_empty() {
+            crate::links::percent_decode(path)
+        } else {
+            format!("{}/{}", dir, crate::links::percent_decode(path))
+        };
+        match index.get(&crate::links::normalize_path(&joined)) {
+            Some(&i) => edits.push((src.start, src.end, format!("src=\"{}\"", images[i].href))),
+            None => edits.push((tag.start, tag.end, String::new())),
+        }
+    });
+
+    let mut out = String::with_capacity(body.len());
+    let mut cursor = 0usize;
+    for (start, end, text) in edits {
+        if start < cursor {
+            continue;
+        }
+        out.push_str(&body[cursor..start]);
+        out.push_str(&text);
+        cursor = end;
+    }
+    out.push_str(&body[cursor..]);
+    out
+}
+
 /// Turn the spine HTML files into plain, reflowable XHTML documents. Any
 /// dictionary (idx) markup is stripped to a readable body; the result is a
 /// generic book regardless of whether the input was a dictionary.
@@ -465,6 +617,8 @@ fn build_book_documents(
     opf: &OPFData,
     title: &str,
     language: &str,
+    images: &[ImageRes],
+    image_index: &HashMap<String, usize>,
 ) -> Result<Vec<BookDoc>, Box<dyn std::error::Error>> {
     // Read the spine first, keeping each surviving document's manifest href
     // alongside its body. The href is what makes `../Text/notes.xhtml` mean
@@ -512,6 +666,7 @@ fn build_book_documents(
     let mut docs = Vec::new();
     for (i, body) in bodies.iter().enumerate() {
         let body = rewrite_book_hrefs(body, &hrefs[i], i, &documents, &anchors);
+        let body = rewrite_img_srcs(&body, &hrefs[i], images, image_index);
         docs.push(BookDoc {
             filename: format!("content_{:02}.xhtml", i + 1),
             title: titles[i].clone(),
@@ -603,6 +758,7 @@ fn render_epub2_opf(
     identifier: &str,
     language: &str,
     docs: &[BookDoc],
+    images: &[ImageRes],
 ) -> String {
     let mut s = String::new();
     s.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
@@ -626,6 +782,14 @@ fn render_epub2_opf(
         "    <dc:creator opf:role=\"aut\">{}</dc:creator>\n",
         xml_escape_text(author)
     ));
+    // EPUB 2.0.1 has no cover-image property; the cover is named from the
+    // metadata by manifest id instead.
+    if let Some(cover) = images.iter().find(|i| i.is_cover) {
+        s.push_str(&format!(
+            "    <meta name=\"cover\" content=\"{}\"/>\n",
+            cover.id
+        ));
+    }
     s.push_str("  </metadata>\n");
     s.push_str("  <manifest>\n");
     s.push_str("    <item id=\"ncx\" href=\"toc.ncx\" media-type=\"application/x-dtbncx+xml\"/>\n");
@@ -635,6 +799,7 @@ fn render_epub2_opf(
             d.id, d.filename
         ));
     }
+    s.push_str(&render_image_items(images, false));
     s.push_str("  </manifest>\n");
     s.push_str("  <spine toc=\"ncx\">\n");
     for d in docs {
@@ -687,6 +852,7 @@ fn render_epub3_book_opf(
     identifier: &str,
     language: &str,
     docs: &[BookDoc],
+    images: &[ImageRes],
 ) -> String {
     let mut s = String::new();
     s.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
@@ -724,6 +890,7 @@ fn render_epub3_book_opf(
             d.id, d.filename
         ));
     }
+    s.push_str(&render_image_items(images, true));
     s.push_str("  </manifest>\n");
     s.push_str("  <spine>\n");
     for d in docs {
@@ -741,6 +908,7 @@ fn render_epub3_dict_opf(
     source: &str,
     target: &str,
     docs: &[DictDoc],
+    images: &[ImageRes],
 ) -> String {
     let mut s = String::new();
     s.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
@@ -800,6 +968,7 @@ fn render_epub3_dict_opf(
     s.push_str(
         "    <item id=\"skm\" href=\"skm.xml\" media-type=\"application/vnd.epub.search-key-map+xml\" properties=\"search-key-map dictionary\"/>\n",
     );
+    s.push_str(&render_image_items(images, true));
     s.push_str("  </manifest>\n");
     s.push_str("  <spine>\n");
     for (i, _d) in docs.iter().enumerate() {
@@ -1295,6 +1464,40 @@ impl ZipEntry {
             data: text.into_bytes(),
         }
     }
+}
+
+/// Add every collected image to the archive.
+fn push_images(files: &mut Vec<ZipEntry>, images: &[ImageRes]) {
+    for img in images {
+        files.push(ZipEntry {
+            name: img.entry_name.clone(),
+            data: img.data.clone(),
+        });
+    }
+}
+
+/// The manifest items for the images, shared by all three package renderers.
+///
+/// `cover_property` is EPUB3's `properties="cover-image"`, which EPUB2 has no
+/// equivalent for; EPUB2 names its cover through a `<meta name="cover">` in
+/// the metadata instead.
+fn render_image_items(images: &[ImageRes], cover_property: bool) -> String {
+    let mut s = String::new();
+    for img in images {
+        let props = if cover_property && img.is_cover {
+            " properties=\"cover-image\""
+        } else {
+            ""
+        };
+        s.push_str(&format!(
+            "    <item id=\"{}\" href=\"{}\" media-type=\"{}\"{}/>\n",
+            img.id,
+            img.href,
+            xml_escape_attr(&img.media_type),
+            props
+        ));
+    }
+    s
 }
 
 const CONTAINER_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>

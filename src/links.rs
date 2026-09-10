@@ -142,7 +142,7 @@ pub(crate) fn percent_decode(s: &str) -> String {
 }
 
 /// Directory part of a manifest href, `""` when it has none.
-fn parent_dir(href: &str) -> &str {
+pub(crate) fn parent_dir(href: &str) -> &str {
     match href.rfind('/') {
         Some(i) => &href[..i],
         None => "",
@@ -528,14 +528,24 @@ pub(crate) fn scan_document_anchors(html: &str) -> std::collections::HashSet<Str
 /// Ranges are returned in document order and never overlap, so a caller can
 /// rewrite them front to back while tracking how much the text has shifted.
 pub(crate) fn scan_hrefs(html: &str) -> Vec<HrefAttr> {
+    scan_attr(html, "a", "href")
+}
+
+/// Collect one named attribute from every occurrence of one element, as byte
+/// ranges into `html`.
+///
+/// The same ranges `scan_hrefs` returns, for any element and attribute:
+/// `scan_attr(html, "img", "src")` is what points a picture at the file the
+/// build actually wrote.
+pub(crate) fn scan_attr(html: &str, element: &str, attr: &str) -> Vec<HrefAttr> {
     let mut out: Vec<HrefAttr> = Vec::new();
     for_each_tag(html, |tag, attrs| {
-        if tag.closing || tag.name != "a" {
+        if tag.closing || tag.name != element {
             return;
         }
         // `attrs` starts at the byte after the element name.
         let attrs_start = tag.end - 1 - attrs.len();
-        if let Some((rel_start, rel_end, value)) = find_attr(attrs, "href") {
+        if let Some((rel_start, rel_end, value)) = find_attr(attrs, attr) {
             out.push(HrefAttr {
                 start: attrs_start + rel_start,
                 end: attrs_start + rel_end,
@@ -865,6 +875,21 @@ mod tests {
     fn ignores_an_anchor_with_no_href() {
         let html = r#"<a id="target">t</a><a href="x.xhtml">u</a>"#;
         assert_eq!(scan_hrefs(html).len(), 1);
+    }
+
+    #[test]
+    fn scans_any_element_and_attribute() {
+        let html = r#"<p><img src="../Images/a.png" alt="x"/><a href="p.xhtml">t</a></p>"#;
+        let srcs = scan_attr(html, "img", "src");
+        assert_eq!(srcs.len(), 1);
+        assert_eq!(srcs[0].value, "../Images/a.png");
+        assert_eq!(
+            &html[srcs[0].start..srcs[0].end],
+            r#"src="../Images/a.png""#
+        );
+        // The `<a>` in the same document is not an `<img>`, and `alt` is not
+        // `src`, so neither comes back.
+        assert!(scan_attr(html, "img", "srcset").is_empty());
     }
 
     #[test]
