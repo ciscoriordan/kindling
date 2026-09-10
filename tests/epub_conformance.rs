@@ -118,6 +118,16 @@ impl Epub {
     fn has_file(&self, name: &str) -> bool {
         self.names.iter().any(|n| n == name)
     }
+    /// Content documents as `(zip entry name, text)`, in file order.
+    fn named_content_docs(&self) -> Vec<(&String, &String)> {
+        let mut v: Vec<(&String, &String)> = self
+            .files
+            .iter()
+            .filter(|(k, _)| k.starts_with("OEBPS/content_") && k.ends_with(".xhtml"))
+            .collect();
+        v.sort_by(|a, b| a.0.cmp(b.0));
+        v
+    }
     fn content_docs(&self) -> Vec<&String> {
         let mut v: Vec<(&String, &String)> = self
             .files
@@ -207,6 +217,162 @@ fn epub2_is_plain_2_0_1_even_from_dictionary_input() {
             "dictionary semantics leaked into epub2 content"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Cross-document links (issue #55)
+// ---------------------------------------------------------------------------
+//
+// The exporter renames every spine document to `content_NN.xhtml` and writes
+// them flat into `OEBPS/`, so an href the source wrote as
+// `../Text/notes.xhtml#n1` names a file the output does not contain.
+// epubcheck rejects those as RSC-007 and a reader shows them as dead.
+//
+// The `footnote_links` fixture is built for this: its documents live in
+// `Text/`, they link to each other through `../`, and they reuse the same
+// fragment names in more than one document, so a resolver that keeps one
+// table of fragments for the whole book sends a link to the wrong file rather
+// than to nowhere, and that has to fail too.
+
+fn footnote_opf() -> OPFData {
+    OPFData::parse(&fixture_opf("footnote_links", "footnote_links.opf"))
+        .expect("parse footnote_links OPF")
+}
+
+/// Every `href="..."` value in a document, in order.
+fn hrefs_in(doc: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = doc;
+    while let Some(at) = rest.find("href=\"") {
+        rest = &rest[at + 6..];
+        match rest.find('"') {
+            Some(end) => {
+                out.push(rest[..end].to_string());
+                rest = &rest[end + 1..];
+            }
+            None => break,
+        }
+    }
+    out
+}
+
+fn has_anchor(doc: &str, fragment: &str) -> bool {
+    doc.contains(&format!("id=\"{fragment}\"")) || doc.contains(&format!("name=\"{fragment}\""))
+}
+
+/// No link may name a file the export does not contain, or a fragment the
+/// target document does not have. Both are RSC-007 / RSC-012.
+fn assert_every_link_lands(e: &Epub) {
+    let docs = e.named_content_docs();
+    for (name, text) in &docs {
+        for href in hrefs_in(text) {
+            if href.is_empty() || href.starts_with("http") {
+                continue;
+            }
+            let (path, fragment) = match href.split_once('#') {
+                Some((p, f)) => (p, Some(f)),
+                None => (href.as_str(), None),
+            };
+            let target: &String = if path.is_empty() {
+                text
+            } else {
+                assert!(
+                    !path.contains('/'),
+                    "{name}: href {href:?} still points outside OEBPS/"
+                );
+                let full = format!("OEBPS/{path}");
+                e.files
+                    .get(&full)
+                    .unwrap_or_else(|| panic!("{name}: href {href:?} names a missing file"))
+            };
+            if let Some(f) = fragment {
+                assert!(
+                    has_anchor(target, f),
+                    "{name}: href {href:?} names a fragment its target does not have"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn epub3_book_links_reach_the_exported_documents() {
+    let e = build_to("e3links", |p| {
+        build_epub3(&footnote_opf(), p, &EpubMeta::default()).unwrap();
+    });
+    assert_every_link_lands(&e);
+
+    let docs = e.named_content_docs();
+    assert_eq!(docs.len(), 3, "fixture has three spine documents");
+    let (ch1, ch2, notes) = (docs[0].1, docs[1].1, docs[2].1);
+
+    // Forward: each chapter's marker reaches its own note, and the two notes
+    // are in the same file, so only the fragment tells them apart.
+    assert!(
+        ch1.contains("href=\"content_03.xhtml#n1\""),
+        "ch1 marker:\n{ch1}"
+    );
+    assert!(
+        ch2.contains("href=\"content_03.xhtml#n2\""),
+        "ch2 marker:\n{ch2}"
+    );
+    // Back: `ref-1` exists in both chapters, so a back-link that resolves
+    // fragments book-wide would send both notes to the same place.
+    assert!(
+        notes.contains("href=\"content_01.xhtml#ref-1\"")
+            && notes.contains("href=\"content_02.xhtml#ref-1\""),
+        "notes back-links:\n{notes}"
+    );
+}
+
+#[test]
+fn epub2_book_links_reach_the_exported_documents() {
+    let e = build_to("e2links", |p| {
+        build_epub2(&footnote_opf(), p, &EpubMeta::default()).unwrap();
+    });
+    assert_every_link_lands(&e);
+    assert!(
+        e.named_content_docs()[0]
+            .1
+            .contains("href=\"content_03.xhtml#n1\"")
+    );
+}
+
+#[test]
+fn links_that_cannot_land_are_handled_rather_than_left_dangling() {
+    let e = build_to("e3deadlinks", |p| {
+        build_epub3(&footnote_opf(), p, &EpubMeta::default()).unwrap();
+    });
+    let docs = e.named_content_docs();
+    let (ch1, ch2, notes) = (docs[0].1, docs[1].1, docs[2].1);
+
+    // A link to a document that is not in the spine keeps its text and loses
+    // its href, the way an unplaceable dictionary cross-reference does.
+    assert!(
+        !notes.contains("missing.xhtml"),
+        "a link to a file outside the spine should not survive:\n{notes}"
+    );
+    assert!(
+        notes.contains("NOTES_MISSING_FILE"),
+        "its link text should stay:\n{notes}"
+    );
+    assert!(
+        !notes.contains("<a >"),
+        "no empty attribute space left behind:\n{notes}"
+    );
+
+    // A fragment the export threw away (here a `<body id>`, whose element the
+    // export does not keep) becomes a link to the top of that document.
+    assert!(
+        ch2.contains("href=\"content_01.xhtml\""),
+        "body-id link should fall back to the document:\n{ch2}"
+    );
+
+    // Untouched: an external link, an href naming nothing at all, and a bare
+    // fragment that resolves inside its own document.
+    assert!(ch1.contains("href=\"https://example.org/\""));
+    assert!(ch2.contains("href=\"\""));
+    assert!(ch1.contains("href=\"#local\"") && ch2.contains("href=\"#local\""));
 }
 
 #[test]

@@ -36,6 +36,7 @@
 //! slash, single-quoted attributes, raw `&`) that epubcheck rejects in an
 //! XHTML5 content document.
 
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -465,19 +466,24 @@ fn build_book_documents(
     title: &str,
     language: &str,
 ) -> Result<Vec<BookDoc>, Box<dyn std::error::Error>> {
-    let mut docs = Vec::new();
-    let mut idx = 0usize;
-    for html_path in opf.get_content_html_paths() {
-        let raw = match fs::read_to_string(&html_path) {
-            Ok(s) => s,
-            Err(_) => continue,
+    // Read the spine first, keeping each surviving document's manifest href
+    // alongside its body. The href is what makes `../Text/notes.xhtml` mean
+    // different things in different documents, and a file that cannot be read
+    // has to drop out of both lists at once or every link after it resolves
+    // one document off.
+    let mut hrefs: Vec<String> = Vec::new();
+    let mut titles: Vec<String> = Vec::new();
+    let mut bodies: Vec<String> = Vec::new();
+    for (html_path, href) in opf
+        .get_content_html_paths()
+        .into_iter()
+        .zip(opf.get_content_html_hrefs())
+    {
+        let Ok(raw) = fs::read_to_string(&html_path) else {
+            continue;
         };
-        idx += 1;
-        let filename = format!("content_{:02}.xhtml", idx);
-        let id = format!("content_{:02}", idx);
-
         // Prefer the source document's <title>; otherwise the book title.
-        let doc_title = extract_title(&raw).unwrap_or_else(|| title.to_string());
+        titles.push(extract_title(&raw).unwrap_or_else(|| title.to_string()));
 
         // Strip idx/mbp markup and re-serialize the body as well-formed XHTML.
         let body_source = extract_body(&raw);
@@ -486,17 +492,105 @@ fn build_book_documents(
         // Book mode has no dictionary anchoring, so internal `content_NN.html#hw_`
         // cross-references would dangle. Drop those hrefs (leaving the link
         // text) rather than emit references to resources that do not exist.
-        let body = strip_internal_xref_hrefs(&serialized);
+        bodies.push(strip_internal_xref_hrefs(&serialized));
+        hrefs.push(href);
+    }
 
-        let xhtml = render_book_content_doc(&doc_title, language, &body);
+    // Every document has its final name and its final anchors now, so the
+    // links can be pointed at them (issue #55).
+    let documents = crate::links::build_document_index(&hrefs);
+    let anchors: Vec<HashSet<String>> = bodies
+        .iter()
+        .map(|body| {
+            crate::links::scan_anchors(body)
+                .into_iter()
+                .map(|a| a.name)
+                .collect()
+        })
+        .collect();
+
+    let mut docs = Vec::new();
+    for (i, body) in bodies.iter().enumerate() {
+        let body = rewrite_book_hrefs(body, &hrefs[i], i, &documents, &anchors);
         docs.push(BookDoc {
-            filename,
-            title: doc_title,
-            id,
-            xhtml,
+            filename: format!("content_{:02}.xhtml", i + 1),
+            title: titles[i].clone(),
+            id: format!("content_{:02}", i + 1),
+            xhtml: render_book_content_doc(&titles[i], language, &body),
         });
     }
     Ok(docs)
+}
+
+/// Point every cross-document link at the name the export gave its target.
+///
+/// The exporter flattens the spine into `content_NN.xhtml` in `OEBPS/`, so an
+/// href the source wrote as `../Text/notes.xhtml#n1` names a file the output
+/// does not contain. epubcheck rejects those as `RSC_007` and a reader shows
+/// them as dead (issue #55).
+///
+/// A fragment is kept only when the target document still has an element by
+/// that name. `<body id="...">` is the common casualty: the export takes the
+/// body's contents and drops the element, so a link naming the body becomes a
+/// link to the top of that document. A link to a document outside the spine
+/// loses its href and keeps its text, which is what the dictionary path
+/// already does with a cross-reference it cannot place.
+fn rewrite_book_hrefs(
+    body: &str,
+    doc_href: &str,
+    self_index: usize,
+    documents: &HashMap<String, usize>,
+    anchors: &[HashSet<String>],
+) -> String {
+    use crate::links::Resolution;
+    let no_redirects: HashMap<String, usize> = HashMap::new();
+    let mut out = String::with_capacity(body.len());
+    let mut cursor = 0usize;
+    for href in crate::links::scan_hrefs(body) {
+        let replacement = match crate::links::resolve(
+            doc_href,
+            self_index,
+            &href.value,
+            documents,
+            &no_redirects,
+        ) {
+            Resolution::Leave => continue,
+            Resolution::Unresolved => String::new(),
+            Resolution::Internal { file, fragment } => {
+                // A bare `#frag` that resolves inside its own document is
+                // already right, and rewriting it to name the file would be
+                // correct but noisier than the source. One that names a file
+                // still has to be rewritten, self-reference or not, because
+                // the name it uses is the one the export threw away.
+                let keeps_fragment = fragment
+                    .as_ref()
+                    .is_some_and(|f| anchors[file].contains(f.as_str()));
+                let bare_fragment = href.value.trim_start().starts_with('#');
+                match (file == self_index && bare_fragment, keeps_fragment) {
+                    (true, true) => continue,
+                    (_, true) => format!(
+                        "href=\"content_{:02}.xhtml#{}\"",
+                        file + 1,
+                        xml_escape_attr(fragment.as_deref().unwrap_or_default())
+                    ),
+                    (_, false) => format!("href=\"content_{:02}.xhtml\"", file + 1),
+                }
+            }
+        };
+        // Dropping the attribute takes the space in front of it too, so a
+        // link that loses its href does not leave `<a >` behind.
+        let mut start = href.start;
+        if replacement.is_empty() {
+            while start > cursor && body.as_bytes()[start - 1].is_ascii_whitespace() {
+                start -= 1;
+            }
+        }
+        out.push_str(&body[cursor..start]);
+        out.push_str(&replacement);
+        cursor = href.end;
+    }
+    out.push_str(&body[cursor..]);
+    out
 }
 
 // ---------------------------------------------------------------------------

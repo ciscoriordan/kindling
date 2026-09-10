@@ -321,6 +321,8 @@ kindling-cli epub2 input.epub --title "My Book" --author "Jane Doe"
 
 The dictionary layer is selected automatically: if the OPF declares `<DictionaryInLanguage>` / `<DictionaryOutLanguage>` or `<dc:type>dictionary`, `epub3` emits a dictionary with those languages as source/target. Pass `--book` to force a plain book regardless, or `--dictionary SOURCE TARGET` to force the dictionary layer with explicit language codes (overriding both auto-detection and the OPF's own language fields). There is intentionally no EPUB2 dictionary mode.
 
+Both exporters flatten the spine into `content_NN.xhtml` in `OEBPS/`, so cross-document links are resolved against the document that wrote them and rewritten to the name the export gave their target (issue #55). A fragment survives only when the target document still has an element by that name: a link naming a `<body id>` becomes a link to the top of that document, since the export keeps the body's contents and drops the element. A link to a document that is not in the spine keeps its text and loses its href, so nothing in the output references a resource the archive does not contain. Bare same-document fragments, external links, and an `href=""` that names nothing are left exactly as written.
+
 The Search Key Map holds exactly one `<search-key-group>` per headword (the spec mandates a single Search Key Map document per dictionary), with one `<match>` per searchable form: the headword plus every inflected form. At full dictionary scale this is a single large file, which is expected.
 
 ### Repair
