@@ -138,6 +138,18 @@ def alpha_page(path, n, total, w, h):
     img.save(path, "PNG")
 
 
+def solid_jpeg(path, w, h, rgb, label=None):
+    """A plainly-coloured JPEG, so a photo of the library shelf answers which
+    cover a tile was made from."""
+    from PIL import Image, ImageDraw
+    img = Image.new("RGB", (w, h), rgb)
+    if label:
+        d = ImageDraw.Draw(img)
+        centered(d, (0, int(h * 0.45), w, int(h * 0.55)), label,
+                 font(int(h * 0.06)), (255, 255, 255))
+    img.save(path, "JPEG", quality=88)
+
+
 def strip_app0_add_exif(path):
     """Rewrite a JFIF JPEG in place the way a camera or Photoshop export does:
     APP0 dropped, APP1/Exif first.
@@ -209,7 +221,7 @@ def cover_image(path, title, sub, w=600, h=800):
 # dictionary sources
 # --------------------------------------------------------------------------
 
-def entry(orth, body, visible=True):
+def entry(orth, body, visible=True, entry_id=None):
     """One <idx:entry>.
 
     `visible=False` emits a self-closing <idx:orth>, so the entry's rendered text
@@ -221,7 +233,10 @@ def entry(orth, body, visible=True):
         orth_tag = f'<idx:orth value="{esc(orth)}"><b>{esc(orth)}</b></idx:orth>'
     else:
         orth_tag = f'<idx:orth value="{esc(orth)}"/>'
-    return (f'<idx:entry name="default" scriptable="yes">{orth_tag}{body}'
+    # reader.dict and PyGlossary put the entry's own anchor on the
+    # <idx:entry> element, which is what a cross-reference aims at.
+    id_attr = f' id="{esc(entry_id)}"' if entry_id else ""
+    return (f'<idx:entry name="default" scriptable="yes"{id_attr}>{orth_tag}{body}'
             f"</idx:entry><mbp:pagebreak/>")
 
 
@@ -483,6 +498,99 @@ def build_dict_g(root):
     return d, "dict-g.opf"
 
 
+def build_dict_h(root):
+    """#54 cross-references: an entry that says "cf. zeta" with a link on it.
+
+    Two files, because resolution is per source file and that is the half a
+    single-file fixture cannot test. Each file defines its own <a id="dup">,
+    and each has a bare #dup link: a resolver with one table across the merged
+    book sends both to whichever it saw first, which is a live link to the
+    WRONG definition and looks completely normal on screen. The two DUPTARGET
+    lines are labelled so a photo says which one was reached.
+
+    Note before testing: a Kindle lookup popup disables links, the same thing
+    that made the footnote arrows in #50 look dead. These have to be read as
+    book pages, through Go To, not tapped in a popup.
+    """
+    d = os.path.join(root, "src", "dict-h")
+    os.makedirs(d, exist_ok=True)
+    one = [
+        entry("zalpha",
+              "<p>First letter. Cross-file link: <a href=\"content_02.html#hw_zzeta\">"
+              "TO ZZETA</a>. Same-file link: <a href=\"#hw_zbeta\">TO ZBETA</a>.</p>"
+              "<p><a id=\"dup\">DUPTARGET IN FILE ONE</a></p>", entry_id="hw_zalpha"),
+        entry("zbeta",
+              "<p>Second letter. This is where TO ZBETA must land.</p>"
+              "<p>Bare fragment: <a href=\"#dup\">TO DUP, FILE ONE</a> must reach "
+              "DUPTARGET IN FILE ONE, not the one in file two.</p>", entry_id="hw_zbeta"),
+    ]
+    two = [
+        entry("zzeta",
+              "<p>Sixth letter. This is where TO ZZETA must land. Back: "
+              "<a href=\"content_01.html#hw_zalpha\">TO ZALPHA</a>.</p>"
+              "<p><a id=\"dup\">DUPTARGET IN FILE TWO</a></p>", entry_id="hw_zzeta"),
+        entry("zomega",
+              "<p>Last letter. Bare fragment: <a href=\"#dup\">TO DUP, FILE TWO</a> "
+              "must reach DUPTARGET IN FILE TWO.</p>"
+              "<p>Dead link, must do nothing at all: "
+              "<a href=\"#hw_znosuchword\">TO NOWHERE</a>.</p>", entry_id="hw_zomega"),
+    ]
+    open(os.path.join(d, "content_01.html"), "w", encoding="utf-8").write(
+        dict_html(one, title="KD-H cross references"))
+    open(os.path.join(d, "content_02.html"), "w", encoding="utf-8").write(
+        dict_html(two, title="KD-H cross references"))
+    open(os.path.join(d, "dict-h.opf"), "w", encoding="utf-8").write(
+        dict_opf("KD-H cross references", ["content_01.html", "content_02.html"],
+                 uid="kindling-device-h"))
+    write_common(d, "KD-H cross references",
+                 "Read as a book, not through the popup: a Kindle popup disables links. "
+                 "Each labelled link must reach the line its text names (issue 54).",
+                 uid="kindling-device-h")
+    return d, "dict-h.opf"
+
+
+def build_dict_i(root):
+    """#42 content outside <idx:entry>: everything that used to be dropped.
+
+    A letter heading before the first entry, a note between two entries, an
+    entry the parser rejects because it has no <idx:orth>, a second heading,
+    and a closing paragraph after the last entry. All of it used to vanish
+    with exit 0.
+
+    The other half of the check is that the three real entries still index to
+    their own headwords rather than to the heading in front of them. A run
+    that steals an entry's anchor is issue #27 with a new cause, and it looks
+    like a working dictionary until you tap a word.
+    """
+    d = os.path.join(root, "src", "dict-i")
+    os.makedirs(d, exist_ok=True)
+    parts = [
+        "<h2>HEADING BEFORE FIRST ENTRY</h2>",
+        entry("zgapapple", "<p>Definition of zgapapple. Its popup must show THIS "
+                           "line and not the heading above it.</p>"),
+        "<p>NOTE BETWEEN TWO ENTRIES</p>",
+        entry("zgapbanana", "<p>Definition of zgapbanana. Its popup must show THIS "
+                            "line and not the note above it.</p>"),
+        '<idx:entry name="default" scriptable="yes">'
+        "<p>REJECTED ENTRY WITH NO HEADWORD, must render as ordinary prose</p>"
+        "</idx:entry>",
+        "<h2>HEADING BEFORE LAST ENTRY</h2>",
+        entry("zgapcherry", "<p>Definition of zgapcherry. Its popup must show THIS "
+                            "line and not the heading above it.</p>"),
+        "<p>CLOSING PARAGRAPH AFTER LAST ENTRY</p>",
+    ]
+    open(os.path.join(d, "content.html"), "w", encoding="utf-8").write(
+        dict_html(parts, title="KD-I gap content"))
+    open(os.path.join(d, "dict-i.opf"), "w", encoding="utf-8").write(
+        dict_opf("KD-I gap content", ["content.html"], uid="kindling-device-i"))
+    write_common(d, "KD-I gap content",
+                 "Read as a book: all five capitalised lines must be visible. Then look "
+                 "up each zgap word and check its popup shows its own definition rather "
+                 "than the heading in front of it (issue 42).",
+                 uid="kindling-device-i")
+    return d, "dict-i.opf"
+
+
 def build_dict_f(root):
     """#53 popup scroll-through: the <hr/> -> <hr/><mbp:pagebreak/> fix.
 
@@ -724,6 +832,12 @@ def probe_book(root):
                 "Switch to KD-E first. Each of these must show its numbered body text. "
                 "A popup that opens but is blank is the bug.",
                 NOLIMIT_WORDS),
+        section(5, "5. Popup boundary, in KD-F (issue 53)",
+                "Switch to KD-F. Look up zbleedfirst and scroll the popup to its very "
+                "bottom. The LAST LINE paragraph must be the end of the popup. Seeing "
+                "zbleedsecond, its bold headword, or anything else below that line is "
+                "the bug.",
+                ["zbleedfirst"], cols=1),
         section(6, "6. List markers, in KD-G (issue 56)",
                 "Switch to KD-G. Look up zlistprobe. Four lists follow each other. "
                 "Report exactly what marker each item shows, including nothing at all. "
@@ -732,13 +846,24 @@ def probe_book(root):
                 "If LIST-PLAIN has no numbers either, the popup is ignoring list "
                 "markup entirely and the other three answers do not matter.",
                 ["zlistprobe"], cols=1),
-        section(5, "5. Popup boundary, in KD-F (issue 53)",
-                "Switch to KD-F. Look up zbleedfirst and scroll the popup to its very "
-                "bottom. The LAST LINE paragraph must be the end of the popup. Seeing "
-                "zbleedsecond, its bold headword, or anything else below that line is "
-                "the bug.",
-                ["zbleedfirst"], cols=1),
-        "<h2>6. Controls</h2><p>These are ordinary entries in every dictionary. If they "
+        section(7, "7. Cross-references, in KD-H (issue 54)",
+                "Do NOT use the popup for this one: a Kindle popup disables links. "
+                "Open KD-H as a book and go to its entries. Every capitalised link "
+                "must reach the line its own text names. The two TO DUP links matter "
+                "most: TO DUP, FILE ONE must reach DUPTARGET IN FILE ONE and TO DUP, "
+                "FILE TWO must reach DUPTARGET IN FILE TWO. Reaching the other file's "
+                "DUPTARGET is a live link to the wrong definition. TO NOWHERE must do "
+                "nothing at all.",
+                ["zalpha"], cols=1),
+        section(8, "8. Text between entries, in KD-I (issue 42)",
+                "Open KD-I as a book: HEADING BEFORE FIRST ENTRY, NOTE BETWEEN TWO "
+                "ENTRIES, REJECTED ENTRY WITH NO HEADWORD, HEADING BEFORE LAST ENTRY "
+                "and CLOSING PARAGRAPH AFTER LAST ENTRY must all be visible; every one "
+                "of them used to be dropped silently. Then look up the three words "
+                "below and check each popup shows its own definition rather than the "
+                "heading in front of it.",
+                ["zgapapple", "zgapbanana", "zgapcherry"]),
+        "<h2>9. Controls</h2><p>These are ordinary entries in every dictionary. If they "
         "fail too, something is wrong with the round rather than with the fix.</p>"
         "<table><tr>" + "".join(f"<td>{w}</td>" for w, _ in FILLER) + "</tr></table>",
     ]
@@ -818,7 +943,11 @@ def main():
     print("dictionaries")
     for builder, flags in ((build_dict_a, []), (build_dict_b, []), (build_dict_c, []),
                            (build_dict_d, []), (build_dict_e, ["--no-kindle-limits"]),
-                           (build_dict_f, []), (build_dict_g, [])):
+                           (build_dict_f, []), (build_dict_g, []),
+                           # KD-H carries a deliberately dead cross-reference,
+                           # which the validator is right to flag; the whole
+                           # point is to see what the device does with it.
+                           (build_dict_h, ["--no-validate"]), (build_dict_i, [])):
         d, opf = builder(out)
         stem = os.path.basename(d)
         target = os.path.join(ship, f"{stem}.mobi")
@@ -863,6 +992,20 @@ def main():
     run([K, "build", os.path.join(d, opf), "-o", os.path.join(ship, "book-footnotes.mobi"),
          "--legacy-mobi"])
 
+    # #45: replace a book's cover after the fact and check the library tile
+    # follows it. Built with a plainly-coloured cover, then rewritten to a
+    # different colour, so a photo of the shelf answers it. The tile only
+    # updates once `kindling thumbnail` installs it, which copy.sh does.
+    d, opf = book_source(out, "book-covertile", "KB cover tile",
+                         "kindling-device-covertile", "coverimage")
+    tile_plain = os.path.join(out, "src", "book-covertile-plain.mobi")
+    run([K, "build", os.path.join(d, opf), "-o", tile_plain,
+         "--legacy-mobi", "--doc-type", "ebok"])
+    green = os.path.join(out, "src", "cover-green.jpg")
+    solid_jpeg(green, 600, 800, (0, 160, 0), label="GREEN")
+    run([K, "rewrite-metadata", tile_plain, "--cover", green,
+         "-o", os.path.join(ship, "book-covertile.mobi")])
+
     d, opf = probe_book(out)
     run([K, "build", os.path.join(d, opf), "-o", os.path.join(ship, "probe.mobi"),
          "--legacy-mobi"])
@@ -887,6 +1030,14 @@ def main():
     # ground away entirely, leaving only the opaque art and proving nothing.
     run([K, "comic", alpha, "-o", os.path.join(ship, "comic-alpha.mobi"), "--crop", "0",
          "--title", "KC-alpha transparent ground"])
+    # #58: the KF7 half of a --legacy-mobi comic. Its layout used to live in
+    # CSS, which a MOBI6 reader does not apply, so no page was centred there.
+    # The pages are deliberately NARROWER than the profile box so that a
+    # centred page and a flush-left one are told apart at a glance.
+    narrow = make_cbz(out, "comic-legacy", comic_page, 6, 700, 1400,
+                      label="narrow, must be CENTRED")
+    run([K, "comic", narrow, "-o", os.path.join(ship, "comic-legacy.mobi"), "--crop", "0",
+         "--legacy-mobi", "--title", "KC-legacy KF7 centring"])
 
     print("\nbuilt into", ship)
     for f in sorted(os.listdir(ship)):
