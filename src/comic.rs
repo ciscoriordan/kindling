@@ -96,12 +96,82 @@ const PROFILES: &[DeviceProfile] = &[
         grayscale: true,
         name: "kindle2024",
     },
+    // The 600x800 era: Kindle 3 / Keyboard, Kindle Touch, Kindle 5/7, and
+    // Kindle 8/10 all have the same 6-inch 600x800 panel, so they share a
+    // box the way `paperwhite` and `basic` already do (issue #28). Numbers
+    // from Kindle Comic Converter's own profile table, which is the
+    // reference implementation for comic geometry.
+    DeviceProfile {
+        width: 600,
+        height: 800,
+        grayscale: true,
+        name: "k34",
+    },
+    DeviceProfile {
+        width: 600,
+        height: 800,
+        grayscale: true,
+        name: "k57",
+    },
+    DeviceProfile {
+        width: 600,
+        height: 800,
+        grayscale: true,
+        name: "k810",
+    },
+    DeviceProfile {
+        width: 758,
+        height: 1024,
+        grayscale: true,
+        name: "kpw1",
+    },
+    // Kindle DX / DXG. The panel is 824x1200, but the height here is 1000
+    // deliberately: the DX reserves the bottom strip for its progress bar,
+    // and a full-height image gives blank pages between the real ones. KCC
+    // made the same choice for MOBI output and raises it to 1200 only for
+    // CBZ, which kindling does not produce.
+    DeviceProfile {
+        width: 824,
+        height: 1000,
+        grayscale: true,
+        name: "kdx",
+    },
+];
+
+/// Alternative spellings for a profile, so a plausible guess resolves.
+///
+/// A 600x800 screen is universally advertised as "800x600", so someone
+/// reaching for it will type the marketing spelling before they find the
+/// model codes.
+const PROFILE_ALIASES: &[(&str, &str)] = &[
+    ("800x600", "k34"),
+    ("600x800", "k34"),
+    ("kindle3", "k34"),
+    ("keyboard", "k34"),
+    ("touch", "k34"),
+    ("dx", "kdx"),
 ];
 
 /// Look up a device profile by name (case-insensitive).
 pub fn get_profile(name: &str) -> Option<DeviceProfile> {
     let lower = name.to_lowercase();
+    let lower = PROFILE_ALIASES
+        .iter()
+        .find(|(alias, _)| *alias == lower)
+        .map(|(_, target)| (*target).to_string())
+        .unwrap_or(lower);
     PROFILES.iter().find(|p| p.name == lower).copied()
+}
+
+/// True for a profile whose devices predate KF8 and read MOBI6 only.
+///
+/// A KF8-only `.azw3`, which is what the comic builder writes by default,
+/// will not open on any of them; the dual MOBI7+KF8 file `--legacy-mobi`
+/// produces will (issue #24 established that on later hardware, and these
+/// are older still). Selecting one of these profiles without it is almost
+/// certainly not what the user wants.
+pub fn profile_is_pre_kf8(name: &str) -> bool {
+    matches!(name, "k34" | "k57" | "k810" | "kdx")
 }
 
 /// Return a comma-separated list of valid device names.
@@ -2962,6 +3032,51 @@ fn build_comic_ncx(num_pages: usize, uid: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Kindle 3 owner had no profile at all: every row was 1072x1448 or
+    /// larger, and an unknown name is a hard error (issue #28).
+    #[test]
+    fn the_600x800_era_has_profiles() {
+        for name in ["k34", "k57", "k810"] {
+            let p = get_profile(name).unwrap_or_else(|| panic!("{name} should resolve"));
+            assert_eq!((p.width, p.height), (600, 800), "{name} geometry");
+            assert!(p.grayscale, "{name} is an e-ink grayscale panel");
+        }
+        // The DX panel is 824x1200, but the bottom strip is its progress bar
+        // and a full-height image gives blank pages between the real ones.
+        let dx = get_profile("kdx").expect("kdx should resolve");
+        assert_eq!((dx.width, dx.height), (824, 1000));
+        assert_eq!(get_profile("kpw1").unwrap().width, 758);
+    }
+
+    /// A 600x800 screen is advertised as "800x600", so that is what someone
+    /// will type before they find the model codes.
+    #[test]
+    fn the_marketing_spelling_resolves_too() {
+        let by_alias = get_profile("800x600").expect("800x600 should resolve");
+        let by_name = get_profile("k34").unwrap();
+        assert_eq!(
+            (by_alias.width, by_alias.height),
+            (by_name.width, by_name.height)
+        );
+        assert!(
+            get_profile("KINDLE3").is_some(),
+            "aliases are case-insensitive"
+        );
+        assert!(get_profile("nonesuch").is_none());
+    }
+
+    /// These devices read MOBI6 only, and the comic builder writes a
+    /// KF8-only .azw3 by default, which will not open on them.
+    #[test]
+    fn the_old_profiles_are_marked_pre_kf8() {
+        for name in ["k34", "k57", "k810", "kdx"] {
+            assert!(profile_is_pre_kf8(name), "{name} should be flagged");
+        }
+        for name in ["paperwhite", "kpw5", "scribe", "kpw1"] {
+            assert!(!profile_is_pre_kf8(name), "{name} should not be flagged");
+        }
+    }
 
     /// Someone who prepared their own pages does not want them prepared
     /// again (issue #29). A JPEG under the record cap has to come out the

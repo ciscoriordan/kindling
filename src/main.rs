@@ -1245,7 +1245,23 @@ fn main() {
                 kindlegen_parity,
             } => {
                 let profile = match comic::get_profile(&device) {
-                    Some(p) => p,
+                    Some(p) => {
+                        // A KF8-only .azw3 does not open on a pre-KF8 Kindle,
+                        // and the comic builder writes one by default. Warn
+                        // rather than force --legacy-mobi: nobody here has
+                        // one of these devices to confirm what it needs, and
+                        // silently changing the container someone asked for
+                        // is worse than telling them (issue #28).
+                        if comic::profile_is_pre_kf8(p.name) && !legacy_mobi && !mobi_ext {
+                            eprintln!(
+                                "Warning: --device {} is a pre-KF8 Kindle, which cannot open \
+                                 the KF8-only .azw3 this writes by default. Add --legacy-mobi \
+                                 for a dual MOBI7+KF8 file those devices can read.",
+                                p.name
+                            );
+                        }
+                        p
+                    }
                     None => {
                         eprintln!(
                             "Error: unknown device '{}'. Valid devices: {}",

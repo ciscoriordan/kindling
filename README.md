@@ -234,7 +234,7 @@ Comics default to KF8-only `.azw3` for the same reason books do: Amazon deprecat
 Comic builds do not embed the intermediate EPUB as a SRCS record by default (this changed in v0.7.7). Embedding duplicates every page image as a zipped EPUB inside the MOBI, which for a large comic produces a single PalmDB record over 100 MB. Kindle devices index the resulting file but then fail to open it with "Unable to Open Item". Pass `--embed-source` only when you need to round-trip through Kindle Previewer.
 
 Converts image folders, CBZ files, CBR files, and EPUB files to Kindle-optimized MOBI with:
-- **Device profiles**: *paperwhite*, *kpw5*, *oasis*, *scribe*, *scribe2025*, *kindle2024*, *basic*, *colorsoft*, *fire-hd-10*
+- **Device profiles**: *paperwhite*, *kpw5*, *oasis*, *scribe*, *scribe2025*, *kindle2024*, *basic*, *colorsoft*, *fire-hd-10*, and the 600x800 era: *k34* (Kindle 3/Keyboard and Touch), *k57*, *k810*, *kpw1* (758x1024) and *kdx* (824x1000). `--device 800x600` resolves to the 600x800 box, since that is how those screens are advertised (issue #28). The four pre-KF8 profiles warn when selected without `--legacy-mobi`, because a KF8-only `.azw3` will not open on them. The DX height is 1000 rather than its panel's 1200 on purpose: it reserves the bottom strip for the progress bar, and a full-height image gives blank pages between the real ones
 - **Spread splitting**: Landscape images auto-split into two pages (disable: `--no-split`)
 - **Margin cropping**: `--crop 2` (default) crops margins + page numbers, `--crop 1` crops margins only, `--crop 0` disables cropping
 - **Auto-contrast**: Histogram stretching and gamma correction for e-ink (disable: `--no-enhance`)
