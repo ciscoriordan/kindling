@@ -2350,6 +2350,7 @@ fn build_text_content(
         let cleaned = apply_recindex_lookup(&cleaned, recindex_lookup);
         let cleaned =
             String::from_utf8_lossy(&strip_kf8_flow_links(cleaned.as_bytes())).to_string();
+        let cleaned = translate_css_for_legacy_readers(&cleaned);
 
         if first_head.is_none() {
             if let Some(cap) = head_re.captures(&cleaned) {
@@ -2922,6 +2923,59 @@ fn trim_leading_separators(text: &str) -> String {
         }
     }
     rest.to_string()
+}
+
+/// Say in markup what this stream says in CSS, because a MOBI6 reader has no
+/// CSS.
+///
+/// The KF7 half of a dual-format file is read by devices that apply no
+/// stylesheet at all, the same way the dictionary lookup popup does not
+/// (issue #57). Anything carrying layout in a `style` attribute is therefore
+/// inert on exactly the devices that half exists for.
+///
+/// Two things are translated, and only two (issue #58):
+///
+/// * `text-align:center` on a wrapper becomes the legacy `align="center"`
+///   attribute, which those readers do honour. This is what kindlegen writes
+///   for the same intent. Every `--legacy-mobi` comic page is wrapped in one
+///   of these, so without it no page is centred on the old hardware.
+/// * `position:absolute` is dropped. It is KF8 markup with nothing to
+///   position against here; the comic builder's Panel View block is a
+///   `position:absolute` div per panel, and kindlegen reduces the same block
+///   to bare `<div></div>` children.
+///
+/// Every other `style` attribute is left alone. A KF7 reader ignores them, so
+/// removing them would only churn bytes, and a blanket strip is the kind of
+/// change that quietly takes something load-bearing with it.
+fn translate_css_for_legacy_readers(html: &str) -> String {
+    use std::sync::OnceLock;
+    static CENTER: OnceLock<Regex> = OnceLock::new();
+    static ABSOLUTE: OnceLock<Regex> = OnceLock::new();
+    // `text-align:center` as the whole declaration list, with optional
+    // whitespace and trailing semicolon. Anything more elaborate is left for
+    // the reader to ignore rather than guessed at.
+    let center = CENTER.get_or_init(|| {
+        Regex::new(r#"(?i)\s+style\s*=\s*"\s*text-align\s*:\s*center\s*;?\s*""#).unwrap()
+    });
+    let absolute = ABSOLUTE.get_or_init(|| {
+        Regex::new(r#"(?i)\s+style\s*=\s*"[^"]*position\s*:\s*absolute[^"]*""#).unwrap()
+    });
+    // A viewport is a fixed-layout instruction, and KF7 has no fixed layout.
+    static VIEWPORT: OnceLock<Regex> = OnceLock::new();
+    let viewport = VIEWPORT
+        .get_or_init(|| Regex::new(r#"(?is)<meta\b[^>]*name\s*=\s*"viewport"[^>]*>\s*"#).unwrap());
+
+    let mut out = std::borrow::Cow::Borrowed(html);
+    if out.contains("text-align") {
+        out = std::borrow::Cow::Owned(center.replace_all(&out, " align=\"center\"").to_string());
+    }
+    if out.contains("position") {
+        out = std::borrow::Cow::Owned(absolute.replace_all(&out, "").to_string());
+    }
+    if out.contains("viewport") {
+        out = std::borrow::Cow::Owned(viewport.replace_all(&out, "").to_string());
+    }
+    out.into_owned()
 }
 
 /// Remove `<link ... href="kindle:flow:...">` elements from KF7 text.
@@ -3879,6 +3933,59 @@ mod record_split_tests {
         seg.extend_from_slice(&density.to_be_bytes());
         seg.extend_from_slice(&[0x00, 0x00]);
         seg
+    }
+
+    /// A MOBI6 reader applies no stylesheet, so the KF7 half of a
+    /// dual-format file has to say its layout in markup (issue #58).
+    #[test]
+    fn kf7_gets_legacy_markup_for_the_css_it_cannot_read() {
+        // Exactly what the comic builder writes for a page.
+        let page = concat!(
+            "<html><head>\n<title>Page 1</title>\n",
+            "<meta name=\"viewport\" content=\"width=1072, height=1448\"/>\n",
+            "</head><body style=\"background-color:#000000;\">\n",
+            "<div style=\"text-align:center;\">\n",
+            "<img width=\"1072\" height=\"1448\" src=\"images/page_0000.jpg\"/>\n</div>\n",
+            "  <div id=\"panels\" style=\"position:absolute;top:0;left:0;width:100%;height:100%\">\n",
+            "    <div class=\"panel\" style=\"position:absolute;left:5.5%;top:3.7%;width:89.1%;height:43.9%\"></div>\n",
+            "  </div></body></html>"
+        );
+        let out = translate_css_for_legacy_readers(page);
+
+        // The wrapper centres through an attribute those readers honour,
+        // which is what kindlegen writes for the same intent.
+        assert!(
+            out.contains(r#"<div align="center">"#),
+            "the image wrapper should centre through markup:\n{out}"
+        );
+        assert!(
+            !out.contains("text-align"),
+            "the inert style should be gone:\n{out}"
+        );
+        // Panel View is KF8 markup; the block survives with its positioning
+        // dropped, the way kindlegen reduces it.
+        assert!(
+            !out.contains("position:absolute"),
+            "position:absolute has nothing to position against here:\n{out}"
+        );
+        assert!(
+            out.contains(r#"<div class="panel"></div>"#),
+            "the panel elements themselves should survive:\n{out}"
+        );
+        // A viewport is a fixed-layout instruction and KF7 has no fixed layout.
+        assert!(
+            !out.contains("viewport"),
+            "viewport meta should be gone:\n{out}"
+        );
+    }
+
+    #[test]
+    fn a_style_it_cannot_translate_is_left_alone() {
+        // A blanket strip is the change that quietly takes something
+        // load-bearing with it, so only the two translatable rules move.
+        let html =
+            r#"<p style="margin-left:2em;color:#333">x</p><div style="text-align:right">y</div>"#;
+        assert_eq!(translate_css_for_legacy_readers(html), html);
     }
 
     /// An Exif-first JPEG shipped with no JFIF header at all: no density, no
