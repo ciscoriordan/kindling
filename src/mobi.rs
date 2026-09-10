@@ -251,16 +251,11 @@ fn build_dictionary_mobi(
         });
 
         if let Ok(mut data) = data {
-            // Patch JFIF density units: Kindle firmware needs DPI units (0x01)
-            if data.len() > 13
-                && data[0] == 0xFF
-                && data[1] == 0xD8
-                && data[2] == 0xFF
-                && data[3] == 0xE0
-                && data[6..11] == *b"JFIF\0"
-                && data[13] == 0x00
-            {
-                data[13] = 0x01;
+            // Give the image the JFIF header the firmware expects. This runs
+            // before the cap check below, so the cap is measured on the bytes
+            // that actually ship (issue #43).
+            if let Some(fixed) = normalize_jpeg_header(&data) {
+                data = fixed;
             }
             total_image_bytes += data.len();
             href_to_recindex.insert(href.clone(), recindex);
@@ -668,6 +663,99 @@ fn build_dictionary_mobi(
     Ok(())
 }
 
+/// Give a JPEG the JFIF header a Kindle expects, without touching its pixels.
+///
+/// A JPEG whose first marker is APP1 (Exif) rather than APP0 shipped with no
+/// JFIF header at all: no density, no units, and its Exif still attached
+/// (issue #43). The old fixup only patched the units byte of an APP0 that was
+/// already there, so an Exif-first file, which is what Photoshop and most
+/// camera pipelines write, fell straight through. Nothing downstream caught
+/// it either: an image under the 128 KB cap never reaches `fit_ld_image`, so
+/// it went into the record exactly as it left the source directory.
+///
+/// This rebuilds the header rather than re-encoding. The leading APP0 and
+/// APP1 segments are dropped, a canonical JFIF APP0 is put in their place,
+/// and everything from the first other marker onward is copied verbatim, so
+/// the entropy-coded scan is untouched and the decoded pixels are identical.
+/// Re-encoding was the alternative and is worse on three counts: it is lossy,
+/// it would make "does this image get re-encoded" depend on which marker came
+/// first, and it would bypass the HD bookkeeping that only the cap path does.
+///
+/// Anything that is not a plainly parseable JPEG is returned untouched. A fix
+/// that can corrupt an unusual file is worse than the bug it fixes, so every
+/// doubt bails out: a missing SOI, a segment whose length is impossible, a
+/// length that runs past the end.
+///
+/// Segments other than APP0 and APP1 are kept. kindlegen strips ICC (APP2)
+/// too, but it re-encodes from decoded pixels and can afford to; dropping an
+/// APP14 Adobe transform or an ICC profile from a scan that is being passed
+/// through changes how its colors decode.
+pub(crate) fn normalize_jpeg_header(data: &[u8]) -> Option<Vec<u8>> {
+    // JFIF v1.01, units 1 (dots per inch), density 1x1, no thumbnail. The
+    // same header build_thumbnail_record writes, and what the old fixup
+    // produced once it had patched the units byte.
+    const CANONICAL_APP0: [u8; 18] = [
+        0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F', 0x00, 0x01, 0x01, 0x01, 0x00, 0x01, 0x00,
+        0x01, 0x00, 0x00,
+    ];
+    const UNITS_AT: usize = 11; // within a JFIF APP0 segment, from its 0xFF
+
+    if data.len() < 4 || data[0] != 0xFF || data[1] != 0xD8 {
+        return None;
+    }
+
+    // Walk the leading run of APP0/APP1 segments. The first marker that is
+    // anything else ends the header and everything from there is untouched.
+    let mut at = 2usize;
+    let mut jfif_app0: Option<std::ops::Range<usize>> = None;
+    let mut had_exif = false;
+    loop {
+        if at + 4 > data.len() || data[at] != 0xFF {
+            return None;
+        }
+        let marker = data[at + 1];
+        if marker != 0xE0 && marker != 0xE1 {
+            break;
+        }
+        let len = u16::from_be_bytes([data[at + 2], data[at + 3]]) as usize;
+        if len < 2 || at + 2 + len > data.len() {
+            return None;
+        }
+        let seg = at..at + 2 + len;
+        if marker == 0xE0 && len >= 14 && data[at + 4..at + 9] == *b"JFIF\0" {
+            jfif_app0.get_or_insert(seg);
+        } else if marker == 0xE1 {
+            had_exif = true;
+        }
+        at += 2 + len;
+    }
+
+    // Nothing to do for a file that already leads with a JFIF APP0 in DPI
+    // units and carries no Exif: leaving it byte-identical is what keeps
+    // every existing cover's bytes unchanged.
+    if let Some(seg) = jfif_app0.clone() {
+        if !had_exif && data[seg.start + UNITS_AT] == 0x01 {
+            return None;
+        }
+    }
+
+    let mut out = Vec::with_capacity(data.len() + CANONICAL_APP0.len());
+    out.extend_from_slice(&data[..2]);
+    match jfif_app0 {
+        // Keep the file's own APP0, density and all, and only correct the
+        // units byte. A source that says 300 DPI knows more about itself
+        // than a canonical 1x1 does.
+        Some(seg) => {
+            let start = out.len();
+            out.extend_from_slice(&data[seg.clone()]);
+            out[start + UNITS_AT] = 0x01;
+        }
+        None => out.extend_from_slice(&CANONICAL_APP0),
+    }
+    out.extend_from_slice(&data[at..]);
+    Some(out)
+}
+
 /// Build a regular book MOBI file with dual KF7+KF8 format.
 ///
 /// Record layout:
@@ -753,19 +841,14 @@ fn build_book_mobi(
         });
 
         if let Ok(mut data) = data {
-            // Patch JFIF density units: Kindle firmware needs DPI units (0x01)
-            // for cover images to display on the lock screen. If the JFIF header
-            // has units=0x00 (aspect ratio only), change it to 0x01 (DPI).
-            // JFIF layout: FF D8 FF E0 [len:2] 'J' 'F' 'I' 'F' \0 [ver:2] [units:1]
-            //              0  1  2  3   4  5   6   7   8   9  10  11  12    13
-            if data.len() > 13
-                && data[0] == 0xFF && data[1] == 0xD8  // SOI marker
-                && data[2] == 0xFF && data[3] == 0xE0  // APP0 marker
-                && data[6..11] == *b"JFIF\0"           // JFIF identifier
-                && data[13] == 0x00
-            // units = aspect ratio only
-            {
-                data[13] = 0x01; // patch to DPI
+            // Give the image the JFIF header the firmware expects: DPI units
+            // rather than bare aspect ratio, which is what a cover needs to
+            // appear on the lock screen. Runs before the cap check below, so
+            // the cap is measured on the bytes that actually ship, and note
+            // that hd_originals therefore stores the normalized form too
+            // (issue #43).
+            if let Some(fixed) = normalize_jpeg_header(&data) {
+                data = fixed;
             }
             total_image_bytes += data.len();
             href_to_recindex.insert(href.clone(), recindex);
@@ -3758,6 +3841,134 @@ fn split_text_uncompressed(text_bytes: &[u8]) -> (Vec<Vec<u8>>, usize) {
 #[cfg(test)]
 mod record_split_tests {
     use super::*;
+
+    /// Build a JPEG with a chosen leading segment layout, around a real
+    /// encoded scan so the parse has something valid to walk.
+    fn jpeg_with(leading: &[u8]) -> Vec<u8> {
+        let img = image::RgbImage::from_pixel(24, 16, image::Rgb([70, 110, 200]));
+        let mut base: Vec<u8> = Vec::new();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(
+                &mut std::io::Cursor::new(&mut base),
+                image::ImageFormat::Jpeg,
+            )
+            .unwrap();
+        // Drop the encoder's own APP0 so the caller controls what leads.
+        assert_eq!(&base[2..4], &[0xFF, 0xE0]);
+        let len = u16::from_be_bytes([base[4], base[5]]) as usize;
+        let rest = base[2 + 2 + len..].to_vec();
+        let mut out = base[..2].to_vec();
+        out.extend_from_slice(leading);
+        out.extend_from_slice(&rest);
+        out
+    }
+
+    fn exif_app1() -> Vec<u8> {
+        let payload = b"Exif\0\0MM\0\x2a\0\0\0\x08";
+        let mut seg = vec![0xFF, 0xE1];
+        seg.extend_from_slice(&((payload.len() + 2) as u16).to_be_bytes());
+        seg.extend_from_slice(payload);
+        seg
+    }
+
+    fn jfif_app0(units: u8, density: u16) -> Vec<u8> {
+        let mut seg = vec![0xFF, 0xE0, 0x00, 0x10];
+        seg.extend_from_slice(b"JFIF\0");
+        seg.extend_from_slice(&[0x01, 0x01, units]);
+        seg.extend_from_slice(&density.to_be_bytes());
+        seg.extend_from_slice(&density.to_be_bytes());
+        seg.extend_from_slice(&[0x00, 0x00]);
+        seg
+    }
+
+    /// An Exif-first JPEG shipped with no JFIF header at all: no density, no
+    /// units, and its Exif still attached (issue #43).
+    #[test]
+    fn an_exif_first_jpeg_gains_a_jfif_header() {
+        let src = jpeg_with(&exif_app1());
+        assert_eq!(&src[2..4], &[0xFF, 0xE1], "fixture should lead with APP1");
+
+        let out = normalize_jpeg_header(&src).expect("should be rewritten");
+        assert_eq!(
+            &out[0..4],
+            &[0xFF, 0xD8, 0xFF, 0xE0],
+            "APP0 must come first"
+        );
+        assert_eq!(&out[6..11], b"JFIF\0");
+        assert_eq!(out[13], 0x01, "units must be DPI");
+        assert!(
+            !out.windows(6).any(|w| w == b"Exif\0\0"),
+            "the Exif segment should be gone"
+        );
+
+        // The proof that this is a header rewrite and not a re-encode.
+        let before = image::load_from_memory(&src).unwrap().to_rgb8();
+        let after = image::load_from_memory(&out).unwrap().to_rgb8();
+        assert_eq!(before.dimensions(), after.dimensions());
+        assert_eq!(
+            before.into_raw(),
+            after.into_raw(),
+            "pixels must be untouched"
+        );
+    }
+
+    #[test]
+    fn an_app0_first_jpeg_keeps_its_own_density() {
+        // A source that says 300 DPI knows more about itself than a
+        // canonical 1x1 does, so only the units byte is corrected.
+        let src = jpeg_with(&jfif_app0(0x00, 300));
+        let out = normalize_jpeg_header(&src).expect("units 0 should be corrected");
+        assert_eq!(out[13], 0x01, "units patched to DPI");
+        assert_eq!(
+            u16::from_be_bytes([out[14], out[15]]),
+            300,
+            "density must survive"
+        );
+    }
+
+    #[test]
+    fn a_jpeg_that_is_already_right_is_left_alone() {
+        // Byte identity matters: this is every cover that builds correctly
+        // today, and rewriting them would churn output for no reason.
+        let src = jpeg_with(&jfif_app0(0x01, 1));
+        assert!(normalize_jpeg_header(&src).is_none());
+    }
+
+    #[test]
+    fn anything_not_plainly_a_jpeg_is_returned_untouched() {
+        // A fix that can corrupt an unusual file is worse than the bug.
+        let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+        assert!(normalize_jpeg_header(&png).is_none());
+        assert!(normalize_jpeg_header(&[]).is_none());
+        assert!(normalize_jpeg_header(&[0xFF, 0xD8]).is_none());
+        // A segment whose length runs past the end of the file.
+        let mut bogus = vec![0xFF, 0xD8, 0xFF, 0xE1, 0xFF, 0xFF];
+        bogus.extend_from_slice(&[0u8; 8]);
+        assert!(normalize_jpeg_header(&bogus).is_none());
+        // A length of zero, which cannot be a real segment.
+        assert!(normalize_jpeg_header(&[0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x00, 0x00]).is_none());
+    }
+
+    #[test]
+    fn a_segment_after_the_header_run_is_preserved() {
+        // ICC (APP2) and the Adobe transform (APP14) decide how a scan's
+        // colors decode. kindlegen strips them, but it re-encodes from
+        // decoded pixels and can afford to; passing a scan through and
+        // dropping them cannot be done safely.
+        let mut leading = exif_app1();
+        let icc = {
+            let mut seg = vec![0xFF, 0xE2, 0x00, 0x08];
+            seg.extend_from_slice(b"ICC_");
+            seg
+        };
+        leading.extend_from_slice(&icc);
+        let src = jpeg_with(&leading);
+        let out = normalize_jpeg_header(&src).expect("Exif-first, so rewritten");
+        assert!(
+            out.windows(4).any(|w| w == b"ICC_"),
+            "the ICC segment should survive"
+        );
+    }
 
     /// A PalmDB header counts its records in 16 bits, so one record past
     /// 65535 used to wrap the count and ship a file a Kindle could not open

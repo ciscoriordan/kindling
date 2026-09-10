@@ -1132,13 +1132,17 @@ fn plan_changes(
         // Hold the cover to the same 128 KB record cap the build path
         // enforces. An image record over it closes the reader mid-book
         // (issue #25), and --cover was the one way to put one there.
+        // Same JFIF normalization a build does, so a cover installed this way
+        // is not the one shape that ships without a header (issue #43).
+        let normalized = crate::mobi::normalize_jpeg_header(new_cover);
+        let new_cover: &[u8] = normalized.as_deref().unwrap_or(new_cover);
         plan.new_cover_bytes = Some(
             match crate::mobi::fit_ld_image(new_cover, crate::mobi::LD_DEFAULT_QUALITY) {
                 Some(fit) => {
                     eprintln!("cover: {}", fit.describe(crate::mobi::LD_DEFAULT_QUALITY));
                     fit.data
                 }
-                None => new_cover.clone(),
+                None => new_cover.to_vec(),
             },
         );
         // Regenerate the library tile from the cover the caller supplied,
