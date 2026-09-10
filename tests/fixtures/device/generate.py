@@ -33,16 +33,21 @@ NBSP = " "
 
 # The style block every dictionary carries, in the arrangement its issue needs.
 # Both rules set a size nothing else on the screen has, so the popup answers the
-# question from across the room. `u` is the control: it sits before the escaped
-# colon and must always apply. `i` sits after it and is the signal.
+# question from across the room. `u` sits before the escaped-colon rule and `i`
+# sits after it, so the pair used to discriminate issue 39.
+#
+# Both rules now compile into inline markup at build time (issue 57), because
+# the popup applies no stylesheet at all, so their position in the block should
+# no longer change anything. That is the point of keeping four arrangements:
+# all four must now look identical in the popup.
 CONTROL_RULE = "u { font-size: 260%; font-weight: bold; }"
 SIGNAL_RULE = "i { font-size: 260%; font-weight: bold; }"
 TRAP_RULE = "idx\\:orth { display: block; }"
 
 STYLE_PROBE_BODY = (
     "<p><u>UNDER</u> <i>ITAL</i> plain</p>"
-    "<p>UNDER and ITAL must both be large. If only UNDER is large, "
-    "the rule after the escaped colon was discarded.</p>"
+    "<p>UNDER and ITAL must both be much larger than the word plain. "
+    "If neither is, no dictionary styling reached the popup at all.</p>"
 )
 
 
@@ -642,11 +647,14 @@ def probe_book(root):
         "<p>Tap a word below, then use the dictionary name at the bottom of the popup "
         "to switch dictionaries. Every test dictionary here is English to English, so "
         "all six appear in that list.</p>",
-        section(1, "1. Style, in all four dictionaries (issues 39 and 40)",
+        section(1, "1. Style, in all four dictionaries (issue 57)",
                 "Look up zstyle, then run it through KD-A, KD-B, KD-C and KD-D in turn. "
-                "In each one, UNDER and ITAL must both be much larger than the word plain. "
-                "If UNDER is large and ITAL is not, that dictionary lost the rule after the "
-                "escaped colon. If neither is large, that dictionary shipped no stylesheet.",
+                "In each one, UNDER and ITAL must both be much larger than the word plain, "
+                "UNDER underlined and ITAL italic. The four dictionaries carry the same two "
+                "rules in four different arrangements, and the rules are now compiled into "
+                "the entry markup at build time rather than left to the popup, so all four "
+                "must look the same. Any dictionary that shows plain text is one whose "
+                "stylesheet never reached the entries.",
                 ["zstyle"], cols=1),
         section(2, "2. Identical bodies, in KD-A (issue 27)",
                 "Every one of these has the same body bytes and no headword of its own. "
