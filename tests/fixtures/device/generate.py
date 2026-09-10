@@ -291,9 +291,18 @@ def write_common(d, title, blurb, uid):
 
 
 # The words the probe book prints, grouped by what they prove.
-DUP_WORDS = [f"zdup{n:02d}" for n in range(1, 31)]
+# Letters only, deliberately. A Kindle will not select a word across a
+# letter-to-digit boundary, so tapping "zdup01" in the probe book selects
+# "zdup" and the lookup misses. That cost a whole device round in the
+# 2026-09-09 session, where thirty of these and ten of the ones below read
+# as a broken index and were nothing of the sort: typing "zdup01" into the
+# search box resolved it correctly every time.
+_DUP_SUFFIXES = [a + b for a in "abcde" for b in "abcdef"]
+DUP_WORDS = [f"zdup{sfx}" for sfx in _DUP_SUFFIXES[:30]]
 NBSP_HEAD = f"znbspalpha{NBSP}znbspbeta"
-NOLIMIT_WORDS = [f"znolimit{n:02d}" for n in range(1, 11)]
+NOLIMIT_WORDS = [f"znolimit{sfx}" for sfx in
+                 ["alpha", "beta", "gamma", "delta", "epsilon",
+                  "zeta", "eta", "theta", "iota", "kappa"]]
 FILLER = [("zapple", "A common fruit, here only so the dictionary is not all test words."),
           ("zbridge", "A structure carrying a road over an obstacle."),
           ("zcandle", "A cylinder of wax with a wick."),
