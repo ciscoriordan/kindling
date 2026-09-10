@@ -784,19 +784,25 @@ def main():
          "--legacy-mobi"])
 
     print("comics")
+    # Titled explicitly: without --title every comic lands in the library as
+    # "Comic", so a round with three of them gives three identical entries
+    # and no way to tell which check you are looking at.
     # #37: every page is smaller than the paperwhite profile box (1072x1448).
     small = make_cbz(out, "comic-small", comic_page, 10, 600, 800, label="source 600x800")
     # --crop 0 so the shipped pixels match the size printed on the page, which
     # makes a photo of the screen self-documenting.
-    run([K, "comic", small, "-o", os.path.join(ship, "comic-small.mobi"), "--crop", "0"])
+    run([K, "comic", small, "-o", os.path.join(ship, "comic-small.mobi"), "--crop", "0",
+         "--title", "KC-small 600x800 source"])
     # Control: the same pages well above the profile, which must still shrink.
     big = make_cbz(out, "comic-big", comic_page, 6, 2400, 3200, label="source 2400x3200")
-    run([K, "comic", big, "-o", os.path.join(ship, "comic-big.mobi")])
+    run([K, "comic", big, "-o", os.path.join(ship, "comic-big.mobi"),
+         "--title", "KC-big 2400x3200 control"])
     # #34: transparent ground, normal page aspect so this takes the flattened path.
     alpha = make_cbz(out, "comic-alpha", alpha_page, 6, 1000, 1400)
     # --crop 0 is mandatory here: the default margin crop trims the transparent
     # ground away entirely, leaving only the opaque art and proving nothing.
-    run([K, "comic", alpha, "-o", os.path.join(ship, "comic-alpha.mobi"), "--crop", "0"])
+    run([K, "comic", alpha, "-o", os.path.join(ship, "comic-alpha.mobi"), "--crop", "0",
+         "--title", "KC-alpha transparent ground"])
 
     print("\nbuilt into", ship)
     for f in sorted(os.listdir(ship)):
