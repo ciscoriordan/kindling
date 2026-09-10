@@ -160,6 +160,12 @@ pub struct ComicOptions {
     /// Rotate double-page spreads 90 degrees clockwise instead of splitting them.
     /// Useful for tablet users who want a full-page spread view.
     pub rotate_spreads: bool,
+    /// Ship the source pages as they are: no resize, no grayscale conversion,
+    /// no crop, no enhance, no moire pass, no re-encode (issue #29). For
+    /// someone who has already prepared their pages, every one of those steps
+    /// is damage. The 128 KB per-record cap still applies, because a record
+    /// over it closes the reader mid-book (issue #25).
+    pub no_optimize: bool,
     /// Panel reading order for Panel View. Controls the order panels are
     /// navigated when tapping on Kindle.
     /// - "horizontal-lr": left-to-right, top-to-bottom (Western comics)
@@ -215,6 +221,7 @@ impl Default for ComicOptions {
             language: None,
             cover: None,
             rotate_spreads: false,
+            no_optimize: false,
             panel_reading_order: None,
             cover_fill: false,
             kindle_limits: false,
@@ -525,7 +532,13 @@ pub fn build_comic_with_options(
         false, // headwords_only (N/A for books)
         srcs_data.as_deref(),
         false, // no CMET
-        true,  // skip HD images (KCC doesn't emit HD container)
+        // Skip the HD container, as KCC does, except under --no-optimize:
+        // there the point is that the reader's own pixels survive, so when the
+        // 128 KB cap forces a page to be re-encoded, the full-resolution
+        // original should still be in the file rather than thrown away. It
+        // costs nothing for pages under the cap, because the HD container is
+        // only built from pages the cap actually re-encoded (issue #29).
+        !options.no_optimize,
         false, // default creator identity
         options.kf8_only,
         // Comics omit EXTH 501 by default, same as reflowable books, unless
@@ -996,6 +1009,40 @@ fn process_image_pipeline(
     let (w, h) = img.dimensions();
     if w == 0 || h == 0 {
         return Err(format!("zero dimensions ({}x{})", w, h).into());
+    }
+
+    // Pass the page through untouched when asked (issue #29). Someone who has
+    // already scaled their pages to twice their screen so they can zoom does
+    // not want them scaled back down, converted to grayscale and re-encoded.
+    //
+    // The 128 KB record cap is the one step that still runs: a record over it
+    // closes the reading app on the page that uses it (issue #25), so
+    // "untouched" cannot extend to shipping a file that will not open. When
+    // the cap does fire, the page is re-encoded at the requested quality and
+    // said so out loud.
+    if options.no_optimize {
+        let source = std::fs::read(path)?;
+        let is_jpeg = source.len() > 3 && source[0] == 0xFF && source[1] == 0xD8;
+        let jpeg_buf = if is_jpeg {
+            source
+        } else {
+            // Not a JPEG, so there is nothing to pass through: the MOBI image
+            // records the reader decodes are JPEG. Encode once, at the
+            // requested quality, and do nothing else to it.
+            encode_jpeg(&img, options.jpeg_quality)?
+        };
+        let fitted = match crate::mobi::fit_ld_image(&jpeg_buf, options.jpeg_quality) {
+            Some(fit) => {
+                let label = path
+                    .file_name()
+                    .unwrap_or(path.as_os_str())
+                    .to_string_lossy();
+                eprintln!("{}: {}", label, fit.describe(options.jpeg_quality));
+                fit.data
+            }
+            None => jpeg_buf,
+        };
+        return Ok(vec![fitted]);
     }
 
     // Flatten transparency onto white before anything else looks at the pixels.
@@ -2915,6 +2962,61 @@ fn build_comic_ncx(num_pages: usize, uid: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Someone who prepared their own pages does not want them prepared
+    /// again (issue #29). A JPEG under the record cap has to come out the
+    /// far end byte for byte.
+    #[test]
+    fn no_optimize_passes_a_jpeg_through_untouched() {
+        let dir = std::env::temp_dir().join("kindling_comic_no_optimize");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Deliberately not at any device profile, and in color, which is what
+        // the default pipeline would resize and flatten to grayscale.
+        // Smooth gradients, so the encoded page stays well under the cap
+        // while still being a real image at a non-profile size.
+        let img = image::RgbImage::from_fn(900, 1300, |x, y| {
+            image::Rgb([(x / 4) as u8, (y / 6) as u8, ((x + y) / 8) as u8])
+        });
+        let page = dir.join("p00.jpg");
+        image::DynamicImage::ImageRgb8(img)
+            .save_with_format(&page, image::ImageFormat::Jpeg)
+            .unwrap();
+        let source = std::fs::read(&page).unwrap();
+        assert!(
+            source.len() <= 128 * 1024,
+            "fixture must stay under the record cap"
+        );
+
+        let profile = get_profile("paperwhite").unwrap();
+        let options = ComicOptions {
+            no_optimize: true,
+            ..Default::default()
+        };
+        let out = process_image_pipeline(&page, &profile, &options, false).unwrap();
+        assert_eq!(out.len(), 1, "one page in, one page out");
+        assert_eq!(
+            out[0], source,
+            "an under-cap page must ship exactly as it arrived"
+        );
+
+        // And the default pipeline does what it always did, so the flag is
+        // the only thing that changes behavior.
+        let normal = ComicOptions::default();
+        let processed = process_image_pipeline(&page, &profile, &normal, false).unwrap();
+        let decoded = image::load_from_memory(&processed[0]).unwrap();
+        assert!(
+            decoded.width() <= profile.width && decoded.height() <= profile.height,
+            "the default pipeline still fits the device box"
+        );
+        assert_ne!(
+            processed[0], source,
+            "the default pipeline still re-encodes"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn test_parse_comic_info_lowercase_tags() {

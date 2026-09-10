@@ -218,6 +218,7 @@ kindling-cli comic manga.epub --rtl                             # EPUB comic/man
 kindling-cli comic manga.cbz --rtl                              # manga (right-to-left)
 kindling-cli comic webtoon/ --webtoon                           # webtoon (vertical strip)
 kindling-cli comic input/ --no-split --crop 0                   # disable smart processing
+kindling-cli comic input/ --no-optimize                         # ship pages exactly as they are (issue #29)
 kindling-cli comic input.cbz --title "My Comic" --language ja   # metadata overrides
 kindling-cli comic input.cbz --doc-type ebok                    # appear under Books on Kindle (default: no shelf)
 kindling-cli build book.epub --doc-type ebok                    # Books shelf + a lock screen cover (issue #26)
@@ -323,6 +324,8 @@ kindling-cli epub3 input.opf -o out.epub --book       # force a plain EPUB3 book
 kindling-cli epub3 input.opf --dictionary el en       # force the dictionary layer with explicit source/target languages
 kindling-cli epub2 input.epub --title "My Book" --author "Jane Doe"
 ```
+
+`--no-optimize` ships the source pages as they are: no resize to the device profile, no grayscale conversion, no border crop, no contrast or gamma pass, no moire filter, and no JPEG re-encode. It is for pages that were prepared deliberately, at twice a device's resolution so they can be zoomed, for instance, where every one of those steps is damage (issue #29). One step still runs, because it has to: a page over the 128 KB per-record limit closes the reading app on the page that uses it, so an oversized page is still re-encoded to fit and says so. That is also the one case where `--no-optimize` builds an HD container, so the original survives in a CRES record rather than being thrown away; pages under the cap add no HD bytes at all. `--device` keeps its other jobs, including webtoon splitting and the OPF canvas; it just stops rewriting pixels.
 
 `kindling epub2` and `kindling epub3` read the same OPF or EPUB input as `kindling build` and emit a reflowable EPUB. Both write a spec-conformant archive: the `mimetype` entry first and stored uncompressed, then `META-INF/container.xml`, then the `OEBPS/*` payload deflated. The output validates clean under epubcheck (EPUB 2.0.1 rules for `epub2`, EPUB 3.3 rules for `epub3`).
 

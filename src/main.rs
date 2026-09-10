@@ -182,6 +182,20 @@ enum Commands {
         #[arg(long)]
         rotate_spreads: bool,
 
+        /// Ship the pages exactly as they are.
+        ///
+        /// Skips the resize to the device profile, the grayscale conversion,
+        /// the border crop, the contrast and gamma pass, the moire filter and
+        /// the JPEG re-encode. For pages you have already prepared yourself
+        /// (issue #29), every one of those steps is damage.
+        ///
+        /// The 128 KB per-record cap still applies, because a record over it
+        /// closes the reading app on the page that uses it, and a page the cap
+        /// re-encodes says so. --device still selects the reading geometry and
+        /// still drives webtoon splitting; it just stops rewriting pixels.
+        #[arg(long = "no-optimize")]
+        no_optimize: bool,
+
         /// Crop mode: 0=disabled, 1=margins only, 2=margins+page numbers (default)
         #[arg(long, default_value = "2", value_parser = clap::value_parser!(u8).range(0..=2))]
         crop: u8,
@@ -1205,6 +1219,7 @@ fn main() {
                 rtl,
                 no_split,
                 rotate_spreads,
+                no_optimize,
                 crop,
                 no_crop,
                 no_enhance,
@@ -1337,6 +1352,7 @@ fn main() {
                     language,
                     cover: cover_source,
                     rotate_spreads,
+                    no_optimize,
                     panel_reading_order,
                     cover_fill,
                     kindle_limits: effective_kindle_limits,
