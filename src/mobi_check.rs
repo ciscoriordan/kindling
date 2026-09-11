@@ -1105,7 +1105,8 @@ mod tests {
 
     #[test]
     fn test_check_passes_on_real_book_mobi() {
-        let dir = std::env::temp_dir().join("kindling_mobi_check_pass");
+        let dir =
+            std::env::temp_dir().join(format!("kindling_mobi_check_pass_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let opf = make_book_fixture(&dir);
@@ -1143,7 +1144,10 @@ mod tests {
     /// can, and the file is already on someone's disk.
     #[test]
     fn test_check_fails_on_a_wrapped_record_count() {
-        let dir = std::env::temp_dir().join("kindling_mobi_check_wrapped");
+        let dir = std::env::temp_dir().join(format!(
+            "kindling_mobi_check_wrapped_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let opf = make_book_fixture(&dir);
@@ -1202,7 +1206,8 @@ mod tests {
     #[test]
     fn test_check_fails_when_exth_100_missing() {
         // Build a valid MOBI then surgically strip EXTH 100 (author).
-        let dir = std::env::temp_dir().join("kindling_mobi_check_no100");
+        let dir =
+            std::env::temp_dir().join(format!("kindling_mobi_check_no100_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let opf = make_book_fixture(&dir);
@@ -1255,7 +1260,8 @@ mod tests {
 
     #[test]
     fn test_check_fails_when_exth_503_missing() {
-        let dir = std::env::temp_dir().join("kindling_mobi_check_no503");
+        let dir =
+            std::env::temp_dir().join(format!("kindling_mobi_check_no503_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let opf = make_book_fixture(&dir);

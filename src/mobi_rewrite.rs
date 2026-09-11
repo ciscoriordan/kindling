@@ -2013,7 +2013,8 @@ mod tests {
     /// Build a real book with a real cover, so the cover and thumbnail
     /// records are genuine images rather than magic bytes.
     fn build_book_with_cover(tag: &str, rgb: [u8; 3]) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("kindling_rewrite_{tag}"));
+        let dir =
+            std::env::temp_dir().join(format!("kindling_rewrite_{tag}_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         fs::write(

@@ -3098,7 +3098,8 @@ mod tests {
     /// far end byte for byte.
     #[test]
     fn no_optimize_passes_a_jpeg_through_untouched() {
-        let dir = std::env::temp_dir().join("kindling_comic_no_optimize");
+        let dir =
+            std::env::temp_dir().join(format!("kindling_comic_no_optimize_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -3205,7 +3206,10 @@ mod tests {
         // etc.) would be introduced by the comic writer and only caught
         // by real Kindle devices, since the comic build path used to
         // skip validation entirely.
-        let dir = std::env::temp_dir().join("kindling_comic_validate_test");
+        let dir = std::env::temp_dir().join(format!(
+            "kindling_comic_validate_test_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
