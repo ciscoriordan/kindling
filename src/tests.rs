@@ -92,11 +92,30 @@ mod tests {
     }
 
     impl TempDir {
+        /// A directory of this test's own, under the system temp directory.
+        ///
+        /// The name alone is not enough to make it private. Two runs of the
+        /// same test binary at once, which is ordinary when a suite is run
+        /// while another is already going, both land on the same path, and
+        /// the one that starts second used to delete the first one's working
+        /// directory out from under it. That surfaced as a build failing with
+        /// "All images failed to load", nowhere near the real cause. The
+        /// process id, the clock and a counter make the path this process's
+        /// own, and nothing is deleted on the way in.
         fn new(name: &str) -> Self {
-            let path = std::env::temp_dir().join(format!("kindling_test_{}", name));
-            if path.exists() {
-                fs::remove_dir_all(&path).unwrap();
-            }
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let path = std::env::temp_dir().join(format!(
+                "kindling_test_{}_{}_{}_{}",
+                name,
+                std::process::id(),
+                nanos,
+                COUNTER.fetch_add(1, Ordering::Relaxed)
+            ));
             fs::create_dir_all(&path).unwrap();
             TempDir { path }
         }
