@@ -5946,6 +5946,104 @@ p { margin: 0.3em 0; }
         );
     }
 
+    /// The worst input for issue #42's run-skipping: a run whose bytes are
+    /// byte-identical to the entry that follows it.
+    ///
+    /// A rejected `<idx:entry>` with the same body as a real one produces
+    /// exactly that, and it is the shape the fix had to be designed around.
+    /// If the run takes the anchor, the entry's stored offset points at the
+    /// run instead and its popup shows the wrong text, which is issue #27
+    /// with a new cause and looks like a working dictionary until you tap a
+    /// word.
+    #[test]
+    fn a_run_identical_to_the_entry_after_it_does_not_steal_its_anchor() {
+        let dir = TempDir::new("dict_gap_trap");
+        const SHARED: &str = "<p>Shared body bytes that appear in both.</p>";
+        let mut parts = String::from("<h2>START</h2>");
+        for i in 0..6 {
+            // A rejected entry: no <idx:orth>, so the parser drops it and its
+            // body becomes part of the run before the next real entry.
+            parts.push_str(&format!(
+                "<idx:entry name=\"default\" scriptable=\"yes\">{SHARED}</idx:entry>"
+            ));
+            // The real entry, whose rendered body is byte-identical to it.
+            parts.push_str(&format!(
+                "<idx:entry name=\"default\" scriptable=\"yes\">\
+                 <idx:orth value=\"ztrap{i:02}\"/>{SHARED}</idx:entry>"
+            ));
+        }
+        let html = format!(
+            "<html xmlns:idx=\"http://www.mobipocket.com/idx\" \
+             xmlns:mbp=\"http://www.mobipocket.com\"><head><title>T</title></head>\
+             <body><mbp:frameset>{parts}</mbp:frameset></body></html>"
+        );
+        fs::write(dir.path().join("content.html"), html).unwrap();
+        fs::write(
+            dir.path().join("content.opf"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf">
+  <metadata>
+    <dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">Trap</dc:title>
+    <dc:language xmlns:dc="http://purl.org/dc/elements/1.1/">en</dc:language>
+    <dc:creator xmlns:dc="http://purl.org/dc/elements/1.1/">Tester</dc:creator>
+    <x-metadata>
+      <DictionaryInLanguage>en</DictionaryInLanguage>
+      <DictionaryOutLanguage>en</DictionaryOutLanguage>
+      <DefaultLookupIndex>default</DefaultLookupIndex>
+    </x-metadata>
+  </metadata>
+  <manifest><item id="c" href="content.html" media-type="application/xhtml+xml"/></manifest>
+  <spine><itemref idref="c"/></spine>
+</package>"#,
+        )
+        .unwrap();
+
+        let data = build_mobi_bytes(
+            &dir.path().join("content.opf"),
+            dir.path(),
+            true,
+            false,
+            None,
+        );
+        let text = extract_text_from_uncompressed_mobi(&data);
+
+        // Twelve byte-identical blocks: one rejected run and one real entry
+        // per iteration, rendering to the same bytes.
+        let blocks: Vec<usize> = text
+            .match_indices("<p>Shared body bytes")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            blocks.len(),
+            12,
+            "fixture should produce 12 identical blocks"
+        );
+
+        // Each real entry must land on an ODD block: the even ones are the
+        // rejected runs in front of them. Asked through the lookup simulator,
+        // which reads the orth index the same way the firmware does, so this
+        // tests what a device would actually be told.
+        for i in 0..6 {
+            let word = format!("ztrap{i:02}");
+            let found = crate::lookup::lookup(&data, &word)
+                .unwrap_or_else(|| panic!("{word} did not resolve"));
+            let block = blocks
+                .iter()
+                .position(|&b| b == found.position as usize)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{word} resolved to {} which is not a block start",
+                        found.position
+                    )
+                });
+            assert_eq!(
+                block,
+                i * 2 + 1,
+                "{word} landed on block {block}; the run before it took its anchor"
+            );
+        }
+    }
+
     /// The dangerous half of issue #42. A run sits between the previous
     /// entry's separator and the next entry's first byte, which is inside the
     /// window the anchor search scans, so a heading or a rejected entry's
