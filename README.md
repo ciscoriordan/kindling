@@ -23,17 +23,18 @@ Pre-built binaries for Mac (Apple Silicon, Intel), Linux (x86_64), and Windows (
 
 ## Features
 
-- **Dictionaries**: Full orth index with headword + inflection lookup, ORDT/SPL sort tables, generated CJK and Arabic collation tables, fontsignature
+- **Dictionaries**: Full orth index with headword + inflection lookup, ORDT/SPL sort tables, generated CJK and Arabic collation tables, fontsignature, and the EXTH subject record that makes the device list the file as a dictionary in the lookup popup
+- **Dictionary styling**: a dictionary's CSS is picked up from every dictionary file, and the rules that can be expressed as legacy inline markup are compiled into the entries at build time, which is what kindlegen does: `font-size` becomes `<font size="+N">`, bold/italic/underline become `<b>`/`<i>`/`<u>` (issue #57)
 - **Books**: EPUB or OPF input, embedded images, embedded fonts (with IDPF/Adobe deobfuscation), hierarchical on-device TOC from the EPUB nav document (toc.ncx / nav.xhtml, including `file#anchor` entries and nested volume/chapter levels), user font switching kept working by stripping font-family from stylesheets, `<style>` blocks, and inline `style="..."` attributes when no fonts are embedded (`--force-user-fonts` to strip always), KF8-only (.azw3) by default with legacy dual-format (MOBI7+KF8) available via `--legacy-mobi`, which is also what restores the sideloaded library cover (issue #20), HD image container, fixed-layout support
 - **Comics**: Image folder, CBZ, CBR, or EPUB input, device-specific downscaling (a page already smaller than the profile is left alone rather than enlarged, matching kindlegen), spread splitting, margin cropping, auto-contrast, moire correction for color e-ink, manga RTL, webtoon with overlap fallback, Panel View, KF8-only (.azw3) by default (`--legacy-mobi` for a dual `.mobi` so sideloaded library covers show), metadata overrides
 - **StarDict export**: `kindling stardict` builds a four-file StarDict bundle (`.ifo` / `.idx` / `.dict` / `.syn`) from the same OPF or EPUB dictionary input as `kindling build`, for use with GoldenDict, GoldenDict-ng, KOReader, sdcv, and other non-Kindle dictionary readers (see [StarDict export](#stardict-export))
-- **EPUB export**: `kindling epub2` and `kindling epub3` build a reflowable EPUB from the same OPF or EPUB input, conformant to EPUB 2.0.1 and EPUB 3.3 respectively (epubcheck-clean). EPUB2 is always a plain book; EPUB3 is a plain book by default and emits an EPUB Dictionaries and Glossaries layer (Search Key Map, `dc:type=dictionary`, `epub:type` semantics) when the input is a dictionary (see [EPUB export](#epub-export))
+- **EPUB export**: `kindling epub2` and `kindling epub3` build a reflowable EPUB from the same OPF or EPUB input, conformant to EPUB 2.0.1 and EPUB 3.3 respectively (epubcheck-clean), carrying the book's images into the archive and rewriting cross-document links to the names the export gives its own output files (issue #55). EPUB2 is always a plain book; EPUB3 is a plain book by default and emits an EPUB Dictionaries and Glossaries layer (Search Key Map, `dc:type=dictionary`, `epub:type` semantics) when the input is a dictionary (see [EPUB export](#epub-export))
 - **EPUB repair**: `kindling repair` applies a small, byte-stable, idempotent set of structural fixes to an EPUB for cleaner Send-to-Kindle ingest (see [Repair](#repair))
 - **Metadata rewrite**: `kindling rewrite-metadata` updates title, authors, publisher, description, language, ISBN, ASIN, publication date, tags, cover image, and the device content type on an existing MOBI/AZW3 in place without rebuilding from source. Byte-stable on no-op, idempotent, refuses DRM files (see [Rewrite metadata](#rewrite-metadata))
 - **Structural dump**: `kindling dump` prints the parsed structure of a MOBI/AZW3 (PalmDB, MOBI header, EXTH, INDX/ORDT tables, entry labels) as line-oriented `section.field = value` output, so two dumps can be compared with `diff` (see [Dump](#dump))
 - **Lookup simulator**: `kindling lookup <dict.mobi> <word>` reproduces the on-device dictionary search against a built MOBI (accent/case folding for Latin and Greek, literal matching for CJK/Arabic, query-side case folding for Cyrillic) and reports which stored form resolves. It is a build-side regression check, not a hardware oracle (see [Lookup simulator](#lookup-simulator))
 - **Reads huffdic (`-c2`) files**: text compressed with HUFF/CDIC (PalmDOC compression type 17480), which is what `kindlegen -c2` and every Amazon store dictionary use, is decompressed by [`src/huffcdic.rs`](src/huffcdic.rs), so `dump` reports the compression model and the bytes it decodes to instead of treating those records as opaque. kindling can also write it, behind `KINDLING_HUFFDIC=1` (issue #49)
-- **Build-time HTML self-check**: every `build` runs a two-pass HTML balance check on the assembled MOBI text blob and on each individual PalmDB text record after splitting, catching regressions like dangling tags, `<hr/` corruption, and bold/italic state leaking across record boundaries (see [Build-time self-check](#build-time-self-check))
+- **Build-time HTML self-check**: every `build` runs a two-pass HTML check on the assembled MOBI text blob, following tag nesting across the whole text rather than inside each record and checking that no record ends part-way through a tag, catching regressions like dangling tags, `<hr/` corruption, and unclosed attribute quotes (see [Build-time self-check](#build-time-self-check))
 - **UTF-8 and tag-safe record splitter**: every text record is exactly the declared record size, which the firmware relies on to route popup lookups, and the bytes that would otherwise straddle a record end are pushed into the next record by padding the last gap between two tags with spaces, so no record ends inside a multi-byte character or a tag
 - Drop-in *kindlegen* replacement (same CLI flags, same status codes)
 - Kindle Previewer compatible (EPUB source embedded by default)
@@ -94,7 +95,7 @@ Add the crate to your `Cargo.toml` (published as `kindling-mobi`; the library na
 
 ```toml
 [dependencies]
-kindling-mobi = "0.29"
+kindling-mobi = "0.43"
 ```
 
 Then `use kindling::...`. Public API is defined in `src/lib.rs`.
@@ -547,7 +548,7 @@ EXTH records are type-length-value metadata entries in Record 0, following the M
 |--------|------|---------|-------|-------|
 | 100 | Author | Both | UTF-8 string | |
 | 103 | Description | Books | UTF-8 string | Maps to ComicInfo.xml `<Summary>` |
-| 105 | Subject | Books | UTF-8 string | Maps to ComicInfo.xml `<Genre>` |
+| 105 | Subject | Both | UTF-8 string | Maps to ComicInfo.xml `<Genre>`. A sideloaded dictionary has to carry one or the device does not list it in the lookup popup's dictionary selector: the OPF's `<dc:subject>` when it declares one, `Dictionaries` otherwise |
 | 106 | Publishing date | Both | UTF-8 string | |
 | 112 | Source identifier | Books | UTF-8 string | Calibre writes `calibre:<uuid>` here. Never written by kindling; it is not a series field |
 | 504, 508, 517-519, 534 | No verified meaning | - | - | Proposed at various times as the series slot. None is written, and a test pins that: 504 is a second copy of the ASIN in the Amazon-delivered files available here, 534 is Amazon's own input-pipeline tag, and 508/517/518/519 appear in no file anyone here has. kindlegen writes no series record either, though its binary dates from 2015 and the Kindle library's Series feature is later, so that is evidence about kindlegen rather than about the container (issue #48) |
@@ -584,7 +585,7 @@ Controls where the content appears on the Kindle home screen.
 | `EBOK` | Books shelf | Warning: Amazon may auto-delete sideloaded EBOK files when the Kindle connects to WiFi, since it checks whether the ASIN is in the user's purchase history |
 | `PDOC` | Documents shelf | Safe default for sideloaded content |
 
-Dictionaries do NOT use EXTH 501. The Kindle identifies dictionaries by the combination of a valid orth index (MOBI header offset 24), EXTH 531/532 language records, and EXTH 547 `InMemory`. Adding an unrecognized EXTH 501 value (e.g. `"DICT"`) can prevent the Kindle from recognizing the file as a dictionary.
+Dictionaries do NOT use EXTH 501. The Kindle identifies dictionaries by the combination of a valid orth index (MOBI header offset 24), EXTH 105 subject, EXTH 531/532 language records, and EXTH 547 `InMemory`. Adding an unrecognized EXTH 501 value (e.g. `"DICT"`) can prevent the Kindle from recognizing the file as a dictionary.
 
 ## Project layout
 
@@ -595,13 +596,16 @@ kindling/
 ├── Cargo.toml                   # edition 2024, Rust 1.85+
 ├── src/
 │   ├── lib.rs                   # Library crate root, public API for external consumers
-│   ├── main.rs                  # CLI: build, comic, stardict, epub2, epub3, validate, repair, rewrite-metadata, dump, kindlegen-compat
+│   ├── main.rs                  # CLI: build, comic, stardict, epub2, epub3, validate, repair, rewrite-metadata, thumbnail, dump, lookup, kindlegen-compat
 │   ├── mobi.rs                  # PalmDB + MOBI record 0 + EXTH writer, UTF-8/tag-safe record splitter
 │   ├── mobi_check.rs            # Post-build MOBI readback: PalmDB, EXTH, text-record sanity
 │   ├── mobi_rewrite.rs          # In-place MOBI/AZW3 metadata and cover rewrite
+│   ├── thumbnail.rs             # Cover thumbnail writer for a mounted Kindle (the `thumbnail` subcommand)
 │   ├── mobi_dump.rs             # Structural dump of a MOBI/AZW3 (the `dump` subcommand)
+│   ├── lookup.rs                # On-device lookup simulator (the `lookup` subcommand)
 │   ├── kf8.rs                   # KF8 section, BOUNDARY, FDST, skeleton/fragment indexes
 │   ├── cncx.rs                  # CNCX (compiled NCX) records for KF8 navigation
+│   ├── nav.rs                   # EPUB nav document / NCX parsing for the on-device TOC
 │   ├── indx.rs                  # Orthographic INDX records for dictionaries (ORDT/SPL sort tables)
 │   ├── ordt.rs                  # Generated ORDT collation tables and label encoding (ja/zh/ko/ar)
 │   ├── palmdoc.rs               # PalmDOC LZ77 compression
@@ -615,6 +619,7 @@ kindling/
 │   ├── epub.rs                  # EPUB extraction for books and comics
 │   ├── extracted.rs             # Normalized in-memory view of an extracted EPUB/OPF
 │   ├── epub_build.rs            # EPUB2/EPUB3 output builders (generic book + EPUB3 dictionary layer)
+│   ├── fonts.rs                 # EPUB font embedding for KF8, with IDPF/Adobe deobfuscation
 │   ├── comic.rs                 # Comic pipeline (crop, split, enhance, Panel View)
 │   ├── profile.rs               # Per-device comic profiles (screen size, gamma)
 │   ├── cbr.rs                   # CBR (RAR) extraction via bsdtar
@@ -624,7 +629,7 @@ kindling/
 │   ├── repair.rs                # Structural EPUB repair pass for Kindle ingest
 │   ├── stardict.rs              # StarDict 2.4.2 builder (.ifo/.idx/.dict/.syn) for GoldenDict, KOReader, sdcv
 │   ├── kdp_rules.rs             # Rule catalog (KPG_VERSION, Rule struct, RULES array)
-│   ├── html_check.rs            # HTML/XHTML self-check for assembled MOBI text blob and per-record balance
+│   ├── html_check.rs            # HTML/XHTML self-check for the assembled MOBI text blob
 │   ├── ordt_greek.bin           # Embedded ORDT/SPL sort tables extracted from kindlegen output
 │   └── tests.rs                 # Unit tests
 ├── tests/
@@ -634,6 +639,7 @@ kindling/
 │   ├── roundtrip.rs             # Structural round-trip of kindling output via inline MOBI reader
 │   ├── huffdic.rs               # HUFF/CDIC decoding and the stale index pointer of issue #49
 │   ├── links.rs                 # Footnote and cross-reference links resolve to the right element (issue #50)
+│   ├── lookup.rs                # On-device lookup simulator against the built language fixtures
 │   ├── stardict.rs              # StarDict bundle structure (.ifo/.idx/.dict/.syn)
 │   ├── epub_conformance.rs      # EPUB2/EPUB3 output structure and dictionary-layer checks
 │   ├── epub_tests_corpus.rs     # Opt-in w3c/epub-tests corpus harness (KINDLING_CORPUS_DIR)
