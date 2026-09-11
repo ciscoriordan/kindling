@@ -326,6 +326,87 @@ to a again text definition cat";
         );
     }
 
+    /// A deterministic spread of inputs that land on the seams between the
+    /// four encodings, rather than on text, which is where a parse that picks
+    /// between them can go wrong without any fixture noticing.
+    ///
+    /// `KINDLING_PALM_FUZZ_OUT` writes the compressed cases out, length
+    /// prefixed, so that a decoder which is not ours can be run over the same
+    /// bytes. Compressing and decompressing with the same code cannot see a
+    /// legal-but-different encoding going wrong, which is the whole failure
+    /// mode this file's history is made of.
+    fn seam_cases() -> Vec<Vec<u8>> {
+        let mut cases: Vec<Vec<u8>> = Vec::new();
+        // Every byte alone, and beside a space on either side, which is what
+        // exercises the space-plus-printable rule against every neighbor.
+        for b in 0u8..=255 {
+            cases.push(vec![b]);
+            cases.push(vec![0x20, b]);
+            cases.push(vec![b, 0x20]);
+        }
+        // Runs at the lengths where an escape run changes shape.
+        for b in [0x00u8, 0x01, 0x08, 0x09, 0x20, 0x7F, 0x80, 0xFF] {
+            for n in [1usize, 2, 7, 8, 9, 16, 17, 300] {
+                cases.push(vec![b; n]);
+            }
+        }
+        // Matches at the extremes of distance and of length, including the
+        // overlapping kind where the match reads bytes it is still writing.
+        let mut seed = 0x2026_0911u64;
+        let mut next = move || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            (seed >> 33) as u8
+        };
+        for dist in [1usize, 2, 3, 2046, 2047, 2048] {
+            let base: Vec<u8> = (0..dist).map(|_| next()).collect();
+            let mut v = base.clone();
+            while v.len() < dist + 32 {
+                v.extend_from_slice(&base);
+            }
+            cases.push(v);
+        }
+        // Random over the alphabets that pick different encodings.
+        let alphabets: Vec<Vec<u8>> = vec![
+            (0u8..=255).collect(),
+            b"abcdefghij ".to_vec(),
+            [0x00u8, 0x01, 0x05, 0x08, 0x80, 0x8F, 0xFF].to_vec(),
+            b" ABCabc".to_vec(),
+            [0x20u8, 0x41, 0x80, 0x01, 0xFF].to_vec(),
+        ];
+        for al in &alphabets {
+            for n in [1usize, 2, 3, 15, 100, 4095, 4096, 4097, 10000] {
+                cases.push((0..n).map(|_| al[next() as usize % al.len()]).collect());
+            }
+        }
+        cases
+    }
+
+    #[test]
+    fn round_trips_every_shape_that_picks_a_different_encoding() {
+        let cases = seam_cases();
+        let mut blob: Vec<u8> = Vec::new();
+        for case in &cases {
+            let packed = compress(case);
+            assert_eq!(
+                decompress(&packed),
+                *case,
+                "round trip failed on {} bytes starting {:02X?}",
+                case.len(),
+                &case[..case.len().min(8)]
+            );
+            // Original then compressed, each length prefixed, so an outside
+            // decoder has both halves of the check in one file.
+            blob.extend_from_slice(&(case.len() as u32).to_be_bytes());
+            blob.extend_from_slice(case);
+            blob.extend_from_slice(&(packed.len() as u32).to_be_bytes());
+            blob.extend_from_slice(&packed);
+        }
+        if let Ok(path) = std::env::var("KINDLING_PALM_FUZZ_OUT") {
+            let _ = std::fs::write(path, blob);
+        }
+        println!("  \u{2713} {} seam cases round tripped", cases.len());
+    }
+
     /// Whatever the encoder chooses, a reader has to get the input back.
     ///
     /// Covers the byte classes that pick different encodings: plain ASCII,
