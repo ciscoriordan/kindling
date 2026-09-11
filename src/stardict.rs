@@ -12,8 +12,8 @@
 //! * `<name>.ifo` — UTF-8 key=value manifest, first line is the magic string
 //!   "StarDict's dict ifo file".
 //! * `<name>.idx` — concatenation of `(word\0, offset:u32be, size:u32be)`,
-//!   sorted by `g_ascii_strcasecmp` (ASCII case-insensitive bytewise) so
-//!   readers can binary-search.
+//!   sorted by `stardict_strcmp`, which is `g_ascii_strcasecmp` with an exact
+//!   byte comparison breaking ties, so readers can binary-search.
 //! * `<name>.dict` — concatenation of per-entry payloads. With
 //!   `sametypesequence=h` each payload is interpreted as HTML.
 //! * `<name>.syn` — optional alternate-form index;
@@ -104,10 +104,12 @@ pub fn build_stardict(
         return Err("All dictionary entries dropped during HTML cleanup".into());
     }
 
-    // Sort by g_ascii_strcasecmp; ties keep original spine order (stable).
+    // Sort the way a reader binary-searches, which is not the same as sorting
+    // case-insensitively: ties go to an exact byte comparison, and only then
+    // to spine order for genuinely identical headwords.
     let mut order: Vec<usize> = (0..cleaned.len()).collect();
     order.sort_by(|&a, &b| {
-        ascii_case_cmp(
+        stardict_cmp(
             cleaned[a].headword.as_bytes(),
             cleaned[b].headword.as_bytes(),
         )
@@ -149,7 +151,7 @@ pub fn build_stardict(
     fs::write(&dict_path, &dict_buf)?;
     fs::write(&idx_path, &idx_buf)?;
 
-    // .syn: every (inflection, lemma_index) pair, sorted by g_ascii_strcasecmp
+    // .syn: every (inflection, lemma_index) pair, sorted by stardict_cmp
     // on the inflection. Skip forms that collide with an existing headword
     // (StarDict readers will hit the headword first via .idx anyway, and
     // duplicating them in .syn just wastes space and slows lookup).
@@ -171,7 +173,7 @@ pub fn build_stardict(
         }
     }
     // Sort by form (g_ascii_strcasecmp), then by index for determinism.
-    syn_pairs.sort_by(|a, b| ascii_case_cmp(a.0.as_bytes(), b.0.as_bytes()).then(a.1.cmp(&b.1)));
+    syn_pairs.sort_by(|a, b| stardict_cmp(a.0.as_bytes(), b.0.as_bytes()).then(a.1.cmp(&b.1)));
     // Deduplicate exact (form, index) pairs that may arise when an
     // inflection is filed under multiple lemmas with the same casing.
     syn_pairs.dedup();
@@ -374,6 +376,20 @@ fn clean_entry_html(html: &str, headword: &str) -> String {
 /// `A`-`Z` fold to `a`-`z`; everything else is compared bytewise as-is. UTF-8
 /// multi-byte sequences therefore compare by raw byte order, which for the
 /// Greek BMP coincides with Unicode codepoint order.
+/// The comparison a StarDict reader binary-searches with.
+///
+/// sdcv and GoldenDict both use `stardict_strcmp`, which is
+/// `g_ascii_strcasecmp` and then, when that ties, an exact `strcmp`. The
+/// tie-break is not cosmetic. Sorting case-insensitively and leaving pairs
+/// like "apple" and "Apple" in whatever order the source had puts the index
+/// out of the order the search assumes, and a binary search then walks past
+/// one of them: on a four-entry dictionary holding apple/Apple and
+/// banana/BANANA, two of the four became unreachable while sitting in the
+/// file (issue #60).
+pub(crate) fn stardict_cmp(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
+    ascii_case_cmp(a, b).then_with(|| a.cmp(b))
+}
+
 pub(crate) fn ascii_case_cmp(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
     let n = a.len().min(b.len());
     for i in 0..n {
@@ -462,6 +478,55 @@ mod tests {
     use super::*;
 
     #[test]
+    /// The index has to be in the order a reader binary-searches, which is
+    /// not the same as case-insensitive order (issue #60).
+    #[test]
+    fn stardict_cmp_breaks_a_case_tie_the_way_a_reader_does() {
+        use std::cmp::Ordering;
+        // The tie g_ascii_strcasecmp leaves is resolved by exact bytes, so
+        // uppercase sorts first.
+        assert_eq!(stardict_cmp(b"Apple", b"apple"), Ordering::Less);
+        assert_eq!(stardict_cmp(b"apple", b"Apple"), Ordering::Greater);
+        assert_eq!(stardict_cmp(b"apple", b"apple"), Ordering::Equal);
+        // And it still orders case-insensitively first, which is the part
+        // that makes it not plain strcmp: "apple" before "BETA".
+        assert_eq!(stardict_cmp(b"apple", b"BETA"), Ordering::Less);
+    }
+
+    /// A sort that only goes as far as case-insensitive leaves the index out
+    /// of the order a binary search assumes, and the search then walks past
+    /// entries that are sitting in the file.
+    #[test]
+    fn a_case_insensitive_only_sort_hides_entries_from_a_binary_search() {
+        fn bsearch(words: &[&str], target: &str) -> Option<usize> {
+            let (mut lo, mut hi) = (0i32, words.len() as i32 - 1);
+            while lo <= hi {
+                let mid = ((lo + hi) / 2) as usize;
+                match stardict_cmp(words[mid].as_bytes(), target.as_bytes()) {
+                    std::cmp::Ordering::Equal => return Some(mid),
+                    std::cmp::Ordering::Less => lo = mid as i32 + 1,
+                    std::cmp::Ordering::Greater => hi = mid as i32 - 1,
+                }
+            }
+            None
+        }
+
+        // What the old sort produced: ties left in source order.
+        let wrong = ["apple", "Apple", "banana", "BANANA"];
+        assert!(
+            bsearch(&wrong, "apple").is_none() || bsearch(&wrong, "BANANA").is_none(),
+            "this ordering is supposed to hide something from the search"
+        );
+
+        // What stardict_cmp produces, where every word is reachable.
+        let mut right = wrong;
+        right.sort_by(|a, b| stardict_cmp(a.as_bytes(), b.as_bytes()));
+        assert_eq!(right, ["Apple", "apple", "BANANA", "banana"]);
+        for w in right {
+            assert!(bsearch(&right, w).is_some(), "{w} is unreachable");
+        }
+    }
+
     fn ascii_case_cmp_orders_case_insensitively() {
         assert_eq!(ascii_case_cmp(b"alpha", b"BETA"), std::cmp::Ordering::Less);
         assert_eq!(
