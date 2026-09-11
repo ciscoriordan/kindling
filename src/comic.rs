@@ -66,11 +66,22 @@ const PROFILES: &[DeviceProfile] = &[
         grayscale: true,
         name: "basic",
     },
+    // Colorsoft and the Paperwhite 6 share a 7-inch panel that is not the
+    // Oasis one: 1272x1696, from Kindle Comic Converter, where the rest of
+    // this table's numbers come from. colorsoft used to be a copy of the Oasis
+    // size, which leaves a few pixels of border on a full-bleed page
+    // (issue #59).
     DeviceProfile {
-        width: 1264,
-        height: 1680,
+        width: 1272,
+        height: 1696,
         grayscale: false,
         name: "colorsoft",
+    },
+    DeviceProfile {
+        width: 1272,
+        height: 1696,
+        grayscale: true,
+        name: "kpw6",
     },
     DeviceProfile {
         width: 1200,
@@ -89,6 +100,14 @@ const PROFILES: &[DeviceProfile] = &[
         height: 2648,
         grayscale: true,
         name: "scribe2025",
+    },
+    // The color Scribe: the same panel size as scribe2025, but color, so it
+    // gets the moire pass the way colorsoft does.
+    DeviceProfile {
+        width: 1986,
+        height: 2648,
+        grayscale: false,
+        name: "scribe-colorsoft",
     },
     DeviceProfile {
         width: 1240,
@@ -3379,5 +3398,23 @@ mod alpha_flatten_tests {
         let rgb = image::RgbImage::from_pixel(2, 2, image::Rgb([10, 20, 30]));
         let out = flatten_alpha_onto_white(DynamicImage::ImageRgb8(rgb.clone()));
         assert_eq!(out.to_rgb8(), rgb);
+    }
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use super::*;
+
+    /// The newer panels, against Kindle Comic Converter's table (issue #59).
+    #[test]
+    fn newer_panels_match_kcc() {
+        for (name, w, h, gray) in [
+            ("colorsoft", 1272, 1696, false),
+            ("kpw6", 1272, 1696, true),
+            ("scribe-colorsoft", 1986, 2648, false),
+        ] {
+            let p = get_profile(name).unwrap_or_else(|| panic!("{name} missing"));
+            assert_eq!((p.width, p.height, p.grayscale), (w, h, gray), "{name}");
+        }
     }
 }
