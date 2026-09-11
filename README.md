@@ -434,6 +434,8 @@ The MOBI header names the dictionary index at offset 0x18, but that pointer is v
 
 A production kindlegen dictionary carries both an SPL fold blob and a large ORDT table, and its labels are ORDT symbol sequences. Lookup used to take the fold blob as a sign that the labels were plain UTF-16, which is true only of kindling's own Greek dictionaries, and so read every label in a production dictionary as its raw symbol numbers: a 174685-headword German one resolved no query at all. It also now decodes kindlegen's expansion markers, the two-symbol form it stores ß, Œ, œ, Æ and æ in, which had left every headword containing one unreachable, 3433 of them in that dictionary (issue #49).
 
+Dictionaries made by Mobipocket Creator, the tool kindlegen replaced, are read as well. Their index stores headwords as cp1252 text, one byte per character, under a header that can be as short as 164 bytes and names no index, and a busier index carries two control bytes per entry rather than one. kindling read those labels as UTF-16, so "keep" came back as two CJK characters, and for most Creator files it never found the index at all. The simulator does not follow a separate inflection index, which Creator and kindlegen both write and kindling does not, so in such a dictionary an inflected form resolves only if it is also a headword.
+
 ## Performance and Comparisons
 
 ### vs kindlegen

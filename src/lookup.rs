@@ -40,7 +40,7 @@
 //! header claimed, so a stale pointer is visible rather than silent.
 
 use crate::huffcdic::COMPRESSION_HUFFDIC;
-use crate::ordt::{expansion_char, folded_sort_key};
+use crate::ordt::{cp1252_char, expansion_char, folded_sort_key};
 
 /// A resolved lookup: the stored label that matched and the text position its
 /// entry points at (the start of the headword's record text).
@@ -211,6 +211,31 @@ fn decode_ordt_label(bytes: &[u8], ordt2: &[u16], oentries: u32, two_byte: bool)
     out
 }
 
+/// Labels that are not ORDT symbols, in the encoding the index declares.
+///
+/// kindling and kindlegen write UTF-16BE under 65002. Mobipocket Creator
+/// wrote cp1252 under 1252, one byte per character, and read as UTF-16 each
+/// pair of letters came back as a single CJK character: "keep" was "步数".
+fn decode_plain_label(bytes: &[u8], encoding: u32) -> String {
+    match encoding {
+        CP1252_INDEX_ENCODING => bytes.iter().map(|&b| cp1252_char(b)).collect(),
+        UTF8_INDEX_ENCODING => String::from_utf8_lossy(bytes).into_owned(),
+        _ => decode_utf16be(bytes),
+    }
+}
+
+/// How many control bytes each entry carries, from the TAGX that follows the
+/// primary's header. One when there is no TAGX there to ask.
+fn tagx_control_bytes(primary: &[u8], header_len: usize) -> usize {
+    if primary.get(header_len..header_len + 4) != Some(b"TAGX".as_slice()) {
+        return 1;
+    }
+    u32_be(primary, header_len + 8)
+        .map(|n| n as usize)
+        .filter(|n| (1..=8).contains(n))
+        .unwrap_or(1)
+}
+
 /// Whether an orth primary's labels are ORDT symbol sequences: it names an
 /// ORDT2 table and the table is really there. An SPL fold blob beside it
 /// changes nothing about how the labels are stored.
@@ -238,6 +263,12 @@ fn read_vwi_inv(entry: &[u8], mut pos: usize) -> Option<u32> {
 /// than [`orth_index_name`] as a signature - kindling stamps it on all three
 /// of the primaries it writes for one dictionary - so it is only the fallback.
 const ORTH_INDEX_ENCODING: u32 = 65002;
+
+/// The label encodings Mobipocket Creator wrote before kindlegen existed:
+/// cp1252, one byte per character, or UTF-8. Its orth primaries carry no
+/// index name either, so the encoding is the only thing that marks them.
+const CP1252_INDEX_ENCODING: u32 = 1252;
+const UTF8_INDEX_ENCODING: u32 = 65001;
 
 /// The index name in an orth primary INDX header, if the record is one.
 ///
@@ -268,15 +299,34 @@ fn orth_index_name(rec: &[u8]) -> Option<&[u8]> {
 
 /// Whether record `idx` at least declares the orth index encoding. The loose
 /// test, for a dictionary whose primary header carries no index name.
-fn declares_orth_encoding(data: &[u8], recs: &[(usize, usize)], idx: usize) -> bool {
+fn declares_orth_encoding(
+    data: &[u8],
+    recs: &[(usize, usize)],
+    idx: usize,
+    file_is_dictionary: bool,
+) -> bool {
     let (s, e) = match recs.get(idx) {
         Some(r) => *r,
         None => return false,
     };
     let rec = &data[s..e];
-    rec.get(0..4) == Some(b"INDX".as_slice())
-        && u32_be(rec, 12) == Some(0)
-        && u32_be(rec, 28) == Some(ORTH_INDEX_ENCODING)
+    if rec.get(0..4) != Some(b"INDX".as_slice())
+        || u32_be(rec, 8) != Some(0)
+        || u32_be(rec, 12) != Some(0)
+    {
+        return false;
+    }
+    match u32_be(rec, 28) {
+        Some(ORTH_INDEX_ENCODING) => true,
+        // cp1252 is what Mobipocket Creator's orth primaries declare, and it
+        // is also something an ordinary index can declare, so it counts only
+        // in a file whose header says it is a dictionary, which Creator's
+        // always do. UTF-8 does not count at all: it is what kindlegen writes
+        // for a book's table of contents, and accepting it turned a book's
+        // three chapter entries into a dictionary of "0", "1" and "2".
+        Some(CP1252_INDEX_ENCODING) => file_is_dictionary,
+        _ => false,
+    }
 }
 
 /// Locate the orth primary INDX.
@@ -316,7 +366,7 @@ fn find_orth_primary(data: &[u8], recs: &[(usize, usize)], declared: Option<u32>
         return pick(&named);
     }
     let encoded: Vec<usize> = (0..recs.len())
-        .filter(|&i| declares_orth_encoding(data, recs, i))
+        .filter(|&i| declares_orth_encoding(data, recs, i, declared.is_some()))
         .collect();
     pick(&encoded)
 }
@@ -346,9 +396,25 @@ fn parse_orth_index(data: &[u8]) -> Option<OrthIndex> {
 
     let num_data = u32_be(primary, 24)? as usize;
     let spl_count = u32_be(primary, 56).unwrap_or(0);
-    let oentries = u32_be(primary, 168).unwrap_or(0);
-    let ordt_type = u32_be(primary, 164).unwrap_or(0); // 0 = two-byte, 1 = one-byte
-    let ordt2_off = u32_be(primary, 176).unwrap_or(0) as usize;
+    let header_len = u32_be(primary, 4).unwrap_or(0) as usize;
+    let encoding = u32_be(primary, 28).unwrap_or(ORTH_INDEX_ENCODING);
+    // The ORDT fields sit at 164..180. Mobipocket Creator wrote headers as
+    // short as 164 bytes, where those offsets already hold its TAGX, so they
+    // are only read from a header long enough to contain them.
+    let (oentries, ordt_type, ordt2_off) = if header_len >= 180 {
+        (
+            u32_be(primary, 168).unwrap_or(0),
+            u32_be(primary, 164).unwrap_or(0), // 0 = two-byte, 1 = one-byte
+            u32_be(primary, 176).unwrap_or(0) as usize,
+        )
+    } else {
+        (0, 0, 0)
+    };
+    // Control bytes per entry, from the TAGX after the header. kindling and
+    // kindlegen always write one; Mobipocket Creator wrote two once an index
+    // carried enough tags, and assuming one read every text position from
+    // the wrong byte.
+    let control_bytes = tagx_control_bytes(primary, header_len);
 
     // Labels are ORDT symbol sequences whenever the primary carries a real
     // ORDT2 table, whether or not it also carries an SPL fold blob.
@@ -420,12 +486,12 @@ fn parse_orth_index(data: &[u8]) -> Option<OrthIndex> {
             }
             let label_bytes = &entry[1..1 + label_len];
             let control_pos = 1 + label_len;
-            // First tag value after the control byte is the text position.
-            let position = read_vwi_inv(entry, control_pos + 1).unwrap_or(0);
+            // First tag value after the control bytes is the text position.
+            let position = read_vwi_inv(entry, control_pos + control_bytes).unwrap_or(0);
             let label = if ordt_labels {
                 decode_ordt_label(label_bytes, &ordt2, oentries, two_byte)
             } else {
-                decode_utf16be(label_bytes)
+                decode_plain_label(label_bytes, encoding)
             };
             entries.push((label, position));
         }
@@ -433,7 +499,7 @@ fn parse_orth_index(data: &[u8]) -> Option<OrthIndex> {
 
     let collation = if spl_count > 0 {
         Collation::Fold
-    } else if ordt_labels {
+    } else if ordt_labels || matches!(encoding, CP1252_INDEX_ENCODING | UTF8_INDEX_ENCODING) {
         // Latin-script labels fold (exact-accent default sorts folded); other
         // scripts on the generated ORDT (CJK/Arabic) match by literal.
         if entries.iter().any(|(l, _)| is_latin_label(l)) {
@@ -666,5 +732,121 @@ mod tests {
         let bytes = be16(&greek);
         assert_eq!(decode_ordt_label(&bytes, &seed, 7, true), "άνεμος");
         assert_eq!(decode_utf16be(&bytes), "άνεμος");
+    }
+
+    fn palmdb(records: &[Vec<u8>]) -> Vec<u8> {
+        let mut out = vec![0u8; 78];
+        out[76..78].copy_from_slice(&(records.len() as u16).to_be_bytes());
+        let mut at = 78 + records.len() * 8 + 2;
+        for r in records {
+            out.extend_from_slice(&(at as u32).to_be_bytes());
+            out.extend_from_slice(&[0u8; 4]);
+            at += r.len();
+        }
+        out.extend_from_slice(&[0, 0]);
+        for r in records {
+            out.extend_from_slice(r);
+        }
+        out
+    }
+
+    fn inverted_vwi(mut v: u32) -> Vec<u8> {
+        let mut bytes = vec![(v & 0x7F) as u8 | 0x80];
+        v >>= 7;
+        while v > 0 {
+            bytes.insert(0, (v & 0x7F) as u8);
+            v >>= 7;
+        }
+        bytes
+    }
+
+    /// The shape Mobipocket Creator wrote: a 164-byte primary header with no
+    /// index name and TAGX straight after it, cp1252 labels, and as many
+    /// control bytes per entry as the TAGX says.
+    fn creator_dictionary(entries: &[(&[u8], u32)], control: u32) -> Vec<u8> {
+        let mut rec0 = vec![0u8; 256];
+        rec0[0..2].copy_from_slice(&2u16.to_be_bytes());
+        rec0[40..44].copy_from_slice(&1u32.to_be_bytes());
+
+        let mut primary = vec![0u8; 164];
+        primary[0..4].copy_from_slice(b"INDX");
+        primary[4..8].copy_from_slice(&164u32.to_be_bytes());
+        primary[24..28].copy_from_slice(&1u32.to_be_bytes());
+        primary[28..32].copy_from_slice(&1252u32.to_be_bytes());
+        primary[36..40].copy_from_slice(&(entries.len() as u32).to_be_bytes());
+        primary.extend_from_slice(b"TAGX");
+        primary.extend_from_slice(&20u32.to_be_bytes());
+        primary.extend_from_slice(&control.to_be_bytes());
+        primary.extend_from_slice(&[1, 1, 0x01, 0, 0, 0, 0, 1]);
+
+        let mut leaf = vec![0u8; 192];
+        leaf[0..4].copy_from_slice(b"INDX");
+        leaf[4..8].copy_from_slice(&192u32.to_be_bytes());
+        leaf[12..16].copy_from_slice(&1u32.to_be_bytes());
+        leaf[28..32].copy_from_slice(&u32::MAX.to_be_bytes());
+        let mut offs = Vec::new();
+        for (label, pos) in entries {
+            offs.push(leaf.len() as u16);
+            leaf.push(label.len() as u8);
+            leaf.extend_from_slice(label);
+            leaf.extend(std::iter::repeat_n(0x01u8, control as usize));
+            leaf.extend(inverted_vwi(*pos));
+        }
+        let idxt = leaf.len() as u32;
+        leaf[20..24].copy_from_slice(&idxt.to_be_bytes());
+        leaf[24..28].copy_from_slice(&(entries.len() as u32).to_be_bytes());
+        leaf.extend_from_slice(b"IDXT");
+        for o in offs {
+            leaf.extend_from_slice(&o.to_be_bytes());
+        }
+        palmdb(&[rec0, primary, leaf])
+    }
+
+    /// Mobipocket Creator's dictionaries were unreadable twice over: the
+    /// index was never found, because its primary names no index and
+    /// declares cp1252, and had it been found every label was read as UTF-16.
+    #[test]
+    fn a_mobipocket_creator_dictionary_is_found_and_read() {
+        let data = creator_dictionary(&[(b"caf\xe9", 200), (b"chair", 100)], 1);
+        let r = report(&data, "chair");
+        assert_eq!(r.index_record, Some(1), "the cp1252 primary is the index");
+        let hit = r.result.expect("chair resolves");
+        assert_eq!((hit.matched_label.as_str(), hit.position), ("chair", 100));
+        let hit = report(&data, "cafe").result.expect("cafe folds onto café");
+        assert_eq!((hit.matched_label.as_str(), hit.position), ("café", 200));
+    }
+
+    /// Two control bytes per entry, as Creator wrote for a busier index.
+    /// Reading one put every text position a byte early.
+    #[test]
+    fn positions_come_after_every_control_byte() {
+        let data = creator_dictionary(&[(b"bed", 300), (b"chair", 5000)], 2);
+        assert_eq!(report(&data, "bed").result.map(|h| h.position), Some(300));
+        assert_eq!(
+            report(&data, "chair").result.map(|h| h.position),
+            Some(5000)
+        );
+    }
+
+    /// The same cp1252 index in a file whose header declares no dictionary
+    /// is an ordinary index, not something to look words up in.
+    #[test]
+    fn a_cp1252_index_in_a_book_is_not_a_dictionary() {
+        let mut data = creator_dictionary(&[(b"chair", 100)], 1);
+        // rec0 starts after the 78-byte header, three 8-byte record entries
+        // and 2 bytes of padding; its orth pointer is at offset 40.
+        let rec0 = 78 + 3 * 8 + 2;
+        data[rec0 + 40..rec0 + 44].copy_from_slice(&u32::MAX.to_be_bytes());
+        let r = report(&data, "chair");
+        assert_eq!(r.index_record, None, "a book has no dictionary index");
+        assert!(r.result.is_none());
+    }
+
+    #[test]
+    fn cp1252_labels_use_the_whole_table() {
+        assert_eq!(
+            decode_plain_label(b"\x80\x8c\x9c\xe9", CP1252_INDEX_ENCODING),
+            "€Œœé"
+        );
     }
 }

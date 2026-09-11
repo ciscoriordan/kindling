@@ -802,6 +802,7 @@ fn dump_indx_record(
     rec: &[u8],
     paired_schema: Option<&TagxSchema>,
     paired_ordt: Option<&OrdtInfo>,
+    paired_encoding: Option<u32>,
 ) {
     let label = format!("indx[{}]", rec_idx);
     if rec.len() < 192 || &rec[..4] != b"INDX" {
@@ -825,11 +826,22 @@ fn dump_indx_record(
     let ligt_entries = read_u32_be(rec, 48).unwrap_or(0);
     let cncx_records_count = read_u32_be(rec, 52).unwrap_or(0);
     // offsets 56..164 are reserved/unknown in most writers
-    let ordt_type = read_u32_be(rec, 164).unwrap_or(0);
-    let ordt_entries_count = read_u32_be(rec, 168).unwrap_or(0);
-    let ordt1_offset = read_u32_be(rec, 172).unwrap_or(0);
-    let ordt2_offset = read_u32_be(rec, 176).unwrap_or(0);
-    let tagx_offset = read_u32_be(rec, 180).unwrap_or(0);
+    // The ORDT fields sit at 164..184, and Mobipocket Creator wrote headers
+    // as short as 164 bytes, where those offsets are already its TAGX. Read
+    // from a short header they print TAGX as an ORDT type.
+    let long_header = header_length >= 184;
+    let field = |off: usize| {
+        if long_header {
+            read_u32_be(rec, off).unwrap_or(0)
+        } else {
+            0
+        }
+    };
+    let ordt_type = field(164);
+    let ordt_entries_count = field(168);
+    let ordt1_offset = field(172);
+    let ordt2_offset = field(176);
+    let tagx_offset = field(180);
 
     let _ = writeln!(out, "{}.identifier = \"INDX\"", label);
     let _ = writeln!(out, "{}.length = {}", label, rec.len());
@@ -934,6 +946,13 @@ fn dump_indx_record(
     // data records don't carry their own ORDT2, so we fall back to the
     // paired primary's table.
     let effective_ordt = ordt.as_ref().or(paired_ordt);
+    // A data record's own encoding field is 0xFFFFFFFF; its labels are in
+    // the encoding its primary declares.
+    let label_encoding = if gen_number == 0 {
+        encoding
+    } else {
+        paired_encoding.unwrap_or(encoding)
+    };
     let effective_schema = if gen_number == 0 {
         own_schema.as_ref()
     } else {
@@ -950,7 +969,13 @@ fn dump_indx_record(
             continue;
         }
         let entry = &rec[off..end];
-        let decoded = decode_indx_entry(entry, gen_number, effective_ordt, effective_schema);
+        let decoded = decode_indx_entry(
+            entry,
+            gen_number,
+            effective_ordt,
+            effective_schema,
+            label_encoding,
+        );
         let _ = writeln!(out, "{}.entries[{}] = {}", label, i, decoded);
     }
 }
@@ -973,6 +998,7 @@ fn decode_indx_entry(
     generation: u32,
     ordt: Option<&OrdtInfo>,
     schema: Option<&TagxSchema>,
+    encoding: u32,
 ) -> String {
     if entry.is_empty() {
         return "(empty)".to_string();
@@ -985,7 +1011,7 @@ fn decode_indx_entry(
             return format!("(truncated routing, raw={})", to_hex(entry));
         }
         let label_bytes = &entry[1..1 + label_len];
-        let label = decode_label(label_bytes, ordt);
+        let label = decode_label(label_bytes, ordt, encoding);
         let count_bytes = &entry[1 + label_len..];
         let count = if count_bytes.len() >= 2 {
             u16::from_be_bytes([count_bytes[0], count_bytes[1]]) as u32
@@ -1010,7 +1036,7 @@ fn decode_indx_entry(
             return format!("(truncated data, raw={})", to_hex(entry));
         }
         let label_bytes = &entry[1..1 + new_len];
-        let label = decode_label(label_bytes, ordt);
+        let label = decode_label(label_bytes, ordt, encoding);
 
         let control_byte_count = schema.map(|s| s.control_byte_count as usize).unwrap_or(1);
         let control_start = 1 + new_len;
@@ -1272,11 +1298,24 @@ fn decode_label_ordt(bytes: &[u8], ordt: &OrdtInfo) -> Option<String> {
 /// encoding kindling writes for non-Japanese dictionaries and all
 /// sub-index 2/3 labels). If both fail we return `hex:0x...` so the
 /// diff still shows bytes.
-fn decode_label(bytes: &[u8], ordt: Option<&OrdtInfo>) -> String {
+fn decode_label(bytes: &[u8], ordt: Option<&OrdtInfo>, encoding: u32) -> String {
     if let Some(info) = ordt {
         if let Some(s) = decode_label_ordt(bytes, info) {
             return s;
         }
+    }
+
+    // Mobipocket Creator wrote plain labels in cp1252 or UTF-8 and said so in
+    // the index's encoding field. Read as UTF-16, "chair" is five bytes that
+    // do not pair up and "easily" is three CJK characters.
+    match encoding {
+        1252 => return bytes.iter().map(|&b| crate::ordt::cp1252_char(b)).collect(),
+        65001 => {
+            if let Ok(s) = std::str::from_utf8(bytes) {
+                return s.to_string();
+            }
+        }
+        _ => {}
     }
 
     if bytes.len() % 2 == 0 && !bytes.is_empty() {
@@ -1377,7 +1416,7 @@ pub fn dump_mobi(path: &Path) -> io::Result<String> {
         }
     }
 
-    let mut primary_info: Vec<(usize, Option<TagxSchema>, Option<OrdtInfo>)> = Vec::new();
+    let mut primary_info: Vec<(usize, Option<TagxSchema>, Option<OrdtInfo>, u32)> = Vec::new();
     for &i in &indx_records {
         let rec = match palmdb.record(&data, i) {
             Some(r) => r,
@@ -1389,7 +1428,8 @@ pub fn dump_mobi(path: &Path) -> io::Result<String> {
             continue;
         }
         let schema = parse_tagx(rec, header_length as usize).map(|(s, _)| s);
-        primary_info.push((i, schema, parse_ordt_info(rec)));
+        let encoding = read_u32_be(rec, 28).unwrap_or(0);
+        primary_info.push((i, schema, parse_ordt_info(rec), encoding));
     }
 
     for &i in &indx_records {
@@ -1398,11 +1438,11 @@ pub fn dump_mobi(path: &Path) -> io::Result<String> {
             None => continue,
         };
         let generation = read_u32_be(rec, 12).unwrap_or(0);
-        let (schema, ordt) = if generation == 0 {
-            (None, None)
+        let (schema, ordt, encoding) = if generation == 0 {
+            (None, None, None)
         } else {
             // Find the nearest preceding primary.
-            let mut best: Option<&(usize, Option<TagxSchema>, Option<OrdtInfo>)> = None;
+            let mut best: Option<&(usize, Option<TagxSchema>, Option<OrdtInfo>, u32)> = None;
             for pi in &primary_info {
                 if pi.0 < i {
                     best = Some(pi);
@@ -1411,11 +1451,11 @@ pub fn dump_mobi(path: &Path) -> io::Result<String> {
                 }
             }
             match best {
-                Some((_, s, o)) => (s.as_ref(), o.as_ref()),
-                None => (None, None),
+                Some((_, s, o, e)) => (s.as_ref(), o.as_ref(), Some(*e)),
+                None => (None, None, None),
             }
         };
-        dump_indx_record(&mut out, i, rec, schema, ordt);
+        dump_indx_record(&mut out, i, rec, schema, ordt, encoding);
     }
 
     Ok(out)
@@ -1534,7 +1574,7 @@ mod tests {
         // Entry: byte0=0x00 (prefix=0, len=0), control=0x07, values VWI
         // [125, 73, 1] = bytes 0xFD 0xC9 0x81 (all single-byte).
         let entry = vec![0x00, 0x07, 0xFD, 0xC9, 0x81];
-        let s = decode_indx_entry(&entry, 1, None, Some(&schema));
+        let s = decode_indx_entry(&entry, 1, None, Some(&schema), 65002);
         assert!(s.contains("tag[1] = [125]"), "got {}", s);
         assert!(s.contains("tag[2] = [73]"), "got {}", s);
         assert!(s.contains("tag[42] = [1]"), "got {}", s);
@@ -1602,7 +1642,7 @@ mod tests {
 
         // Dump.
         let mut out = String::new();
-        dump_indx_record(&mut out, 7, &rec, None, None);
+        dump_indx_record(&mut out, 7, &rec, None, None, None);
 
         assert!(
             out.contains("indx[7].ordt_type = 1"),
