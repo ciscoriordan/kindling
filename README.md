@@ -479,6 +479,8 @@ Kindling places all lookupable terms (headwords + inflections) directly into the
 
 Looking up any form on the Kindle finds the correct dictionary entry.
 
+This means kindling writes **no separate inflection index**, and the inflection index field in the MOBI header (offset 28) is `0xFFFFFFFF`. kindlegen writes one and puts the `<idx:infl>` rules in it; kindling reaches the same place by the flatter route above. That field is the first thing anyone notices when comparing a kindling dictionary against a kindlegen one, and its absence looks like the reason inflected lookup would fail, so it is worth being explicit: it is not. `--headwords-only` is the flag that actually drops inflected forms from the index, and it is off by default.
+
 *kindlegen* takes a different approach: a separate inflection INDX with compressed string transformation rules that map inflected forms back to headwords. This encoding is undocumented, limited to [255 inflections per entry](https://ebooks.stackexchange.com/questions/8461/kindlegen-dictionary-creation) (uint8 overflow), and adds complexity without benefit. Kindling has no per-entry limit.
 
 ## MOBI Format

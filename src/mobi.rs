@@ -495,13 +495,20 @@ fn build_dictionary_mobi(
         None
     };
 
-    // Build lookup terms + separate infl INDX data.
+    // Build the lookup terms.
     //
-    // `KINDLING_FLATTEN_INFL` env var (set to "1" or "true") makes the
-    // orth INDX ALSO contain every inflected form as a flat entry
-    // pointing at its parent headword's (start_pos, text_len). Off by
-    // default: only base headwords land in orth; inflected forms are
-    // routed through the separate infl INDX. Test-mode toggle while we
+    // Every inflected form goes into the orth INDX as its own entry, pointing
+    // at its headword's (start_pos, text_len). kindling writes NO separate
+    // infl INDX at all, which is why the inflection index field in the MOBI
+    // header is 0xFFFFFFFF; kindlegen writes one and puts `<idx:infl>` rules
+    // in it, and this reaches the same place by a flatter route.
+    //
+    // Worth knowing because the header field is the first thing anyone
+    // comparing two dictionaries notices, and its absence looks like the
+    // reason inflected lookup would fail. It is not: `parlavano` and `parlo`
+    // resolve to the same offset in a kindling-built Italian dictionary
+    // (reader-dict/monolingual#2770). `--headwords-only` is the flag that
+    // actually turns this off, and it is off by default.
     eprintln!("Building lookup terms...");
     let (lookup_terms, gen_ordt) = build_lookup_terms(
         &all_entries,
