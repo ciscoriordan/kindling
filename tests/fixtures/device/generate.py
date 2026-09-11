@@ -597,11 +597,102 @@ def build_dict_i(root):
     open(os.path.join(d, "dict-i.opf"), "w", encoding="utf-8").write(
         dict_opf("KD-I gap content", ["content.html"], uid="kindling-device-i"))
     write_common(d, "KD-I gap content",
-                 "Read as a book: all five capitalised lines must be visible. Then look "
+                 "Read as a book: all five capitalized lines must be visible. Then look "
                  "up each zgap word and check its popup shows its own definition rather "
                  "than the heading in front of it (issue 42).",
                  uid="kindling-device-i")
     return d, "dict-i.opf"
+
+
+# Lookup probes for KD-J, at the two ends of the dictionary and in the middle.
+# No digits anywhere: a Kindle will not select a word that contains one, which
+# once read as sixty failed lookups when the lookups were fine.
+HUFF_PROBES = [
+    ("zhuffalpha", "first",
+     "The first entry in the file. If this popup is readable the model records "
+     "loaded and the very first text record decoded."),
+    ("zhuffmiddle", "middle",
+     "An entry from the middle of the file. A decoder that loses its place part "
+     "way through shows nothing here while the first entry still works."),
+    ("zhuffomega", "last",
+     "The last entry in the file. Reaching this one means every text record in "
+     "between decoded, because the entries run in order."),
+]
+
+
+def huff_filler(n):
+    """Dictionary-shaped prose with the repetition a phrase dictionary feeds on.
+
+    Real definitions repeat their scaffolding ("Etym: ", "-- used of", the
+    part-of-speech runs) far more than they repeat whole sentences, and that
+    is exactly what huffdic compresses and PalmDOC's 2047-byte window cannot
+    reach. Flat random text would understate both.
+    """
+    pos = ["n.", "v. t.", "v. i.", "a.", "adv."]
+    senses = [
+        "That which is set down as the settled usage of the word.",
+        "A thing of the same kind, considered apart from the rest.",
+        "The condition of being so placed, or the place itself.",
+        "To bring into the state described, or to keep it so.",
+        "One who, or that which, does the thing named.",
+    ]
+    notes = [
+        "-- used chiefly in the older writers.",
+        "-- said of persons, and by extension of things.",
+        "-- opposed to the sense immediately above.",
+        "-- now rare except in the set phrase.",
+    ]
+    letters = "abcdefghijklmnopqrstuvwxyz"
+    out = []
+    for i in range(n):
+        a = letters[(i // 676) % 26]
+        b = letters[(i // 26) % 26]
+        c = letters[i % 26]
+        word = f"zh{a}{b}{c}"
+        body = (
+            f"<p><i>{pos[i % len(pos)]}</i> Etym: [From the common root, "
+            f"through the usual channels.]</p>"
+            f"<p>1. {senses[i % len(senses)]} {notes[i % len(notes)]}</p>"
+            f"<p>2. {senses[(i + 2) % len(senses)]} {notes[(i + 1) % len(notes)]}</p>"
+        )
+        out.append(entry(word, body))
+    return out
+
+
+def build_dict_j(root):
+    """#49 huffdic compression, built with KINDLING_HUFFDIC=1.
+
+    The question a device answers here is the only one left: whether the
+    firmware accepts compression type 17480 in a file kindlegen did not write.
+    Everything else about the encoding is settled off-device, because every
+    record is decoded back before the file is written and two decoders that
+    owe nothing to kindling read the same bytes out of it.
+
+    It has to be big. The encoder declines under 64 KB of text, because below
+    that the phrase dictionary and its tables cost more than the codes save,
+    so the small fixtures in this round could not carry this check at all.
+    """
+    d = os.path.join(root, "src", "dict-j")
+    os.makedirs(d, exist_ok=True)
+    entries = []
+    for word, where, gloss in HUFF_PROBES[:1]:
+        entries.append(entry(word, f"<p>{esc(gloss)}</p>"))
+    filler = huff_filler(1500)
+    entries += filler[:len(filler) // 2]
+    entries.append(entry(HUFF_PROBES[1][0], f"<p>{esc(HUFF_PROBES[1][2])}</p>"))
+    entries += filler[len(filler) // 2:]
+    entries.append(entry(HUFF_PROBES[2][0], f"<p>{esc(HUFF_PROBES[2][2])}</p>"))
+    open(os.path.join(d, "content.html"), "w", encoding="utf-8").write(
+        dict_html(entries, title="KD-J huffdic"))
+    open(os.path.join(d, "dict-j.opf"), "w", encoding="utf-8").write(
+        dict_opf("KD-J huffdic", ["content.html"], uid="kindling-device-j"))
+    write_common(d, "KD-J huffdic",
+                 "Compressed with HUFF/CDIC rather than PalmDOC (issue 49). Look up "
+                 "zhuffalpha, zhuffmiddle and zhuffomega. All three must read as "
+                 "English; garbage or an empty popup means the firmware did not take "
+                 "the compression.",
+                 uid="kindling-device-j")
+    return d, "dict-j.opf"
 
 
 def build_dict_f(root):
@@ -864,7 +955,7 @@ def probe_book(root):
                 ["zlistprobe"], cols=1),
         section(7, "7. Cross-references, in KD-H (issue 54)",
                 "Do NOT use the popup for this one: a Kindle popup disables links. "
-                "Open KD-H as a book and go to its entries. Every capitalised link "
+                "Open KD-H as a book and go to its entries. Every capitalized link "
                 "must reach the line its own text names. The two TO DUP links matter "
                 "most: TO DUP, FILE ONE must reach DUPTARGET IN FILE ONE and TO DUP, "
                 "FILE TWO must reach DUPTARGET IN FILE TWO. Reaching the other file's "
@@ -969,6 +1060,14 @@ def main():
         target = os.path.join(ship, f"{stem}.mobi")
         run([K, "build", os.path.join(d, opf), "-o", target] + flags)
 
+    # KD-J is the only file in the round that is not built with the defaults:
+    # huffdic is opt-in until a device has opened one, which is what this is
+    # for. Built separately rather than given a flags entry because the switch
+    # is an environment variable, not a flag.
+    d, opf = build_dict_j(out)
+    run([K, "build", os.path.join(d, opf), "-o", os.path.join(ship, "dict-j.mobi")],
+        env={**os.environ, "KINDLING_HUFFDIC": "1"})
+
     print("books")
     # #30: the EPUB 3 spelling, and nothing else, has to carry the cover.
     d, opf = book_source(out, "book-coverimage", "KB coverimage epub3",
@@ -1047,13 +1146,13 @@ def main():
     run([K, "comic", alpha, "-o", os.path.join(ship, "comic-alpha.mobi"), "--crop", "0",
          "--title", "KC-alpha transparent ground"])
     # #58: the KF7 half of a --legacy-mobi comic. Its layout used to live in
-    # CSS, which a MOBI6 reader does not apply, so no page was centred there.
+    # CSS, which a MOBI6 reader does not apply, so no page was centered there.
     # The pages are deliberately NARROWER than the profile box so that a
-    # centred page and a flush-left one are told apart at a glance.
+    # centered page and a flush-left one are told apart at a glance.
     narrow = make_cbz(out, "comic-legacy", comic_page, 6, 700, 1400,
-                      label="narrow, must be CENTRED")
+                      label="narrow, must be CENTERED")
     run([K, "comic", narrow, "-o", os.path.join(ship, "comic-legacy.mobi"), "--crop", "0",
-         "--legacy-mobi", "--title", "KC-legacy KF7 centring"])
+         "--legacy-mobi", "--title", "KC-legacy KF7 centering"])
 
     print("\nbuilt into", ship)
     for f in sorted(os.listdir(ship)):
