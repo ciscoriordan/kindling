@@ -463,6 +463,14 @@ The ~7,000x dictionary speedup comes from skipping *kindlegen*'s complex inflect
 | ComicInfo.xml | Yes | Yes |
 | Kindle Previewer compat | No (separate step) | Built-in (EPUB embedded by default, `--no-embed-source` to save space) |
 
+## Ordered list markers
+
+The Kindle lookup popup draws no list marker of its own from CSS or from an `<ol type>` attribute. It does honour `<li value="N">`, which is what kindlegen emits and what every ordered list gets here by default.
+
+A level that declares a lettered or roman style, `<ol style="list-style-type:lower-alpha">` or the legacy `<ol type="a">`, is handled differently: the marker is written into the item's text as `a. `, `i. ` and so on, and the item carries no `value` at all (issue #56). That is the shape Amazon's own Oxford dictionary uses for the same job, distinguishing a sub-sense with a literal character rather than with list markup, and it is the same conclusion the dictionary stylesheet compiler reached: the popup renders literal text and ignores markup it would have to interpret. Dropping `value` on those levels is what stops a drawn marker and a literal one appearing together; an ordered item with no `value` draws nothing of its own, which is what 0.22.1 established when it shipped `<ol type="a">` alone and the device rendered no marker at all.
+
+Letters count bijectively, so the twenty-seventh item is `aa` rather than `ba`, and roman numerals past 3999 fall back to the number instead of a wrong numeral.
+
 ## How inflection lookup works
 
 Kindling places all lookupable terms (headwords + inflections) directly into the orthographic index. Each inflected form entry points to the same text position as its headword:

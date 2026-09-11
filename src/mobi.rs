@@ -3131,6 +3131,93 @@ fn entry_needle(stripped: &str) -> Box<[u8]> {
 /// `class=` are still removed from the list tags, keeping the issue #6 fix
 /// intact. MOBI7 has no lettered/roman lists, so nested lists fall back to
 /// decimal here, as they do under kindlegen.
+/// The marker a declared ordered-list level draws.
+///
+/// Only the styles a source actually declares are represented. Everything
+/// else, including an undeclared list, is [`ListStyle::Decimal`], which is
+/// the one marker the MOBI7 popup is confirmed to draw (issue #16).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ListStyle {
+    Decimal,
+    LowerAlpha,
+    UpperAlpha,
+    LowerRoman,
+    UpperRoman,
+}
+
+impl ListStyle {
+    /// Read either spelling: the CSS `list-style-type` value, or the single
+    /// letter of the legacy `type` attribute.
+    fn parse(raw: &str) -> ListStyle {
+        match raw.to_ascii_lowercase().as_str() {
+            "lower-alpha" | "lower-latin" | "a" => ListStyle::LowerAlpha,
+            "upper-alpha" | "upper-latin" | "A" => ListStyle::UpperAlpha,
+            "lower-roman" | "i" => ListStyle::LowerRoman,
+            "upper-roman" => ListStyle::UpperRoman,
+            _ if raw == "A" => ListStyle::UpperAlpha,
+            _ if raw == "I" => ListStyle::UpperRoman,
+            _ => ListStyle::Decimal,
+        }
+    }
+
+    /// The text of the `n`-th marker, 1-based, with its trailing dot.
+    fn marker(&self, n: u32) -> String {
+        match self {
+            ListStyle::Decimal => format!("{n}."),
+            ListStyle::LowerAlpha => format!("{}.", alpha_marker(n, false)),
+            ListStyle::UpperAlpha => format!("{}.", alpha_marker(n, true)),
+            ListStyle::LowerRoman => format!("{}.", roman_marker(n, false)),
+            ListStyle::UpperRoman => format!("{}.", roman_marker(n, true)),
+        }
+    }
+}
+
+/// `a`, `b`, ... `z`, `aa`, `ab`, ... Bijective base 26, which is how an
+/// ordered list counts rather than how a number does: there is no zero digit.
+fn alpha_marker(n: u32, upper: bool) -> String {
+    let mut out = Vec::new();
+    let mut n = n;
+    while n > 0 {
+        let rem = ((n - 1) % 26) as u8;
+        out.push(if upper { b'A' + rem } else { b'a' + rem });
+        n = (n - 1) / 26;
+    }
+    out.reverse();
+    String::from_utf8(out).unwrap_or_default()
+}
+
+/// `i`, `ii`, `iii`, `iv`, ... Values past the table fall back to the number,
+/// which is better than a wrong numeral and only happens past 3999.
+fn roman_marker(n: u32, upper: bool) -> String {
+    const TABLE: [(u32, &str); 13] = [
+        (1000, "m"),
+        (900, "cm"),
+        (500, "d"),
+        (400, "cd"),
+        (100, "c"),
+        (90, "xc"),
+        (50, "l"),
+        (40, "xl"),
+        (10, "x"),
+        (9, "ix"),
+        (5, "v"),
+        (4, "iv"),
+        (1, "i"),
+    ];
+    if n == 0 || n > 3999 {
+        return n.to_string();
+    }
+    let mut out = String::new();
+    let mut n = n;
+    for (value, numeral) in TABLE {
+        while n >= value {
+            out.push_str(numeral);
+            n -= value;
+        }
+    }
+    if upper { out.to_ascii_uppercase() } else { out }
+}
+
 fn convert_list_markers(html: &str) -> String {
     use std::sync::OnceLock;
     static LIST_TAG: OnceLock<Regex> = OnceLock::new();
@@ -3146,10 +3233,18 @@ fn convert_list_markers(html: &str) -> String {
     let class_sq = CLASS_SQ.get_or_init(|| Regex::new(r#"(?i)\s+class\s*=\s*'[^']*'"#).unwrap());
     let value_num =
         VALUE_NUM.get_or_init(|| Regex::new(r#"(?i)\bvalue\s*=\s*["']?(\d+)"#).unwrap());
+    static LIST_STYLE: OnceLock<Regex> = OnceLock::new();
+    static TYPE_ATTR: OnceLock<Regex> = OnceLock::new();
+    let list_style = LIST_STYLE.get_or_init(|| {
+        Regex::new(r"(?i)list-style-type\s*:\s*(lower-alpha|lower-latin|upper-alpha|upper-latin|lower-roman|upper-roman|decimal)").unwrap()
+    });
+    let type_attr =
+        TYPE_ATTR.get_or_init(|| Regex::new(r#"(?i)\s+type\s*=\s*["']?([aAiI1])["']?"#).unwrap());
 
-    // Stack of per-list (is_ordered, next_value) counters. A nested <ol>
-    // pushes a fresh counter, so each level numbers from 1 like kindlegen.
-    let mut stack: Vec<(bool, u32)> = Vec::new();
+    // Stack of per-list (style, next_value) counters. A nested <ol> pushes a
+    // fresh counter, so each level numbers from 1 like kindlegen. `None` is a
+    // <ul>, which gets no marker of any kind.
+    let mut stack: Vec<(Option<ListStyle>, u32)> = Vec::new();
     let strip = |attrs: &str| -> String {
         let mut s = style_dq.replace_all(attrs, "").into_owned();
         s = style_sq.replace_all(&s, "").into_owned();
@@ -3169,23 +3264,58 @@ fn convert_list_markers(html: &str) -> String {
                 }
                 (true, "li") => "</li>".to_string(),
                 (false, "ol") | (false, "ul") => {
-                    stack.push((name == "ol", 1));
-                    format!("<{name}{}>", strip(attrs))
+                    if name == "ul" {
+                        stack.push((None, 1));
+                        return format!("<ul{}>", strip(attrs));
+                    }
+                    // Read the declared marker style before the strip below
+                    // throws the style attribute away. `list-style-type` is
+                    // what reader-dict writes; the legacy `type` attribute is
+                    // the other spelling.
+                    let style = list_style
+                        .captures(attrs)
+                        .map(|c| ListStyle::parse(&c[1]))
+                        .or_else(|| type_attr.captures(attrs).map(|c| ListStyle::parse(&c[1])))
+                        .unwrap_or(ListStyle::Decimal);
+                    stack.push((Some(style), 1));
+                    let mut cleaned = strip(attrs);
+                    if style != ListStyle::Decimal {
+                        // The marker is written into the item text below, so
+                        // any `type` here would be a second one if the device
+                        // happens to draw it.
+                        cleaned = type_attr.replace_all(&cleaned, "").into_owned();
+                    }
+                    format!("<ol{cleaned}>")
                 }
                 (false, "li") => {
                     let cleaned = strip(attrs);
                     match stack.last_mut() {
                         // Item of an ordered list with an explicit value: keep
                         // it and continue numbering from there (HTML semantics).
-                        Some((true, next)) => {
-                            if let Some(c) = value_num.captures(&cleaned) {
-                                let v: u32 = c[1].parse().unwrap_or(*next);
-                                *next = v + 1;
-                                format!("<li{cleaned}>")
+                        Some((Some(style), next)) => {
+                            let n = match value_num.captures(&cleaned) {
+                                Some(c) => c[1].parse().unwrap_or(*next),
+                                None => *next,
+                            };
+                            *next = n + 1;
+                            if *style == ListStyle::Decimal {
+                                if value_num.is_match(&cleaned) {
+                                    format!("<li{cleaned}>")
+                                } else {
+                                    format!("<li value=\"{n}\"{cleaned}>")
+                                }
                             } else {
-                                let v = *next;
-                                *next += 1;
-                                format!("<li value=\"{v}\"{cleaned}>")
+                                // A lettered or roman level: the marker goes
+                                // into the text and the item carries no
+                                // `value` (issue #56). Amazon's own Oxford
+                                // dictionary distinguishes its sub-senses
+                                // with literal characters rather than list
+                                // markup, and 0.22.1 established that an
+                                // ordered item with no `value` draws nothing
+                                // of its own, so there is no second marker to
+                                // collide with this one.
+                                let cleaned = value_num.replace_all(&cleaned, "").into_owned();
+                                format!("<li{cleaned}>{} ", style.marker(n))
                             }
                         }
                         // <ul> item (or a stray <li> outside any list): no number.
@@ -4154,34 +4284,39 @@ mod record_split_tests {
         );
     }
 
+    /// reader-dict (issues #16 and #56): numbered senses are `<ol>`, and
+    /// lettered or roman sub-senses declare an inline `list-style-type`.
+    ///
+    /// A decimal level keeps `value="N"`, which is the one marker the MOBI7
+    /// popup is confirmed to draw. A declared lettered or roman level gets
+    /// its marker written into the item text instead, and carries no `value`
+    /// at all: Amazon's own Oxford dictionary distinguishes its sub-senses
+    /// with literal characters rather than list markup, and 0.22.1
+    /// established that an ordered item with no `value` draws nothing of its
+    /// own, so the literal marker cannot collide with a drawn one.
     #[test]
-    fn list_markers_numbered_like_kindlegen() {
-        // reader-dict (issue #16): numbered senses are <ol>, lettered/roman
-        // sub-senses use inline list-style-type. strip_idx_markup must number
-        // each ordered <li> with value="N" (what the MOBI7 popup honours, like
-        // kindlegen) and still remove the style attribute (issue #6). Counters
-        // restart at 1 for each nested <ol> -- matching kindlegen's output:
-        //   <li value="1">..</li><ol><li value="1">..</li></ol><li value="2">..
+    fn a_declared_sub_list_style_becomes_a_literal_marker() {
         let html = concat!(
             "<idx:entry><idx:orth><b>peri</b></idx:orth>",
             "<p><b>Nom</b></p><ol>",
             "<li>main sense</li>",
             "<ol style=\"list-style-type:lower-alpha\">",
-            "<li>sub sense</li>",
+            "<li>sub one</li><li>sub two</li>",
             "<ol style=\"list-style-type:lower-roman\"><li>sub sub</li></ol>",
             "</ol><li>second sense</li></ol></idx:entry>"
         );
         let out = strip_idx_markup(html);
-        // Top-level items number 1 then 2; the two nested lists each restart at 1.
-        assert_eq!(
-            out.matches("<li value=\"1\">").count(),
-            3,
-            "three lists each open at value 1: {out}"
-        );
-        assert!(
-            out.contains("<li value=\"2\">second sense</li>"),
-            "top-level second item is value 2: {out}"
-        );
+
+        // The decimal level is unchanged, and its counter is not disturbed by
+        // the nested lists between its two items.
+        assert!(out.contains("<li value=\"1\">main sense</li>"), "{out}");
+        assert!(out.contains("<li value=\"2\">second sense</li>"), "{out}");
+
+        // The declared levels carry their marker as text and no value.
+        assert!(out.contains("<li>a. sub one</li>"), "{out}");
+        assert!(out.contains("<li>b. sub two</li>"), "{out}");
+        assert!(out.contains("<li>i. sub sub</li>"), "{out}");
+
         assert!(!out.contains("style="), "style attr must be gone: {out}");
         assert!(
             !out.contains("list-style"),
@@ -4191,6 +4326,43 @@ mod record_split_tests {
             !out.contains("type="),
             "no <ol type> attribute is emitted: {out}"
         );
+    }
+
+    /// An undeclared list is still decimal through `value`, which is what
+    /// every dictionary that does not ask for anything else gets.
+    #[test]
+    fn an_undeclared_list_stays_decimal() {
+        let out = strip_idx_markup(
+            "<idx:entry><idx:orth><b>x</b></idx:orth><ol><li>one</li>\
+             <ol><li>nested</li></ol><li>two</li></ol></idx:entry>",
+        );
+        assert_eq!(
+            out.matches("<li value=\"1\">").count(),
+            2,
+            "both lists open at value 1: {out}"
+        );
+        assert!(out.contains("<li value=\"2\">two</li>"), "{out}");
+        assert!(
+            !out.contains("a."),
+            "no letters where none were asked for: {out}"
+        );
+    }
+
+    #[test]
+    fn markers_count_the_way_a_list_counts() {
+        // Bijective base 26: there is no zero digit, so 26 is z and 27 is aa.
+        assert_eq!(alpha_marker(1, false), "a");
+        assert_eq!(alpha_marker(26, false), "z");
+        assert_eq!(alpha_marker(27, false), "aa");
+        assert_eq!(alpha_marker(28, false), "ab");
+        assert_eq!(alpha_marker(3, true), "C");
+        assert_eq!(roman_marker(1, false), "i");
+        assert_eq!(roman_marker(4, false), "iv");
+        assert_eq!(roman_marker(9, false), "ix");
+        assert_eq!(roman_marker(14, false), "xiv");
+        assert_eq!(roman_marker(4, true), "IV");
+        // Past the table a number beats a wrong numeral.
+        assert_eq!(roman_marker(4000, false), "4000");
     }
 
     #[test]
