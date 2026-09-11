@@ -3252,7 +3252,15 @@ fn strip_idx_markup(html: &str) -> String {
     let style_attr = STYLE_ATTR.get_or_init(|| Regex::new(r#"\s+style\s*=\s*"[^"]*""#).unwrap());
     let style_attr_sq =
         STYLE_ATTR_SQ.get_or_init(|| Regex::new(r#"\s+style\s*=\s*'[^']*'"#).unwrap());
-    let ws = WS.get_or_init(|| Regex::new(r"\s+").unwrap());
+    // ASCII whitespace only, deliberately. `\s` in this crate is Unicode-aware
+    // and matches U+00A0, so collapsing with it replaced every non-breaking
+    // space with an ordinary one and folded runs of them into a single space.
+    // That is a silent content change: a non-breaking space is the character
+    // you reach for precisely when you do not want it collapsed, whether that
+    // is indenting a sub-sense or holding a phrase together. kindlegen keeps
+    // them (three in, three out, verified on the same source), and so does
+    // this now.
+    let ws = WS.get_or_init(|| Regex::new(r"[ \t\n\r\x0B\x0C]+").unwrap());
     let tag_space = TAG_SPACE.get_or_init(|| Regex::new(r">\s+<").unwrap());
     let doctype_re = DOCTYPE_RE.get_or_init(|| Regex::new(r"(?i)<!DOCTYPE[^>]*>\s*").unwrap());
     let html_open = HTML_OPEN.get_or_init(|| Regex::new(r"(?i)<html\b[^>]*>\s*").unwrap());
@@ -4115,6 +4123,34 @@ mod record_split_tests {
         assert!(
             msg.contains("65536"),
             "message should name the record count: {msg}"
+        );
+    }
+
+    /// A non-breaking space is the character you reach for precisely when you
+    /// do not want it collapsed. The whitespace pass used a Unicode-aware
+    /// `\s`, which matches U+00A0, so every one became an ordinary space and
+    /// runs of them became a single space. kindlegen keeps them.
+    #[test]
+    fn non_breaking_spaces_survive_the_whitespace_collapse() {
+        let out = strip_idx_markup(
+            "<idx:entry><idx:orth value=\"x\"><b>x</b></idx:orth>\
+             <p>NBSP\u{a0}\u{a0}\u{a0}indented</p></idx:entry>",
+        );
+        assert!(
+            out.contains("NBSP\u{a0}\u{a0}\u{a0}indented"),
+            "all three non-breaking spaces should survive: {out:?}"
+        );
+
+        // Ordinary whitespace still collapses, which is the job this pass is
+        // actually here to do: source HTML arrives full of newlines and
+        // indentation that must not reach the blob.
+        let out = strip_idx_markup(
+            "<idx:entry><idx:orth value=\"y\"><b>y</b></idx:orth>\
+             <p>one   \n\t  two</p></idx:entry>",
+        );
+        assert!(
+            out.contains("one two"),
+            "ASCII runs should still collapse: {out:?}"
         );
     }
 

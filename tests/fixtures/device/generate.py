@@ -482,6 +482,19 @@ def build_dict_g(root):
         "<ol><li>a. TEXT item one</li><li>b. TEXT item two</li></ol>"
         "<p>LIST-PLAIN control, expect 1. 2.</p>"
         "<ol><li>PLAIN item one</li><li>PLAIN item two</li></ol>"
+        # The shape Amazon's own Oxford Dictionary of English uses for the
+        # same job, from a screenshot on issue 56: a filled square for the
+        # top sense, a right-pointing triangle for the sub-sense, both as
+        # literal characters, with the sub-sense indented. No list markup at
+        # all. If this renders and the two above do not, it is the answer,
+        # and it is the same lesson as issue 57: the popup honours literal
+        # text, not markup it has to interpret.
+        "<p>LIST-OED, expect a square then an indented triangle.</p>"
+        "<p>\u25aa OED level one, filled square</p>"
+        "<blockquote><p>\u25b8 OED level two, indented triangle</p></blockquote>"
+        "<p>LIST-NBSP, same but indented with spaces instead of blockquote.</p>"
+        "<p>\u25aa NBSP level one</p>"
+        "<p>\u00a0\u00a0\u00a0\u25b8 NBSP level two</p>"
         "<p>LIST-BULLET control, expect bullets.</p>"
         "<ul><li>BULLET item one</li><li>BULLET item two</li></ul>"
     )
@@ -843,8 +856,11 @@ def probe_book(root):
                 "Report exactly what marker each item shows, including nothing at all. "
                 "LIST-TYPE should read a. b. c.; LIST-TEXT should read a. b. and NOT "
                 "1. a.; LIST-PLAIN should read 1. 2.; LIST-BULLET should show bullets. "
-                "If LIST-PLAIN has no numbers either, the popup is ignoring list "
-                "markup entirely and the other three answers do not matter.",
+                "LIST-OED and LIST-NBSP are the shape Amazon's own Oxford dictionary "
+                "uses: a literal square and an indented triangle, no list markup at "
+                "all. Say whether each glyph appears and whether level two is indented "
+                "in either. If LIST-PLAIN has no numbers, the popup is ignoring list "
+                "markup entirely and only the OED and NBSP answers matter.",
                 ["zlistprobe"], cols=1),
         section(7, "7. Cross-references, in KD-H (issue 54)",
                 "Do NOT use the popup for this one: a Kindle popup disables links. "
