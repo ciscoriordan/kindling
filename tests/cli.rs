@@ -1440,9 +1440,7 @@ mod rewrite_metadata {
         for rec in &record_bytes {
             out.extend_from_slice(rec);
         }
-        for _ in 0..padding {
-            out.push(0);
-        }
+        out.extend(std::iter::repeat_n(0u8, padding));
         out
     }
 
@@ -1490,7 +1488,7 @@ mod rewrite_metadata {
         let dummy_text = vec![0u8; 128];
         // JPEG-magic-prefixed "cover" record.
         let mut cover = vec![0xFFu8, 0xD8, 0xFF, 0xE0];
-        cover.extend(std::iter::repeat(0x11).take(256));
+        cover.extend(std::iter::repeat_n(0x11, 256));
         cover.extend_from_slice(&[0xFF, 0xD9]);
 
         let records: Vec<Vec<u8>> = vec![record0, dummy_text, cover];
@@ -1747,7 +1745,7 @@ mod rewrite_metadata {
         let output = tmp_path("cover_out.mobi");
         // Write a fake JPEG to a temp path.
         let mut cover_bytes = vec![0xFFu8, 0xD8, 0xFF, 0xE0];
-        cover_bytes.extend(std::iter::repeat(0xAA).take(512));
+        cover_bytes.extend(std::iter::repeat_n(0xAA, 512));
         cover_bytes.extend_from_slice(&[0xFF, 0xD9]);
         let cover_path = tmp_path("cover.jpg");
         std::fs::write(&cover_path, &cover_bytes).unwrap();

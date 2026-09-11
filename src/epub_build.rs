@@ -55,24 +55,19 @@ const DEFAULT_TITLE: &str = "Dictionary";
 const FIXED_MODIFIED: &str = "2026-06-20T00:00:00Z";
 
 /// Resolution policy for the EPUB3 dictionary layer.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum DictMode {
     /// Emit a dictionary when the OPF looks like one (either
     /// `OPFData::is_dictionary()` is true or `dc_types` contains
     /// `"dictionary"`); otherwise emit a plain book. Source/target languages
     /// come from `dict_in_language` / `dict_out_language`.
+    #[default]
     Auto,
     /// Force a plain book even when the input carries dictionary markup.
     Book,
     /// Force a dictionary with the given source/target language codes,
     /// overriding `Auto` detection and the OPF's own language fields.
     Dictionary { source: String, target: String },
-}
-
-impl Default for DictMode {
-    fn default() -> Self {
-        DictMode::Auto
-    }
 }
 
 /// Caller overrides for EPUB metadata. Fields left as `None` fall back to the

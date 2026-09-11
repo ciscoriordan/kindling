@@ -714,7 +714,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("pretend.jpg");
-        std::fs::write(&path, &[0x89u8, 0x50, 0x4E, 0x47, 0x0D, 0x0A]).unwrap();
+        std::fs::write(&path, [0x89u8, 0x50, 0x4E, 0x47, 0x0D, 0x0A]).unwrap();
 
         let item = mk_item("img", "pretend.jpg", "image/jpeg", None, None);
         let mut report = empty_report();
@@ -739,7 +739,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("weird.bin");
-        std::fs::write(&path, &[0xFFu8, 0xD8, 0xFF, 0xE0, 0x00]).unwrap();
+        std::fs::write(&path, [0xFFu8, 0xD8, 0xFF, 0xE0, 0x00]).unwrap();
 
         let item = mk_item("img", "weird.bin", "application/x-secret", None, None);
         let mut report = empty_report();
@@ -764,7 +764,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("real.jpg");
-        std::fs::write(&path, &[0xFFu8, 0xD8, 0xFF, 0xE0]).unwrap();
+        std::fs::write(&path, [0xFFu8, 0xD8, 0xFF, 0xE0]).unwrap();
         let item = mk_item("img", "real.jpg", "image/jpeg", None, None);
         let mut report = empty_report();
         check_media_type_magic(&dir, &[item], &mut report);

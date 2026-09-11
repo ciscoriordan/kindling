@@ -3,8 +3,11 @@
 /// Verifies MOBI structural correctness without requiring a Kindle device.
 /// Tests PalmDB headers, MOBI headers, EXTH records, INDX records,
 /// PalmDOC compression, SRCS embedding, comic pipeline, and JFIF patching.
-
 #[cfg(test)]
+// The module inside `tests.rs` is itself named `tests`, which clippy flags as
+// inception. Renaming either one would rewrite every path in an 11,000-line
+// file to no benefit.
+#[allow(clippy::module_inception)]
 mod tests {
     use std::collections::HashMap;
     use std::fs;
@@ -1407,7 +1410,7 @@ mod tests {
             if b == 0x00 {
                 // Literal null
                 output.push(0x00);
-            } else if b >= 0x01 && b <= 0x08 {
+            } else if (0x01..=0x08).contains(&b) {
                 // Literal block of b bytes
                 let count = b as usize;
                 for _ in 0..count {
@@ -1416,10 +1419,10 @@ mod tests {
                         i += 1;
                     }
                 }
-            } else if b >= 0x09 && b <= 0x7F {
+            } else if (0x09..=0x7F).contains(&b) {
                 // Literal byte
                 output.push(b);
-            } else if b >= 0x80 && b <= 0xBF {
+            } else if (0x80..=0xBF).contains(&b) {
                 // LZ77 distance/length pair
                 if i < compressed.len() {
                     let b2 = compressed[i];
@@ -1739,7 +1742,7 @@ mod tests {
         // Create 100x100 image with thick white border (10% on each side)
         // and dark content in the center
         let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(100, 100, |x, y| {
-            if x >= 10 && x < 90 && y >= 10 && y < 90 {
+            if (10..90).contains(&x) && (10..90).contains(&y) {
                 image::Luma([50]) // dark content
             } else {
                 image::Luma([255]) // white border
@@ -1752,9 +1755,13 @@ mod tests {
         assert!(w < 100, "Cropped width ({}) should be less than 100", w);
         assert!(h < 100, "Cropped height ({}) should be less than 100", h);
         // The content area is 80x80 (from 10..90), so cropped should be close to that
-        assert!(w >= 70 && w <= 85, "Cropped width should be ~80, got {}", w);
         assert!(
-            h >= 70 && h <= 85,
+            (70..=85).contains(&w),
+            "Cropped width should be ~80, got {}",
+            w
+        );
+        assert!(
+            (70..=85).contains(&h),
             "Cropped height should be ~80, got {}",
             h
         );
@@ -1767,7 +1774,7 @@ mod tests {
         use image::GenericImageView;
         // Image with black borders (common in scanned manga)
         let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(100, 100, |x, y| {
-            if x >= 10 && x < 90 && y >= 10 && y < 90 {
+            if (10..90).contains(&x) && (10..90).contains(&y) {
                 image::Luma([200]) // light content
             } else {
                 image::Luma([0]) // black border
@@ -1804,7 +1811,7 @@ mod tests {
         // Image with border < 2% of dimension - should NOT be cropped
         // 1000x1000 image, border of 15 pixels (1.5%) on each side
         let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(1000, 1000, |x, y| {
-            if x >= 15 && x < 985 && y >= 15 && y < 985 {
+            if (15..985).contains(&x) && (15..985).contains(&y) {
                 image::Luma([100])
             } else {
                 image::Luma([255])
@@ -1825,10 +1832,10 @@ mod tests {
         // 500x1000 image: white background, dark content panel from y=50..930,
         // and a small "page number" cluster at the bottom (y=960..980, x=230..270).
         let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(500, 1000, |x, y| {
-            if y >= 50 && y < 930 && x >= 20 && x < 480 {
+            if (50..930).contains(&y) && (20..480).contains(&x) {
                 // Main content panel (dark)
                 image::Luma([40])
-            } else if y >= 960 && y < 980 && x >= 230 && x < 270 {
+            } else if (960..980).contains(&y) && (230..270).contains(&x) {
                 // Small page number cluster at bottom
                 image::Luma([30])
             } else {
@@ -1849,7 +1856,7 @@ mod tests {
         );
         // The strip is 60px (6% of 1000), so new height should be ~940
         assert!(
-            h <= 960 && h >= 900,
+            (900..=960).contains(&h),
             "Expected height around 940 after bottom crop, got {}",
             h,
         );
@@ -1863,9 +1870,9 @@ mod tests {
         // 500x1000 image: white background, content from y=80..950,
         // and a small page number at the top (y=15..35, x=220..260).
         let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(500, 1000, |x, y| {
-            if y >= 80 && y < 950 && x >= 20 && x < 480 {
+            if (80..950).contains(&y) && (20..480).contains(&x) {
                 image::Luma([40])
-            } else if y >= 15 && y < 35 && x >= 220 && x < 260 {
+            } else if (15..35).contains(&y) && (220..260).contains(&x) {
                 image::Luma([30])
             } else {
                 image::Luma([255])
@@ -1914,10 +1921,10 @@ mod tests {
         // 500x1000 image with dark/black background (common in manga).
         // Content panel from y=60..920, small light page number at bottom.
         let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(500, 1000, |x, y| {
-            if y >= 60 && y < 920 && x >= 20 && x < 480 {
+            if (60..920).contains(&y) && (20..480).contains(&x) {
                 // Content panel (lighter than background)
                 image::Luma([200])
-            } else if y >= 960 && y < 980 && x >= 230 && x < 270 {
+            } else if (960..980).contains(&y) && (230..270).contains(&x) {
                 // Small page number (white text on dark background)
                 image::Luma([240])
             } else {
@@ -1946,9 +1953,9 @@ mod tests {
         // cropped because it looks like real content (a footer, caption, etc.),
         // not a small page number.
         let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(500, 1000, |x, y| {
-            if y >= 50 && y < 920 && x >= 20 && x < 480 {
+            if (50..920).contains(&y) && (20..480).contains(&x) {
                 image::Luma([40])
-            } else if y >= 960 && y < 980 && x >= 50 && x < 350 {
+            } else if (960..980).contains(&y) && (50..350).contains(&x) {
                 // Wide text block at bottom (60% of width)
                 image::Luma([30])
             } else {
@@ -2674,9 +2681,7 @@ mod tests {
         let staged = tmp.path().join("test_encrypted.cbr");
         fs::copy(&fixture, &staged).unwrap();
 
-        let err = cbr::extract_cbr(&staged)
-            .err()
-            .expect("encrypted CBR should fail to extract");
+        let err = cbr::extract_cbr(&staged).expect_err("encrypted CBR should fail to extract");
         let msg = err.to_string();
         assert!(
             msg.to_lowercase().contains("encrypt"),
@@ -3303,7 +3308,7 @@ mod tests {
             image::Rgb([128, 128, 128])
         }));
 
-        let merged = comic::webtoon_merge(&[img.clone()]);
+        let merged = comic::webtoon_merge(std::slice::from_ref(&img));
         let (w, h) = merged.dimensions();
         assert_eq!(
             (w, h),
@@ -3379,7 +3384,7 @@ mod tests {
             |_x, y| {
                 // Create uniform white rows at y=1400, y=2800 (near target cut points)
                 // These serve as gutters for the splitter to find
-                if (y >= 1390 && y <= 1410) || (y >= 2790 && y <= 2810) {
+                if (1390..=1410).contains(&y) || (2790..=2810).contains(&y) {
                     image::Luma([255]) // white gutter
                 } else {
                     // Content: varied pixels to have non-zero variance
@@ -3763,8 +3768,8 @@ mod tests {
         let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(400, 400, |x, y| {
             // Horizontal gutter at y=190..210
             // Vertical gutter at x=190..210
-            let in_h_gutter = y >= 190 && y < 210;
-            let in_v_gutter = x >= 190 && x < 210;
+            let in_h_gutter = (190..210).contains(&y);
+            let in_v_gutter = (190..210).contains(&x);
             if in_h_gutter || in_v_gutter {
                 image::Rgb([255, 255, 255]) // white gutter
             } else {
@@ -3854,8 +3859,8 @@ mod tests {
 
         // Create a 400x400 image with a 2x2 panel grid and white gutters
         let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(400, 400, |x, y| {
-            let in_h_gutter = y >= 190 && y < 210;
-            let in_v_gutter = x >= 190 && x < 210;
+            let in_h_gutter = (190..210).contains(&y);
+            let in_v_gutter = (190..210).contains(&x);
             if in_h_gutter || in_v_gutter {
                 image::Rgb([255, 255, 255]) // white gutter
             } else {
@@ -3908,8 +3913,8 @@ mod tests {
 
         // Create a 400x400 image with a 2x2 panel grid
         let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(400, 400, |x, y| {
-            let in_h_gutter = y >= 190 && y < 210;
-            let in_v_gutter = x >= 190 && x < 210;
+            let in_h_gutter = (190..210).contains(&y);
+            let in_v_gutter = (190..210).contains(&x);
             if in_h_gutter || in_v_gutter {
                 image::Rgb([255, 255, 255])
             } else {
@@ -3978,7 +3983,7 @@ mod tests {
         // separated by white gutters
         let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(200, 300, |x, y| {
             // Gutters at y=90..110 and y=190..210
-            let in_gutter = (y >= 90 && y < 110) || (y >= 190 && y < 210);
+            let in_gutter = (90..110).contains(&y) || (190..210).contains(&y);
             if in_gutter {
                 image::Rgb([255, 255, 255])
             } else {
@@ -4080,8 +4085,8 @@ mod tests {
 
         // Verify panel rects are expressed as valid percentages (0-100)
         let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(200, 200, |x, y| {
-            let in_h_gutter = y >= 95 && y < 105;
-            let in_v_gutter = x >= 95 && x < 105;
+            let in_h_gutter = (95..105).contains(&y);
+            let in_v_gutter = (95..105).contains(&x);
             if in_h_gutter || in_v_gutter {
                 image::Rgb([255, 255, 255])
             } else {
@@ -4621,7 +4626,7 @@ mod tests {
         // - Right half content (inside border) is light gray (190)
         let img = image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(200, 100, |x, y| {
             // White border: 10px on all sides
-            if x < 10 || x >= 190 || y < 10 || y >= 90 {
+            if !(10..190).contains(&x) || !(10..90).contains(&y) {
                 image::Luma([255])
             } else if x < 100 {
                 // Left half content (dark)
@@ -4804,7 +4809,7 @@ mod tests {
             strip_height,
             |_x, y| {
                 // Create solid BLACK gutter rows near target split points
-                if (y >= 1390 && y <= 1420) || (y >= 2790 && y <= 2820) {
+                if (1390..=1420).contains(&y) || (2790..=2820).contains(&y) {
                     image::Luma([0]) // BLACK gutter (not white)
                 } else {
                     // Varied content (high variance rows)
@@ -4942,7 +4947,7 @@ mod tests {
         let exth = parse_exth_records(rec0);
 
         assert!(
-            exth.get(&501).is_none(),
+            !exth.contains_key(&501),
             "default comic build must omit EXTH 501, found {:?}",
             exth.get(&501)
                 .map(|v| String::from_utf8_lossy(&v[0]).to_string())

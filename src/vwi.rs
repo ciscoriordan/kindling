@@ -1,8 +1,8 @@
-/// Variable-width integer encoding helpers for MOBI format.
-///
-/// Two conventions exist:
-/// - Forward VWI: high bit SET = more bytes follow (standard)
-/// - Inverted VWI: high bit SET = last byte (used by kindlegen for tag values)
+//! Variable-width integer encoding helpers for MOBI format.
+//!
+//! Two conventions exist:
+//! - Forward VWI: high bit SET = more bytes follow (standard)
+//! - Inverted VWI: high bit SET = last byte (used by kindlegen for tag values)
 
 /// Encode an integer as a forward variable-width integer.
 ///

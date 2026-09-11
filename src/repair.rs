@@ -468,11 +468,10 @@ fn repair_epub_inner(
 /// True if `name` is a text file we should read as UTF-8 and potentially edit.
 /// Matches the reference set: html, xhtml, htm, xml, svg, css, opf, ncx.
 fn is_text_file(name: &str) -> bool {
-    match extension(name).as_deref() {
-        Some("html") | Some("xhtml") | Some("htm") | Some("xml") | Some("svg") | Some("css")
-        | Some("opf") | Some("ncx") => true,
-        _ => false,
-    }
+    matches!(
+        extension(name).as_deref(),
+        Some("html" | "xhtml" | "htm" | "xml" | "svg" | "css" | "opf" | "ncx")
+    )
 }
 
 /// Lowercased file extension, if any.

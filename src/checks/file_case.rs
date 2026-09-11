@@ -16,7 +16,7 @@ impl Check for FileCaseChecks {
 
     fn run(&self, epub: &ExtractedEpub, report: &mut ValidationReport) {
         let opf = &epub.opf;
-        for (_id, (href, _mt)) in &opf.manifest {
+        for (href, _mt) in opf.manifest.values() {
             let rel = Path::new(href);
             let parent = opf.base_dir.join(rel.parent().unwrap_or(Path::new("")));
             let file_name = match rel.file_name().and_then(|s| s.to_str()) {

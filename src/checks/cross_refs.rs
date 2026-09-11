@@ -38,7 +38,7 @@ impl Check for CrossRefsChecks {
         let opf = &epub.opf;
 
         // --- OPF manifest-only rules: R9.11 and R9.12. ------------------------
-        for (_id, (href, _media_type)) in &opf.manifest {
+        for (href, _media_type) in opf.manifest.values() {
             if let Some(fragment) = href.find('#') {
                 // R9.11: manifest item href contains a fragment identifier.
                 report.emit_at(
@@ -62,7 +62,7 @@ impl Check for CrossRefsChecks {
 
         // --- Build a manifest href -> media_type map and a spine href set. ----
         let mut manifest_by_href: HashMap<String, String> = HashMap::new();
-        for (_id, (href, media_type)) in &opf.manifest {
+        for (href, media_type) in opf.manifest.values() {
             let clean = strip_fragment(href);
             manifest_by_href.insert(clean, media_type.clone());
         }
@@ -79,7 +79,7 @@ impl Check for CrossRefsChecks {
         // files not in the reading order). The parser is intentionally string
         // based so UTF-8 fragment ids like '#hw_͵Α' round-trip unchanged.
         let mut id_index: HashMap<String, HashSet<String>> = HashMap::new();
-        for (_id, (href, media_type)) in &opf.manifest {
+        for (href, media_type) in opf.manifest.values() {
             if !is_xhtml_media_type(media_type) {
                 continue;
             }

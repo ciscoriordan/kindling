@@ -258,11 +258,7 @@ pub fn build_orth_indx(
     let mut prev_label_bytes: Vec<u8> = Vec::new();
 
     let total_terms = lookup_terms.len();
-    for (term_idx, (term, entry_bytes)) in lookup_terms
-        .iter()
-        .zip(encoded_entries.into_iter())
-        .enumerate()
-    {
+    for (term_idx, (term, entry_bytes)) in lookup_terms.iter().zip(encoded_entries).enumerate() {
         if term_idx % 500000 == 0 && term_idx > 0 {
             eprintln!(
                 "  Encoded {} / {} INDX entries ({:.0}%)...",
@@ -561,6 +557,10 @@ fn build_indx_data_record(entry_list: &[Vec<u8>]) -> Vec<u8> {
 /// beat fuzzy ones on-device (`--strict-accents`), and `Generated`
 /// appends per-dictionary generated collation tables. Sub-indexes 2 and 3
 /// always pass `None`.
+// The primary INDX header is a flat pile of independent fields, so the
+// parameters are the fields; grouping them into a struct would only move
+// the same list to another file.
+#[allow(clippy::too_many_arguments)]
 fn build_indx_primary(
     tagx: &[u8],
     num_data_records: usize,
@@ -703,18 +703,19 @@ fn build_indx_primary(
         }
         // Also find ORDT magic positions
         for i in ordt_start..ordt_start + 30 {
-            if i + 4 <= record.len() && &record[i..i + 4] == b"ORDT" {
-                if i == ordt_start + 2 || ordt1_abs == ordt_start + 2 {
-                    ordt1_abs = i;
-                    // Look for second ORDT
-                    for j in (i + 4)..ordt_start + 30 {
-                        if j + 4 <= record.len() && &record[j..j + 4] == b"ORDT" {
-                            ordt2_abs = j;
-                            break;
-                        }
+            if i + 4 <= record.len()
+                && &record[i..i + 4] == b"ORDT"
+                && (i == ordt_start + 2 || ordt1_abs == ordt_start + 2)
+            {
+                ordt1_abs = i;
+                // Look for second ORDT
+                for j in (i + 4)..ordt_start + 30 {
+                    if j + 4 <= record.len() && &record[j..j + 4] == b"ORDT" {
+                        ordt2_abs = j;
+                        break;
                     }
-                    break;
                 }
+                break;
             }
         }
 

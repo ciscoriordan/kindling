@@ -242,6 +242,7 @@ pub struct ComicOptions {
     /// - "horizontal-rl": right-to-left, top-to-bottom (manga)
     /// - "vertical-lr": top-to-bottom, left-to-right (4-koma, vertical strips)
     /// - "vertical-rl": top-to-bottom, right-to-left (4-koma RTL)
+    ///
     /// None means auto-detect: horizontal-rl if RTL, horizontal-lr otherwise.
     pub panel_reading_order: Option<String>,
     /// Center-crop the cover image to fill the device screen (no borders).
@@ -399,7 +400,7 @@ pub fn build_comic_with_options(
     let metadata = find_and_parse_comic_info(input, cbz_temp_dir.as_deref());
 
     // Determine effective RTL setting: CLI flag OR ComicInfo.xml manga detection
-    let rtl = options.rtl || metadata.as_ref().map_or(false, |m| m.manga_rtl);
+    let rtl = options.rtl || metadata.as_ref().is_some_and(|m| m.manga_rtl);
     if rtl {
         eprintln!("RTL (manga) mode enabled");
     }
@@ -890,7 +891,7 @@ fn collect_images_from_dir(dir: &Path) -> Result<Vec<PathBuf>, Box<dyn std::erro
     }
 
     // Natural sort: sort by filename with numeric portions sorted numerically
-    images.sort_by(|a, b| natural_sort_key(a).cmp(&natural_sort_key(b)));
+    images.sort_by_key(|a| natural_sort_key(a));
 
     Ok(images)
 }
@@ -1031,7 +1032,7 @@ fn extract_cbz(cbz_path: &Path) -> Result<(Vec<PathBuf>, PathBuf), Box<dyn std::
     }
 
     // Natural sort
-    image_paths.sort_by(|a, b| natural_sort_key(a).cmp(&natural_sort_key(b)));
+    image_paths.sort_by_key(|a| natural_sort_key(a));
 
     if image_paths.is_empty() {
         // Clean up the empty extraction dir
@@ -1577,6 +1578,9 @@ fn detect_strip_background(gray: &GrayImage, w: u32, h: u32) -> u8 {
 ///   1. The ink fraction is between `min_ink` and `max_ink`.
 ///   2. The ink is horizontally concentrated (not spread across the full width,
 ///      which would indicate a panel border or text block).
+// The strip geometry and the four ink thresholds are all independent knobs that
+// the caller tunes per page, so they stay as separate parameters.
+#[allow(clippy::too_many_arguments)]
 fn is_page_number_strip(
     gray: &GrayImage,
     w: u32,
@@ -1602,7 +1606,7 @@ fn is_page_number_strip(
     for y in y_start..y_end {
         for x in 0..w {
             let v = gray.get_pixel(x, y).0[0];
-            let diff = if v > bg { v - bg } else { bg - v };
+            let diff = v.abs_diff(bg);
             if diff > tol {
                 ink_count += 1;
                 if x < ink_x_min {
@@ -1671,8 +1675,8 @@ pub fn enhance_image(img: &DynamicImage) -> DynamicImage {
     let clip_count = (total_pixels * 0.005) as u32;
     let mut low = 0u8;
     let mut cumulative = 0u32;
-    for i in 0..256 {
-        cumulative += histogram[i];
+    for (i, &count) in histogram.iter().enumerate() {
+        cumulative += count;
         if cumulative >= clip_count {
             low = i as u8;
             break;
@@ -1698,11 +1702,11 @@ pub fn enhance_image(img: &DynamicImage) -> DynamicImage {
     let gamma: f64 = 0.8;
     let range = (high - low) as f64;
     let mut lut = [0u8; 256];
-    for i in 0..256 {
+    for (i, entry) in lut.iter_mut().enumerate() {
         let clamped = (i as u8).max(low).min(high);
         let normalized = (clamped - low) as f64 / range; // 0.0 .. 1.0
         let gamma_corrected = normalized.powf(gamma);
-        lut[i] = (gamma_corrected * 255.0).round().clamp(0.0, 255.0) as u8;
+        *entry = (gamma_corrected * 255.0).round().clamp(0.0, 255.0) as u8;
     }
 
     // Apply to all channels of the original image
@@ -1871,7 +1875,7 @@ fn webtoon_preprocess(
 
         // Sort by filename to preserve order (par_iter may reorder)
         let mut paths = paths;
-        paths.sort_by(|a, b| natural_sort_key(a).cmp(&natural_sort_key(b)));
+        paths.sort_by_key(|a| natural_sort_key(a));
 
         page_offset += paths.len();
         all_paths.extend(paths);
@@ -2240,7 +2244,7 @@ pub fn resolve_panel_reading_order(explicit: Option<&str>, rtl: bool) -> &'stati
 ///
 /// Panels are grouped into rows/columns using a tolerance of 5% to account
 /// for slight misalignment in detected panel edges.
-pub fn sort_panels_by_reading_order(panels: &mut Vec<PanelRect>, reading_order: &str) {
+pub fn sort_panels_by_reading_order(panels: &mut [PanelRect], reading_order: &str) {
     if panels.len() <= 1 {
         return;
     }
@@ -2712,6 +2716,9 @@ fn write_fixed_layout_epub_v2(
 }
 
 /// Build the OPF manifest for the comic.
+// Every one of these feeds a different part of the OPF, and bundling them into a
+// struct would just move the same list one level away from the template below.
+#[allow(clippy::too_many_arguments)]
 fn build_comic_opf_v2(
     num_pages: usize,
     canvas: (u32, u32),

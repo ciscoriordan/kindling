@@ -8,7 +8,7 @@
 /// - Each spine item is split into a SKELETON (XHTML shell with empty
 ///   aid-marked body) and one or more FRAGMENT chunks (the body contents).
 /// - The text flow is laid out as
-///     [skel_0][frag_0_0][frag_0_1]...[skel_1][frag_1_0]...
+///   [skel_0][frag_0_0][frag_0_1]...[skel_1][frag_1_0]...
 /// - The skeleton INDX lists each skel's absolute start offset and length.
 /// - The fragment INDX lists each chunk's insert position (absolute byte
 ///   offset in the combined text where the fragment content should be
@@ -590,6 +590,11 @@ fn build_kf8_html(
     const AID_PAGE_STRIDE: u32 = 1_000_000;
     let mut global_aid_counter: u32 = 0;
 
+    // `global_seq` numbers the fragments emitted so far, which is a
+    // different quantity from `skel_idx` even though the two currently
+    // agree, because each spine part emits exactly one fragment today.
+    // Folding it into the iterator would bake that assumption in.
+    #[allow(clippy::explicit_counter_loop)]
     for (skel_idx, raw_part) in html_parts.iter().enumerate() {
         let mut aid_counter: u32 = if kindlegen_parity {
             (skel_idx as u32) * AID_PAGE_STRIDE
@@ -797,7 +802,7 @@ fn split_skeleton_and_body(html: &str) -> SkelSplit {
                 skeleton: html.to_string(),
                 body_inner: String::new(),
                 body_inner_offset: html.len(),
-                body_aid: body_aid,
+                body_aid,
             };
         }
     };
@@ -1383,6 +1388,7 @@ struct TbsSeq {
 ///   - a single node spanning the whole record  -> flags 0b011 (+ tbs_type, +0)
 ///   - a single node that only ends/starts here -> flags 0b010 (+ tbs_type)
 ///   - two or more nodes touch the record       -> flags 0b110 (+ tbs_type, + count)
+///
 /// Records past the text (the CSS flow) carry an empty TBS.
 fn build_tbs_entry(
     rec_start: usize,
@@ -2860,14 +2866,17 @@ mod tests {
         );
         // Breadth-first order: depth 0 (Preface, Vol1, Vol2), depth 1
         // (Ch1, Ch2, Section 7, Ch3), depth 2 (S1, S2).
-        let got: Vec<(
-            &str,
+        // One flattened entry, in the order the expectation below lists
+        // them: label, depth, parent, first child, last child, length.
+        type EntryShape<'a> = (
+            &'a str,
             usize,
             Option<usize>,
             Option<usize>,
             Option<usize>,
             usize,
-        )> = entries
+        );
+        let got: Vec<EntryShape<'_>> = entries
             .iter()
             .map(|e| {
                 (

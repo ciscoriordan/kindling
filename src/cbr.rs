@@ -229,7 +229,7 @@ pub fn extract_cbr(cbr_path: &Path) -> Result<(Vec<PathBuf>, PathBuf), Box<dyn s
         }
 
         // Natural sort by filename so `page_2.jpg` < `page_10.jpg`.
-        image_paths.sort_by(|a, b| natural_sort_key(a).cmp(&natural_sort_key(b)));
+        image_paths.sort_by_key(|p| natural_sort_key(p.as_path()));
 
         if image_paths.is_empty() {
             return Err("No image files found in CBR archive".into());

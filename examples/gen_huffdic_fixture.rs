@@ -127,14 +127,14 @@ fn code_lengths(freqs: &[u64]) -> Vec<u8> {
         }
         let mut lens = vec![0u8; n];
         let mut deepest = 0u8;
-        for i in 0..n {
+        for (i, len) in lens.iter_mut().enumerate() {
             let mut depth = 0u8;
             let mut cur = i;
             while parent[cur] != usize::MAX {
                 cur = parent[cur];
                 depth += 1;
             }
-            lens[i] = depth;
+            *len = depth;
             deepest = deepest.max(depth);
         }
         // 8 bits is the shortest code that can safely pad the last byte, and
@@ -189,8 +189,8 @@ fn assign_codes(lens: &[u8]) -> Codes {
     }
 
     let mut plain = vec![0u32; lens.len()];
-    for l in 1..=maxlen {
-        let mut c = next[l];
+    for (l, &first_code) in next.iter().enumerate().take(maxlen + 1).skip(1) {
+        let mut c = first_code;
         for (sym, &sl) in lens.iter().enumerate() {
             if sl as usize == l {
                 plain[sym] = c;
@@ -492,8 +492,7 @@ fn to_huffdic(data: &[u8], placement: Placement, shift_index_pointer: bool) -> V
     // 1. take the text apart, keeping each record's trailing regions verbatim
     let mut plain = Vec::with_capacity(text_records);
     let mut trailers = Vec::with_capacity(text_records);
-    for i in 1..=text_records {
-        let raw = records[i];
+    for &raw in &records[1..=text_records] {
         let t = trailing_data_len(raw, extra_flags);
         plain.push(palmdoc_decompress(&raw[..raw.len() - t]));
         trailers.push(raw[raw.len() - t..].to_vec());

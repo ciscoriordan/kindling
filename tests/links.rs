@@ -409,11 +409,11 @@ fn kf8_leaves_no_bare_fragment_links_behind() {
     assert!(blob.contains("kindle:pos:fid:0000:off:0000000000"));
 }
 
-/// Build the cover-page fixture as a KF8 `.azw3` and parse it.
 // ---------------------------------------------------------------------------
 // Dictionary cross-references (issue #54)
 // ---------------------------------------------------------------------------
 
+/// Build the dictionary cross-reference fixture as a KF8 `.azw3` and parse it.
 fn build_dict_xrefs(slot: &str) -> ParsedMobi {
     let opf = fixture_dir("dict_xrefs").join("dict_xrefs.opf");
     // Its own directory per test: these run on parallel threads, and a
@@ -531,6 +531,7 @@ fn no_dictionary_cross_reference_keeps_its_href() {
     );
 }
 
+/// Build the cover-page fixture as a KF8 `.azw3` and parse it.
 fn build_cover_fixture() -> ParsedMobi {
     let opf = fixture_dir("cover_page_links").join("cover_page_links.opf");
     let tmp = std::env::temp_dir()

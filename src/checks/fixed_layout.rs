@@ -289,6 +289,10 @@ fn extract_attr_value(tag_body: &str, attr: &str) -> Option<String> {
 
 /// Scan OPF metadata for `<meta property="rendition:spread|orientation|layout">`
 /// elements and validate their text-content values.
+// Clippy wants the `rendition:layout` arm folded into a match guard. The three
+// arms below validate three sibling properties in exactly the same shape, and
+// rewriting one of them alone would break that symmetry for no gain.
+#[allow(clippy::collapsible_match)]
 fn check_rendition_values(
     opf_content: &str,
     opf_file: &Option<PathBuf>,

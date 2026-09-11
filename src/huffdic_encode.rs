@@ -283,7 +283,7 @@ impl PhraseMatcher {
             }
         }
         for list in &mut by_first {
-            list.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+            list.sort_by_key(|entry| std::cmp::Reverse(entry.0.len()));
         }
         PhraseMatcher { by_first, single }
     }
@@ -488,7 +488,7 @@ impl CodeTable {
         // prefix belongs to a code longer than the seven bits a partial byte
         // can leave behind, otherwise the padding decodes as a real symbol
         // and the record gains a spurious phrase.
-        let longest = (1..=MAX_CODE_LEN).filter(|&l| used[l]).next_back()?;
+        let longest = (1..=MAX_CODE_LEN).rfind(|&l| used[l])?;
         if longest < 8 || mincode[longest] != 0 {
             return None;
         }

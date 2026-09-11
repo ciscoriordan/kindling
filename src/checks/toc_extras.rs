@@ -143,29 +143,26 @@ impl Check for TocExtrasChecks {
             if file_part.is_empty() {
                 continue;
             }
-            match href_to_media.get(&file_part) {
-                None => {
-                    // Already covered by R5.3.1 (missing from manifest). Do not
-                    // double-fire R5.10 for the same condition.
-                }
-                Some(mt) => {
-                    // Legacy Kindle books commonly put
-                    // `<reference type="toc" href="toc.ncx"/>` in the guide
-                    // and the mobi pipeline explicitly supports it. Accept
-                    // NCX as a guide target even though epubcheck OPF_032
-                    // considers it non-conformant.
-                    if mt != "application/xhtml+xml" && mt != "application/x-dtbncx+xml" {
-                        report.emit_at(
-                            "R5.10",
-                            format!(
-                                "Guide reference '{}' has media-type '{}', not application/xhtml+xml.",
-                                href, mt
-                            ),
-                            Some(epub.opf_path.clone()),
-                            None,
-                        );
-                    }
-                }
+            // A target that is missing from the manifest is already covered by
+            // R5.3.1. Do not double-fire R5.10 for the same condition.
+            let Some(mt) = href_to_media.get(&file_part) else {
+                continue;
+            };
+            // Legacy Kindle books commonly put
+            // `<reference type="toc" href="toc.ncx"/>` in the guide
+            // and the mobi pipeline explicitly supports it. Accept
+            // NCX as a guide target even though epubcheck OPF_032
+            // considers it non-conformant.
+            if mt != "application/xhtml+xml" && mt != "application/x-dtbncx+xml" {
+                report.emit_at(
+                    "R5.10",
+                    format!(
+                        "Guide reference '{}' has media-type '{}', not application/xhtml+xml.",
+                        href, mt
+                    ),
+                    Some(epub.opf_path.clone()),
+                    None,
+                );
             }
         }
 
@@ -407,9 +404,7 @@ fn extract_ncx_dtb_uid(ncx_text: &str) -> Option<String> {
     let mut rest = ncx_text;
     while let Some(idx) = rest.find("<meta") {
         rest = &rest[idx + "<meta".len()..];
-        let Some(end) = rest.find('>') else {
-            return None;
-        };
+        let end = rest.find('>')?;
         let tag = &rest[..end];
         let name = extract_attr(tag, "name").unwrap_or_default();
         if name == "dtb:uid" {
@@ -496,9 +491,7 @@ fn opf_unique_identifier_value(opf_text: &str) -> Option<String> {
     let mut rest = opf_text;
     while let Some(idx) = rest.find("<dc:identifier") {
         rest = &rest[idx + "<dc:identifier".len()..];
-        let Some(tag_end) = rest.find('>') else {
-            return None;
-        };
+        let tag_end = rest.find('>')?;
         let tag = &rest[..tag_end];
         let id_attr = extract_attr(tag, "id").unwrap_or_default();
         if id_attr == unique_id {
@@ -512,9 +505,7 @@ fn opf_unique_identifier_value(opf_text: &str) -> Option<String> {
     let mut rest = opf_text;
     while let Some(idx) = rest.find("<identifier") {
         rest = &rest[idx + "<identifier".len()..];
-        let Some(tag_end) = rest.find('>') else {
-            return None;
-        };
+        let tag_end = rest.find('>')?;
         let tag = &rest[..tag_end];
         let id_attr = extract_attr(tag, "id").unwrap_or_default();
         if id_attr == unique_id {

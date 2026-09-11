@@ -47,7 +47,7 @@ impl Check for CssForbiddenChecks {
 
         let base_dir = opf.base_dir.clone();
 
-        for (_id, (href, media_type)) in &opf.manifest {
+        for (href, media_type) in opf.manifest.values() {
             if !is_css_media_type(media_type) {
                 continue;
             }

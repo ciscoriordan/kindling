@@ -268,6 +268,10 @@ pub struct FixedLayoutMeta {
 /// already carry series and volume through the title, via
 /// `ComicMetadata::effective_title`. Reintroducing this needs a verified target
 /// record first.
+// The parameter list mirrors the EXTH records this writes, one per record, and
+// the order is the order kindlegen emits them in. Bundling them into a struct
+// would hide that correspondence without removing any of the arguments.
+#[allow(clippy::too_many_arguments)]
 pub fn build_book_exth(
     title: &str,
     author: &str,
@@ -576,6 +580,9 @@ fn derive_uuid(seed: &str) -> String {
 /// Build the complete EXTH header with metadata records for dictionaries.
 ///
 /// Record order matches kindlegen output for maximum compatibility.
+// As with `build_book_exth`, each parameter is one EXTH record and the order is
+// kindlegen's record order, so grouping them into a struct would obscure that.
+#[allow(clippy::too_many_arguments)]
 pub fn build_exth(
     title: &str,
     author: &str,

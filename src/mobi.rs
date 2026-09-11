@@ -308,7 +308,7 @@ fn build_dictionary_mobi(
     // (issue #41).
     let (text_content, entry_needles, pending_links, entry_gap_texts) =
         build_text_content_by_letter(
-            &opf,
+            opf,
             &all_entries,
             &entry_files,
             &entry_gaps,
@@ -606,7 +606,7 @@ fn build_dictionary_mobi(
 
     // Build record 0
     let record0 = build_record0(
-        &opf,
+        opf,
         text_length,
         text_records.len(),
         first_non_book,
@@ -764,6 +764,9 @@ pub(crate) fn normalize_jpeg_header(data: &[u8]) -> Option<Vec<u8>> {
 ///   KF8 Section: kf8_record0, kf8_text records, NULL padding,
 ///                fragment INDX, skeleton INDX, NCX INDX, FDST, DATP,
 ///                FLIS, FCIS, EOF
+// Every parameter here is an independent build switch that the CLI sets on its
+// own, so bundling them into a struct would only move the same list elsewhere.
+#[allow(clippy::too_many_arguments)]
 fn build_book_mobi(
     opf: &OPFData,
     output_path: &Path,
@@ -2255,7 +2258,7 @@ fn extract_css_content(
     };
 
     // Source 1: manifest.
-    for (_, (href, media_type)) in &opf.manifest {
+    for (href, media_type) in opf.manifest.values() {
         if media_type == "text/css" || href.ends_with(".css") {
             take_css(
                 href,
@@ -2638,6 +2641,12 @@ fn idx_entry_id(html: &str) -> Option<String> {
     None
 }
 
+/// What `build_text_content_by_letter` returns: the merged body text, the
+/// per-entry headword needles, the link placeholders still waiting to be
+/// patched with real file positions, and the gap text that sits between
+/// entries.
+type AssembledDictionaryText = (Vec<u8>, Vec<Box<[u8]>>, Vec<PendingFilepos>, Vec<String>);
+
 /// Build text content for a dictionary, splitting at entry boundaries to stay
 /// under Amazon's per-HTML-file size limit.
 ///
@@ -2657,7 +2666,7 @@ fn build_text_content_by_letter(
     tail_gaps: &[String],
     files_with_entries: &std::collections::HashSet<usize>,
     split: bool,
-) -> (Vec<u8>, Vec<Box<[u8]>>, Vec<PendingFilepos>, Vec<String>) {
+) -> AssembledDictionaryText {
     let doc_hrefs = opf.get_content_html_hrefs();
     let documents = links::build_document_index(&doc_hrefs);
     // Front-matter links come first in the merged body, so their placeholders
@@ -3743,9 +3752,7 @@ fn pad_text_for_chunking(text: &[u8], chunk_size: usize) -> Vec<u8> {
         src += safe_n;
         // Pad with spaces to the chunk boundary.
         let pad_count = remaining_in_chunk - safe_n;
-        for _ in 0..pad_count {
-            padded.push(b' ');
-        }
+        padded.extend(std::iter::repeat_n(b' ', pad_count));
     }
     padded
 }
@@ -4681,27 +4688,22 @@ fn find_entry_positions(
                 // used to cascade via search_start on PyGlossary-shaped input.
                 let mut bare_found: Option<(usize, usize)> = None;
                 let mut scan_from = search_start;
-                loop {
-                    match find_bytes_from(text_bytes, headword_bytes, scan_from) {
-                        Some(p) => {
-                            let search_from = if p >= 10 { p - 10 } else { 0 };
-                            // Anchor on whichever wrapper precedes the headword
-                            // text. Looking for `<b>` alone left `<big>` entries
-                            // anchored on the text itself, which then failed
-                            // is_entry_boundary because its window saw `/><big>`
-                            // rather than the `/>` it needs (issue #22).
-                            let bs = match rfind_headword_wrapper(&text_bytes[search_from..p]) {
-                                Some(rel) => search_from + rel,
-                                None => p,
-                            };
-                            if is_entry_boundary(text_bytes, bs) {
-                                bare_found = Some((bs, p));
-                                break;
-                            }
-                            scan_from = p + headword_bytes.len();
-                        }
-                        None => break,
+                while let Some(p) = find_bytes_from(text_bytes, headword_bytes, scan_from) {
+                    let search_from = p.saturating_sub(10);
+                    // Anchor on whichever wrapper precedes the headword
+                    // text. Looking for `<b>` alone left `<big>` entries
+                    // anchored on the text itself, which then failed
+                    // is_entry_boundary because its window saw `/><big>`
+                    // rather than the `/>` it needs (issue #22).
+                    let bs = match rfind_headword_wrapper(&text_bytes[search_from..p]) {
+                        Some(rel) => search_from + rel,
+                        None => p,
+                    };
+                    if is_entry_boundary(text_bytes, bs) {
+                        bare_found = Some((bs, p));
+                        break;
                     }
+                    scan_from = p + headword_bytes.len();
                 }
                 match bare_found {
                     Some(result) => result,
@@ -4820,7 +4822,7 @@ fn is_entry_boundary(text_bytes: &[u8], bold_pos: usize) -> bool {
     // rather than an `<hr/>`/`<h5>` separator. Without this the very first
     // entry of every such dictionary is never located and renders as a
     // blank lookup page. 14 bytes, so use a window wide enough to hold it.
-    let frameset_start = if end >= 14 { end - 14 } else { 0 };
+    let frameset_start = end.saturating_sub(14);
     if text_bytes[frameset_start..end].ends_with(b"<mbp:frameset>") {
         return true;
     }
@@ -4830,7 +4832,7 @@ fn is_entry_boundary(text_bytes: &[u8], bold_pos: usize) -> bool {
     //   <h5><b>  (the block-level headword wrapper inserted by strip_idx_markup)
     //   <hr/> <b>  (with space between, legacy path when no h5 wrap)
     //   /> <b>  (after <br/> or other self-closing tags at end of prev entry)
-    let check_start = if end >= 8 { end - 8 } else { 0 };
+    let check_start = end.saturating_sub(8);
     let preceding = &text_bytes[check_start..end];
 
     // Check for "<h5>" immediately before (block-level headword wrapper)
@@ -4850,7 +4852,7 @@ fn is_entry_boundary(text_bytes: &[u8], bold_pos: usize) -> bool {
         // Tighten: only accept when the self-close is from a block-level
         // separator (<hr/>, <mbp:pagebreak/>), not an in-line <br/> or
         // <img/> which can legitimately appear inside an entry body.
-        let wider_start = if end >= 24 { end - 24 } else { 0 };
+        let wider_start = end.saturating_sub(24);
         let wider = &text_bytes[wider_start..end];
         if wider.ends_with(b"<hr/>")
             || wider.ends_with(b"<mbp:pagebreak/>")
@@ -4993,7 +4995,7 @@ fn build_lookup_terms(
                     let hw_display_len = if let Some((_, _, hdl, _)) = terms.get(hw) {
                         *hdl
                     } else {
-                        3 + iform.as_bytes().len() + 4 + 1
+                        3 + iform.len() + 4 + 1
                     };
                     ordered_labels.push(iform.clone());
                     terms.insert(
@@ -5481,6 +5483,10 @@ fn build_record0(
 /// NOTE: For dual-format .mobi files, the Kindle reads the library title from
 /// the KF8 Record 0's full name, not the KF7 Record 0. Both must be set but
 /// the KF8 value is what appears in the Kindle library.
+// These are the individual header fields the KF8 record 0 layout needs, and
+// they are computed at different points of the build, so grouping them would
+// not shorten the list.
+#[allow(clippy::too_many_arguments)]
 fn build_kf8_record0(
     opf: &OPFData,
     text_length: usize,
@@ -5846,8 +5852,8 @@ fn build_palmdb(title: &str, records: &[Vec<u8>]) -> Result<Vec<u8>, Box<dyn std
 
     // Record list
     let mut record_list = Vec::with_capacity(num_records * 8);
-    for i in 0..num_records {
-        record_list.extend_from_slice(&(offsets[i] as u32).to_be_bytes());
+    for (i, &offset) in offsets.iter().enumerate() {
+        record_list.extend_from_slice(&(offset as u32).to_be_bytes());
         let uid = (i * 2) as u32;
         let attrs_uid = uid & 0x00FFFFFF;
         record_list.extend_from_slice(&attrs_uid.to_be_bytes());

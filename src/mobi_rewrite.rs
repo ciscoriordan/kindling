@@ -664,12 +664,13 @@ fn parse_section_record0(record: &[u8], record_idx: usize) -> Result<SectionView
     })
 }
 
+/// The `(type, payload)` records of one EXTH block, paired with the offset of
+/// the first byte past the block's 4-byte-aligned padding.
+type ParsedExthBlock = (Vec<(u32, Vec<u8>)>, usize);
+
 /// Parse an EXTH block starting at `exth_start` within `record0`. Returns
 /// the records and the end offset (including the 4-byte-aligned padding).
-fn parse_exth_block(
-    record0: &[u8],
-    exth_start: usize,
-) -> Result<(Vec<(u32, Vec<u8>)>, usize), RewriteError> {
+fn parse_exth_block(record0: &[u8], exth_start: usize) -> Result<ParsedExthBlock, RewriteError> {
     if record0.len() < exth_start + 12 {
         return Err(RewriteError::MalformedHeader(format!(
             "EXTH block would start at {} but record 0 is only {} bytes",
@@ -1383,9 +1384,7 @@ fn serialize_exth_block(records: &[(u32, Vec<u8>)]) -> Vec<u8> {
     for rec in &record_bytes {
         out.extend_from_slice(rec);
     }
-    for _ in 0..padding {
-        out.push(0);
-    }
+    out.extend(std::iter::repeat_n(0u8, padding));
     out
 }
 
@@ -1631,7 +1630,7 @@ mod tests {
         // Minimal "JPEG" bytes sufficient for is_recognized_image. Real
         // Kindle files would use a full encoder; we only need the magic.
         let mut v = vec![0xFF, 0xD8, 0xFF, 0xE0];
-        v.extend(std::iter::repeat(color).take(256));
+        v.extend(std::iter::repeat_n(color, 256));
         v.push(0xFF);
         v.push(0xD9);
         v

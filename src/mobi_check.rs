@@ -339,7 +339,7 @@ fn parse_mobi_section(
     })
 }
 
-fn find_exth_string<'a>(exth: &'a [(u32, Vec<u8>)], rtype: u32) -> Option<&'a [u8]> {
+fn find_exth_string(exth: &[(u32, Vec<u8>)], rtype: u32) -> Option<&[u8]> {
     exth.iter()
         .find(|(t, _)| *t == rtype)
         .map(|(_, d)| d.as_slice())

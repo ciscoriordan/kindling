@@ -1,10 +1,10 @@
-/// PalmDOC LZ77 compression.
-///
-/// The PalmDOC compression is an LZ77 variant used in MOBI/PRC files.
-/// Uses hash chain matching with the following constraints:
-/// - Max distance: 2047
-/// - Max match length: 10
-/// - Min match length: 3
+//! PalmDOC LZ77 compression.
+//!
+//! The PalmDOC compression is an LZ77 variant used in MOBI/PRC files.
+//! Uses hash chain matching with the following constraints:
+//! - Max distance: 2047
+//! - Max match length: 10
+//! - Min match length: 3
 
 const HASH_BITS: usize = 15;
 const HASH_SIZE: usize = 1 << HASH_BITS;

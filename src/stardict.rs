@@ -477,7 +477,6 @@ fn html_escape(s: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
     /// The index has to be in the order a reader binary-searches, which is
     /// not the same as case-insensitive order (issue #60).
     #[test]
@@ -527,6 +526,7 @@ mod tests {
         }
     }
 
+    #[test]
     fn ascii_case_cmp_orders_case_insensitively() {
         assert_eq!(ascii_case_cmp(b"alpha", b"BETA"), std::cmp::Ordering::Less);
         assert_eq!(

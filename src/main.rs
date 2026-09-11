@@ -12,7 +12,7 @@ use kindling::{
     mobi_rewrite, opf, repair, stardict, validate,
 };
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
 
 use clap::{Parser, Subcommand};
@@ -774,7 +774,7 @@ fn parse_kindlegen_args() -> (PathBuf, Option<String>, bool, bool, bool, bool) {
 /// format). If no output is specified, derive a default filename by
 /// replacing the input extension with `.azw3` for KF8-only builds or
 /// `.mobi` for dual-format (legacy MOBI7+KF8 and dictionary) builds.
-fn resolve_output_path(input: &PathBuf, output: Option<PathBuf>, kf8_only: bool) -> PathBuf {
+fn resolve_output_path(input: &Path, output: Option<PathBuf>, kf8_only: bool) -> PathBuf {
     match output {
         Some(p) => p,
         None => {
@@ -866,7 +866,7 @@ fn parse_doc_type(raw: &str) -> Option<String> {
 #[allow(clippy::too_many_arguments)]
 fn do_build(
     input: &PathBuf,
-    output_path: &PathBuf,
+    output_path: &Path,
     no_compress: bool,
     headwords_only: bool,
     embed_source: bool,
@@ -932,10 +932,7 @@ fn do_build(
     // OPF cannot be parsed we still hand the path to run_preflight_validation
     // so the existing "couldn't parse" warning + soft-pass behavior is
     // preserved verbatim, then let the builder surface its own parse error.
-    let extracted: Option<ExtractedEpub> = match ExtractedEpub::from_opf_path(&opf_path) {
-        Ok(e) => Some(e),
-        Err(_) => None,
-    };
+    let extracted: Option<ExtractedEpub> = ExtractedEpub::from_opf_path(&opf_path).ok();
 
     // Pre-flight KDP validation. Use the shared ExtractedEpub when we have
     // one; otherwise fall back to the path-based entry point so the warning
@@ -1527,7 +1524,7 @@ fn main() {
 /// cached, so the library tile shows the cover instead of "No image
 /// available". See `src/thumbnail.rs` for why this cannot be done from inside
 /// the book.
-fn do_thumbnail(input: &PathBuf, kindle: &PathBuf) {
+fn do_thumbnail(input: &Path, kindle: &Path) {
     match kindling::thumbnail::install(input, kindle) {
         Ok(installed) => {
             println!(
@@ -1642,8 +1639,12 @@ fn do_lookup(input: &PathBuf, word: &str) {
 /// On success the four (or three, when there are no inflections) StarDict
 /// files have been written under `output_dir`. On failure the process
 /// exits with code 1 after emitting a single-line error.
+// Six of these eight parameters are distinct StarDict .ifo header fields the
+// user can override individually, so bundling them into a struct would only
+// move the same list one level out.
+#[allow(clippy::too_many_arguments)]
 fn do_stardict(
-    input: &PathBuf,
+    input: &Path,
     output: Option<&PathBuf>,
     bookname: Option<String>,
     author: Option<String>,
@@ -1666,7 +1667,7 @@ fn do_stardict(
             }
         }
     } else {
-        (None, input.clone())
+        (None, input.to_path_buf())
     };
 
     let output_dir: PathBuf = match output {
@@ -1733,7 +1734,7 @@ enum EpubFormat {
 /// for EPUB3 it selects the dictionary layer. On failure the process exits 1
 /// after emitting a single-line error.
 fn do_epub(
-    input: &PathBuf,
+    input: &Path,
     output: Option<&PathBuf>,
     format: EpubFormat,
     title: Option<String>,
@@ -1754,7 +1755,7 @@ fn do_epub(
             }
         }
     } else {
-        (None, input.clone())
+        (None, input.to_path_buf())
     };
 
     let suffix = match format {
@@ -1811,7 +1812,7 @@ fn do_epub(
 }
 
 /// Parse a MOBI/AZW3 file and print a structural dump to stdout.
-fn do_dump(path: &PathBuf) {
+fn do_dump(path: &Path) {
     match mobi_dump::dump_mobi(path) {
         Ok(s) => {
             print!("{}", s);
@@ -1827,7 +1828,7 @@ fn do_dump(path: &PathBuf) {
 ///
 /// Exits 0 if there are no errors (and no warnings when `strict` is set),
 /// 1 otherwise.
-fn do_validate(opf_path: &PathBuf, strict: bool) {
+fn do_validate(opf_path: &Path, strict: bool) {
     println!(
         "Validating {} against Kindle Publishing Guidelines v{}",
         opf_path.display(),
@@ -1874,10 +1875,10 @@ fn do_validate(opf_path: &PathBuf, strict: bool) {
 ///   * 0 on success, even if fixes were applied. Callers wanting to know
 ///     whether the file was already clean should check the report or JSON.
 ///   * 1 on any `RepairError` (including DRM rejection and non-EPUB input).
-fn do_repair(input: &PathBuf, output: Option<&PathBuf>, report_json: bool, dry_run: bool) {
+fn do_repair(input: &Path, output: Option<&PathBuf>, report_json: bool, dry_run: bool) {
     let default_output;
     let output_path: PathBuf = if dry_run {
-        input.clone()
+        input.to_path_buf()
     } else if let Some(p) = output {
         p.clone()
     } else {
@@ -1953,7 +1954,7 @@ fn do_repair(input: &PathBuf, output: Option<&PathBuf>, report_json: bool, dry_r
 ///     or a cover update on a file with no existing cover record).
 #[allow(clippy::too_many_arguments)]
 fn do_rewrite_metadata(
-    input: &PathBuf,
+    input: &Path,
     output: Option<&PathBuf>,
     report_json: bool,
     dry_run: bool,
@@ -1991,7 +1992,7 @@ fn do_rewrite_metadata(
 
     let default_output;
     let output_path: PathBuf = if dry_run {
-        input.clone()
+        input.to_path_buf()
     } else if let Some(p) = output {
         p.clone()
     } else {

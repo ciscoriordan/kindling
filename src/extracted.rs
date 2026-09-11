@@ -269,8 +269,8 @@ fn find_imports(text: &str) -> Vec<(usize, String)> {
         let after = abs + "@import".len();
         let rest_raw = &text[after..];
         let rest = rest_raw.trim_start();
-        let target = if rest.starts_with("url(") {
-            parse_url_body(&rest[4..])
+        let target = if let Some(body) = rest.strip_prefix("url(") {
+            parse_url_body(body)
         } else if rest.starts_with('"') || rest.starts_with('\'') {
             let quote = rest.chars().next().unwrap();
             let after_q = &rest[1..];
@@ -526,7 +526,7 @@ fn find_forbidden_positions(text: &str) -> Vec<(usize, String)> {
         }
         let value_area = &rest_trim[1..];
         let value = value_area
-            .split(|c: char| c == ';' || c == '}' || c == '!')
+            .split([';', '}', '!'])
             .next()
             .unwrap_or("")
             .trim();

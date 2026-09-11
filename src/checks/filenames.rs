@@ -27,7 +27,7 @@ impl Check for FilenameChecks {
         let opf = &epub.opf;
 
         // Per-item character checks for R13.1 through R13.4.
-        for (_id, (href, _media_type)) in &opf.manifest {
+        for (href, _media_type) in opf.manifest.values() {
             let file = Some(PathBuf::from(href));
 
             if let Some(bad) = ocf_illegal_char(href) {
@@ -74,7 +74,7 @@ impl Check for FilenameChecks {
         // Pairwise R13.5: case-fold manifest hrefs and report any collision.
         let mut seen: HashMap<String, String> = HashMap::new();
         let mut reported_pairs: Vec<(String, String)> = Vec::new();
-        for (_id, (href, _media_type)) in &opf.manifest {
+        for (href, _media_type) in opf.manifest.values() {
             let folded = href.to_lowercase();
             if let Some(prev) = seen.get(&folded) {
                 if prev == href {

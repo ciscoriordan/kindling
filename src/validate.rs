@@ -146,7 +146,7 @@ pub fn validate(epub: &ExtractedEpub) -> ValidationReport {
     let profile = epub.profile;
     report.findings.retain(|f| {
         f.rule_id
-            .map_or(true, |id| kdp_rules::get(id).applies_to(profile))
+            .is_none_or(|id| kdp_rules::get(id).applies_to(profile))
     });
     report
 }

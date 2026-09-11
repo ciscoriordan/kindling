@@ -331,10 +331,8 @@ impl OPFData {
                             "DictionaryOutLanguage" => self.dict_out_language = text,
                             "DefaultLookupIndex" => self.default_lookup_index = text,
                             "EmbeddedCover" => self.embedded_cover_href = Some(text),
-                            "rendition:layout" => {
-                                if text == "pre-paginated" {
-                                    self.is_fixed_layout = true;
-                                }
+                            "rendition:layout" if text == "pre-paginated" => {
+                                self.is_fixed_layout = true;
                             }
                             _ => {}
                         }

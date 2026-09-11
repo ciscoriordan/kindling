@@ -27,7 +27,7 @@ impl Check for ParseEncodingChecks {
     fn run(&self, epub: &ExtractedEpub, report: &mut ValidationReport) {
         let opf = &epub.opf;
 
-        for (_id, (href, media_type)) in &opf.manifest {
+        for (href, media_type) in opf.manifest.values() {
             let full = opf.base_dir.join(href);
             let bytes = match fs::read(&full) {
                 Ok(b) => b,
@@ -532,7 +532,7 @@ mod tests {
     fn r6_11_utf8_bom_clean() {
         let bytes = [0xEF, 0xBB, 0xBF, b'<'];
         assert!(!starts_with_utf16_bom(&bytes));
-        assert_eq!(strip_utf8_bom(&bytes), &[b'<']);
+        assert_eq!(strip_utf8_bom(&bytes), b"<");
     }
 
     #[test]

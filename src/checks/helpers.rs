@@ -116,9 +116,7 @@ pub fn has_negative_css(line: &str) -> bool {
                 if bytes.len() >= 2 && bytes[0] == b'-' && bytes[1].is_ascii_digit() {
                     return true;
                 }
-                let end = value
-                    .find(|c: char| c == ';' || c == '"' || c == '}')
-                    .unwrap_or(value.len());
+                let end = value.find([';', '"', '}']).unwrap_or(value.len());
                 let vals = &value[..end];
                 let chars: Vec<char> = vals.chars().collect();
                 for i in 0..chars.len().saturating_sub(1) {

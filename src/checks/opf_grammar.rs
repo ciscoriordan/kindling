@@ -596,19 +596,16 @@ fn detect_content_features(bytes: &[u8]) -> ContentFeatures {
         .map(|s| s.to_string())
         .unwrap_or_else(|_| String::from_utf8_lossy(bytes).to_string());
 
-    // Ignore xmlns declarations when looking for element usage. We only care
-    // about real element start tags of the form `<math `, `<svg `, etc.
-    let mut features = ContentFeatures::default();
-
-    features.has_mathml = has_element_start(&text, "math");
-    features.has_svg = has_element_start(&text, "svg");
-    features.has_scripted = has_element_start(&text, "script");
-
-    // Remote resources: any attribute value that starts with http:// or
-    // https://. Substring search is a sound lower bound.
-    features.has_remote_resources = has_remote_attr(&text);
-
-    features
+    ContentFeatures {
+        // Ignore xmlns declarations when looking for element usage. We only
+        // care about real element start tags of the form `<math `, `<svg `.
+        has_mathml: has_element_start(&text, "math"),
+        has_svg: has_element_start(&text, "svg"),
+        has_scripted: has_element_start(&text, "script"),
+        // Remote resources: any attribute value that starts with http:// or
+        // https://. Substring search is a sound lower bound.
+        has_remote_resources: has_remote_attr(&text),
+    }
 }
 
 /// True if `content` contains `<name ` or `<name>` where `name` is used as an
