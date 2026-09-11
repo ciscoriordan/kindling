@@ -2050,7 +2050,10 @@ pub(crate) fn build_thumbnail_record(cover_bytes: &[u8]) -> Option<Vec<u8>> {
     const THUMB_BOX_H: u32 = 470;
     const THUMB_QUALITY: u8 = 80;
 
-    let img = image::load_from_memory(cover_bytes).ok()?;
+    // A transparent cover would otherwise reach the JPEG encoder with its
+    // transparency baked to black: a black library tile for a cover whose
+    // page margin comes out white (issue #34).
+    let img = crate::comic::flatten_alpha_onto_white(image::load_from_memory(cover_bytes).ok()?);
     let thumb = img.thumbnail(THUMB_BOX_W, THUMB_BOX_H);
 
     let mut buf: Vec<u8> = Vec::with_capacity(16 * 1024);

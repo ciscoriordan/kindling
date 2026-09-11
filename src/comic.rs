@@ -1050,21 +1050,35 @@ fn extract_cbz(cbz_path: &Path) -> Result<(Vec<PathBuf>, PathBuf), Box<dyn std::
 /// Composite any alpha channel onto a white background.
 ///
 /// Returns the image untouched when it has no alpha to begin with, so the
-/// common case costs nothing.
-fn flatten_alpha_onto_white(img: DynamicImage) -> DynamicImage {
-    match img {
-        DynamicImage::ImageRgba8(_) | DynamicImage::ImageLumaA8(_) => {
-            let rgba = img.to_rgba8();
-            let (w, h) = rgba.dimensions();
-            let mut rgb = image::RgbImage::new(w, h);
-            for (x, y, px) in rgba.enumerate_pixels() {
-                let a = px[3] as u32;
-                let blend = |c: u8| (((c as u32 * a) + 255 * (255 - a)) / 255) as u8;
-                rgb.put_pixel(x, y, image::Rgb([blend(px[0]), blend(px[1]), blend(px[2])]));
-            }
-            DynamicImage::ImageRgb8(rgb)
-        }
-        other => other,
+/// common case costs nothing. Every format with an alpha channel counts, the
+/// 16-bit and float ones included: matching only the two 8-bit variants let
+/// a 16-bit RGBA page through with its transparency baked to black
+/// (issue #34).
+pub(crate) fn flatten_alpha_onto_white(img: DynamicImage) -> DynamicImage {
+    if !img.color().has_alpha() {
+        return img;
+    }
+    let rgba = img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    let mut rgb = image::RgbImage::new(w, h);
+    for (x, y, px) in rgba.enumerate_pixels() {
+        let a = px[3] as u32;
+        let blend = |c: u8| (((c as u32 * a) + 255 * (255 - a)) / 255) as u8;
+        rgb.put_pixel(x, y, image::Rgb([blend(px[0]), blend(px[1]), blend(px[2])]));
+    }
+    DynamicImage::ImageRgb8(rgb)
+}
+
+/// An image's pixels as RGB, with any transparency composited onto white.
+///
+/// `to_rgb8` on its own keeps a transparent pixel's stored color, which is
+/// usually black, so every path that reads pixels out of a page it did not
+/// flatten itself goes through here instead (issue #34).
+fn flat_rgb(img: &DynamicImage) -> RgbImage {
+    if img.color().has_alpha() {
+        flatten_alpha_onto_white(img.clone()).to_rgb8()
+    } else {
+        img.to_rgb8()
     }
 }
 
@@ -1911,7 +1925,7 @@ pub fn webtoon_merge(images: &[DynamicImage]) -> DynamicImage {
     let mut y_offset = 0u32;
 
     for img in images {
-        let rgb = img.to_rgb8();
+        let rgb = flat_rgb(img);
         let (w, h) = (rgb.width(), rgb.height());
         let x_offset = (max_width - w) / 2; // center narrower images
 
@@ -1931,7 +1945,7 @@ pub fn webtoon_merge(images: &[DynamicImage]) -> DynamicImage {
 /// Samples the corners and edges to determine if the background is
 /// predominantly white or black (or something else).
 fn detect_background_color(img: &DynamicImage) -> Rgb<u8> {
-    let rgb = img.to_rgb8();
+    let rgb = flat_rgb(img);
     let (w, h) = (rgb.width(), rgb.height());
     if w == 0 || h == 0 {
         return Rgb([255, 255, 255]);
@@ -2662,6 +2676,9 @@ fn write_fixed_layout_epub_v2(
         // Re-encode cover image as JPEG to ensure Kindle compatibility
         let cover_img = image::load_from_memory(&cover_data)
             .map_err(|e| format!("Could not decode cover image {}: {}", path.display(), e))?;
+        // A transparent cover would reach the JPEG encoder with its
+        // transparency baked to black (issue #34).
+        let cover_img = flatten_alpha_onto_white(cover_img);
         let cover_img = if options.cover_fill {
             cover_fill_crop(&cover_img, profile.width, profile.height)
         } else {
@@ -3286,6 +3303,47 @@ mod alpha_flatten_tests {
     /// compositing, so a transparent pixel kept its stored RGB (black). The
     /// writer already flattens onto white, so the same PNG got two different
     /// answers depending on its path (issue #34).
+    /// The guard used to match only the two 8-bit alpha formats, so a
+    /// 16-bit RGBA page skipped the flatten entirely.
+    #[test]
+    fn sixteen_bit_alpha_flattens_too() {
+        let rgba = image::ImageBuffer::from_pixel(4, 4, image::Rgba([0u16, 0, 0, 0]));
+        let out = flatten_alpha_onto_white(DynamicImage::ImageRgba16(rgba)).to_rgb8();
+        assert_eq!(out.get_pixel(0, 0), &image::Rgb([255, 255, 255]));
+    }
+
+    /// Webtoon pages are stacked by their own merge, which never went through
+    /// the page pipeline's flatten, and neither did its background guess.
+    #[test]
+    fn webtoon_merge_puts_transparency_on_white() {
+        let clear = image::RgbaImage::from_pixel(8, 20, image::Rgba([0, 0, 0, 0]));
+        let merged = webtoon_merge(&[
+            DynamicImage::ImageRgba8(clear.clone()),
+            DynamicImage::ImageRgba8(clear),
+        ])
+        .to_rgb8();
+        assert_eq!(merged.get_pixel(0, 0), &image::Rgb([255, 255, 255]));
+        assert_eq!(merged.get_pixel(7, 39), &image::Rgb([255, 255, 255]));
+    }
+
+    /// The library tile came out black for a transparent cover whose page
+    /// margin came out white, and `kindling thumbnail` installed it as is.
+    #[test]
+    fn a_transparent_cover_makes_a_white_tile() {
+        let mut png = Vec::new();
+        DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            60,
+            80,
+            image::Rgba([0, 0, 0, 0]),
+        ))
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+        let tile = crate::mobi::build_thumbnail_record(&png).expect("tile");
+        let px = image::load_from_memory(&tile).unwrap().to_rgb8();
+        let c = px.get_pixel(0, 0);
+        assert!(c[0] > 245 && c[1] > 245 && c[2] > 245, "tile corner {c:?}");
+    }
+
     #[test]
     fn transparent_pixels_flatten_onto_white() {
         let mut rgba = image::RgbaImage::new(2, 1);
