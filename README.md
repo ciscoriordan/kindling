@@ -432,6 +432,8 @@ This is a build-side regression harness, not a hardware oracle: its fidelity is 
 
 The MOBI header names the dictionary index at offset 0x18, but that pointer is verified before it is used and the index is otherwise found by its own signature, because a record number that was not adjusted for records inserted ahead of it lands on something else and every query then misses with nothing to say why (issue #49). A miss now says which kind of miss it is: an index that holds no matching headword, named along with its record and headword count, or a file that has no dictionary index at all. It also prints the first few headwords it decoded and the ones the query would have sorted among, because on someone else's dictionary the count alone is a dead end: headwords that come back as mojibake mean the label bytes were read wrong and no query could ever match, while headwords that read as ordinary words put the fault in the search instead. Notes about the file (a huffdic compression type, a recovered index pointer, the headwords just described) go to stderr so stdout stays the single result line.
 
+A production kindlegen dictionary carries both an SPL fold blob and a large ORDT table, and its labels are ORDT symbol sequences. Lookup used to take the fold blob as a sign that the labels were plain UTF-16, which is true only of kindling's own Greek dictionaries, and so read every label in a production dictionary as its raw symbol numbers: a 174685-headword German one resolved no query at all. It also now decodes kindlegen's expansion markers, the two-symbol form it stores ß, Œ, œ, Æ and æ in, which had left every headword containing one unreachable, 3433 of them in that dictionary (issue #49).
+
 ## Performance and Comparisons
 
 ### vs kindlegen

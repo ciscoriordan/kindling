@@ -40,7 +40,7 @@
 //! header claimed, so a stale pointer is visible rather than silent.
 
 use crate::huffcdic::COMPRESSION_HUFFDIC;
-use crate::ordt::folded_sort_key;
+use crate::ordt::{expansion_char, folded_sort_key};
 
 /// A resolved lookup: the stored label that matched and the text position its
 /// entry points at (the start of the headword's record text).
@@ -185,17 +185,39 @@ fn decode_ordt_label(bytes: &[u8], ordt2: &[u16], oentries: u32, two_byte: bool)
         bytes.iter().map(|&b| b as u32).collect()
     };
     let mut out = String::with_capacity(elems.len());
-    for e in elems {
-        let cp = if e < oentries {
+    let mut i = 0;
+    while i < elems.len() {
+        let e = elems[i];
+        let in_table = e < oentries;
+        let cp = if in_table {
             *ordt2.get(e as usize).unwrap_or(&0) as u32
         } else {
             e
         };
+        // A marker is one letter written as two symbols; the second is only
+        // there for collation and is not part of the headword.
+        if two_byte && in_table {
+            if let Some(c) = expansion_char(cp) {
+                out.push(c);
+                i += 2;
+                continue;
+            }
+        }
         if let Some(c) = char::from_u32(cp) {
             out.push(c);
         }
+        i += 1;
     }
     out
+}
+
+/// Whether an orth primary's labels are ORDT symbol sequences: it names an
+/// ORDT2 table and the table is really there. An SPL fold blob beside it
+/// changes nothing about how the labels are stored.
+fn labels_are_ordt(primary: &[u8], oentries: u32, ordt2_off: usize) -> bool {
+    oentries > 0
+        && ordt2_off > 0
+        && primary.get(ordt2_off..ordt2_off + 4) == Some(b"ORDT".as_slice())
 }
 
 /// Read one inverted VWI (high bit set marks the last byte) starting at `pos`.
@@ -328,10 +350,17 @@ fn parse_orth_index(data: &[u8]) -> Option<OrthIndex> {
     let ordt_type = u32_be(primary, 164).unwrap_or(0); // 0 = two-byte, 1 = one-byte
     let ordt2_off = u32_be(primary, 176).unwrap_or(0) as usize;
 
-    // ORDT2 is meaningful only for the generated/exact path (spl_count 0). The
-    // Greek fold blob also sets oentries (a 7-symbol seed table) but keeps
-    // UTF-16BE labels, so it must not be read as ORDT-encoded.
-    let ordt_labels = spl_count == 0 && oentries > 0 && ordt2_off > 0;
+    // Labels are ORDT symbol sequences whenever the primary carries a real
+    // ORDT2 table, whether or not it also carries an SPL fold blob.
+    //
+    // This used to require the fold blob to be absent, to keep kindling's own
+    // Greek dictionaries (fold blob plus a 7-entry seed table, UTF-16BE labels)
+    // from being read as ORDT. That protected nothing: every Greek code point
+    // is far above 7, so it is a literal and decodes to itself either way. And
+    // it broke every production kindlegen dictionary, which carries both. A
+    // 174685-headword German one resolved no query at all, because its labels
+    // were read as UTF-16 and came out as the raw symbol numbers (issue #49).
+    let ordt_labels = labels_are_ordt(primary, oentries, ordt2_off);
     let two_byte = ordt_type == 0;
     // The ORDT2 table is written as its 4-byte "ORDT" magic followed by
     // `oentries` big-endian u16 values (see OrdtTables::serialize); the header
@@ -584,5 +613,58 @@ fn resolve(index: &OrthIndex, query: &str) -> Option<LookupResult> {
             }
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn be16(units: &[u16]) -> Vec<u8> {
+        units.iter().flat_map(|u| u.to_be_bytes()).collect()
+    }
+
+    /// The German production dictionary this was found on carries an SPL
+    /// fold blob and a 617-entry ORDT2 table, and its labels are symbol
+    /// sequences. Refusing ORDT whenever the fold blob was present made every
+    /// label decode to raw symbol numbers and every lookup miss.
+    #[test]
+    fn a_fold_blob_does_not_stop_labels_being_ordt() {
+        let mut primary = vec![0u8; 400];
+        primary[56..60].copy_from_slice(&47u32.to_be_bytes()); // SPL count
+        primary[300..304].copy_from_slice(b"ORDT");
+        assert!(labels_are_ordt(&primary, 617, 300));
+        assert!(
+            !labels_are_ordt(&primary, 617, 200),
+            "no table at that offset"
+        );
+        assert!(!labels_are_ordt(&primary, 0, 300), "no entries");
+    }
+
+    /// kindlegen writes ß as a marker plus a collation tail. The tail is not
+    /// text: "Straße" must come back as six letters, not "Stra\u{5}sse".
+    #[test]
+    fn expansion_markers_decode_to_their_letter() {
+        // symbol:  0    1    2    3    4    5       6    7
+        let ordt2 = [0u16, 0x53, 0x74, 0x72, 0x61, 0x0005, 0x73, 0x65];
+        let label = be16(&[1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(decode_ordt_label(&label, &ordt2, 8, true), "Straße");
+
+        let ordt2 = [0u16, 0x42, 0x0002, 0x65, 0x75, 0x66];
+        let label = be16(&[1, 2, 3, 4, 5]);
+        assert_eq!(decode_ordt_label(&label, &ordt2, 6, true), "Bœuf");
+    }
+
+    /// Why the old guard protected nothing. kindling's Greek dictionaries
+    /// carry a 7-entry seed table beside their fold blob, and every Greek
+    /// code point is far above 7, so each one is a literal and reads back as
+    /// itself whether or not the labels are treated as ORDT.
+    #[test]
+    fn greek_labels_read_the_same_through_a_seed_table() {
+        let greek: Vec<u16> = "άνεμος".encode_utf16().collect();
+        let seed = [0u16, 0x25, 0x5F, 0x20, 0x21, 0x24, 0x26];
+        let bytes = be16(&greek);
+        assert_eq!(decode_ordt_label(&bytes, &seed, 7, true), "άνεμος");
+        assert_eq!(decode_utf16be(&bytes), "άνεμος");
     }
 }

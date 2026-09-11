@@ -286,6 +286,31 @@ pub(crate) fn folded_sort_key(label: &str) -> Vec<char> {
     label.chars().map(fold_base).collect()
 }
 
+/// The character an ORDT expansion marker stands for, in kindlegen's two-byte
+/// production tables.
+///
+/// Five characters collate as two letters, and kindlegen stores each as a
+/// symbol whose ORDT2 value is a small control number, followed by one more
+/// symbol that exists only to give the pair its second collation weight. So
+/// "Straße" is `S t r a [5] s e`: the marker is the ß and the `s` after it is
+/// not text. Read off a production German dictionary, where the values carry
+/// the cp1252 order of the same five letters: 1 Œ (Œuvre), 2 œ (Bœuf), 3 Æ
+/// (Ærø), 5 ß (Aasfraß), and 4, present in the table and consistent with the
+/// pattern though no headword there uses it, æ.
+///
+/// Two-byte tables only. kindling's own one-byte labels use 1, 2 and 4 as
+/// escapes for UTF-8 bytes, which is a different thing entirely.
+pub(crate) fn expansion_char(value: u32) -> Option<char> {
+    match value {
+        1 => Some('Œ'),
+        2 => Some('œ'),
+        3 => Some('Æ'),
+        4 => Some('æ'),
+        5 => Some('ß'),
+        _ => None,
+    }
+}
+
 impl OrdtTables {
     /// Build the per-character collation table for a dictionary whose
     /// lookup labels are `labels`. The hiragana and katakana blocks are

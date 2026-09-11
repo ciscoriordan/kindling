@@ -1237,9 +1237,24 @@ fn decode_label_ordt(bytes: &[u8], ordt: &OrdtInfo) -> Option<String> {
         }
     }
 
-    // Attempt 2: values as UTF-16 code units.
+    // Attempt 2: values as UTF-16 code units. On a two-byte table an
+    // expansion marker is one letter written as two symbols, the second only
+    // there for collation (see `ordt::expansion_char`).
     if values.iter().all(|&v| v <= 0xFFFF) {
-        let units: Vec<u16> = values.iter().map(|&v| v as u16).collect();
+        let mut units: Vec<u16> = Vec::with_capacity(values.len());
+        let mut i = 0;
+        while i < values.len() {
+            match crate::ordt::expansion_char(values[i]).filter(|_| ordt.sym_width == 2) {
+                Some(c) => {
+                    units.push(c as u16);
+                    i += 2;
+                }
+                None => {
+                    units.push(values[i] as u16);
+                    i += 1;
+                }
+            }
+        }
         if let Ok(s) = String::from_utf16(&units) {
             if !s.is_empty() && s.chars().all(|c| !c.is_control() || c == ' ') {
                 return Some(s);
