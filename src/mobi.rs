@@ -408,7 +408,7 @@ fn build_dictionary_mobi(
     // PalmDOC can only reach back 2047 bytes for a match, while a huffdic
     // phrase dictionary is shared by the whole book, which is why every
     // Amazon-published dictionary uses it. Which one wins depends on the
-    // book: entries that are near-duplicates of their neighbours suit
+    // book: entries that are near-duplicates of their neighbors suit
     // PalmDOC's window very well, and varied ones do not. So both are built
     // and the smaller kept, and the encoder itself declines whenever it
     // cannot round trip its own output.
@@ -2952,9 +2952,9 @@ fn trim_leading_separators(text: &str) -> String {
 /// Two things are translated, and only two (issue #58):
 ///
 /// * `text-align:center` on a wrapper becomes the legacy `align="center"`
-///   attribute, which those readers do honour. This is what kindlegen writes
+///   attribute, which those readers do honor. This is what kindlegen writes
 ///   for the same intent. Every `--legacy-mobi` comic page is wrapped in one
-///   of these, so without it no page is centred on the old hardware.
+///   of these, so without it no page is centered on the old hardware.
 /// * `position:absolute` is dropped. It is KF8 markup with nothing to
 ///   position against here; the comic builder's Panel View block is a
 ///   `position:absolute` div per panel, and kindlegen reduces the same block
@@ -3125,7 +3125,7 @@ fn entry_needle(stripped: &str) -> Box<[u8]> {
 /// removal (issue #6) dropped the only marker hint, so lists rendered with no
 /// numbers at all (the symptom looked like `list-style-type: none`). kindlegen
 /// drops the list CSS too, but writes the item number onto each `<li>` as
-/// `value="N"`, which the popup *does* honour. We reproduce that exactly:
+/// `value="N"`, which the popup *does* honor. We reproduce that exactly:
 /// each `<ol>` keeps its own 1-based counter, every nested `<ol>` restarts at
 /// 1, and `<ul>` items are left alone (bullets need no number). `style=` /
 /// `class=` are still removed from the list tags, keeping the issue #6 fix
@@ -3444,7 +3444,7 @@ fn strip_idx_markup(html: &str) -> String {
 
     if result.contains("<idx:orth") {
         // Remove idx:orth tags but keep inner content (v0.5.0/lemma v1.0.0
-        // behaviour; h5 wrapping was breaking on-device popup routing).
+        // behavior; h5 wrapping was breaking on-device popup routing).
         result = std::borrow::Cow::Owned(orth_self.replace_all(&result, "").to_string());
         result = std::borrow::Cow::Owned(orth_open.replace_all(&result, "").to_string());
     }
@@ -3495,9 +3495,9 @@ fn strip_idx_markup(html: &str) -> String {
     // Strip class="..." and style="..." attributes from tag bodies.
     //
     // Kindle's library search preview and popup dictionary renderers do not
-    // honour CSS; when an entry's <table>/<td>/<img> carries style or class
+    // honor CSS; when an entry's <table>/<td>/<img> carries style or class
     // attributes, the preview engine bails mid-entry and shows raw tag text
-    // like `li value="1">` (reader-dict, issue #6). kindlegen normalises these
+    // like `li value="1">` (reader-dict, issue #6). kindlegen normalizes these
     // away; we do the same so the preview sees plain structural markup only.
     if result.contains("class") {
         result = std::borrow::Cow::Owned(class_attr.replace_all(&result, "").to_string());
@@ -3513,7 +3513,7 @@ fn strip_idx_markup(html: &str) -> String {
     // definition in `<html>...</html>`; PyGlossary drops the opener but keeps
     // the closer, so every entry in a PyGlossary-produced MOBI carries an
     // orphan `</html>` that prematurely closes the outer document in the
-    // merged rawml (reader-dict, issue #8). kindlegen normalises these away.
+    // merged rawml (reader-dict, issue #8). kindlegen normalizes these away.
     if result.contains("<!DOCTYPE") || result.contains("<!doctype") {
         result = std::borrow::Cow::Owned(doctype_re.replace_all(&result, "").to_string());
     }
@@ -4104,11 +4104,11 @@ mod record_split_tests {
         );
         let out = translate_css_for_legacy_readers(page);
 
-        // The wrapper centres through an attribute those readers honour,
+        // The wrapper centers through an attribute those readers honor,
         // which is what kindlegen writes for the same intent.
         assert!(
             out.contains(r#"<div align="center">"#),
-            "the image wrapper should centre through markup:\n{out}"
+            "the image wrapper should center through markup:\n{out}"
         );
         assert!(
             !out.contains("text-align"),
@@ -4794,7 +4794,7 @@ fn find_entry_anchor(text_bytes: &[u8], needle: &[u8], from: usize) -> Option<us
 ///
 /// Otherwise this falls back to searching for `<b>headword</b>` at entry
 /// boundaries, which only ever worked for entries whose text opens with their
-/// own headword in a wrapper kindling recognises. Anything else, a headword
+/// own headword in a wrapper kindling recognizes. Anything else, a headword
 /// inside `<p>`/`<h1>`/`<span>`, an entry leading with an image, a body that
 /// never repeats its own title, was stored as `(0, 0)` and popped up blank,
 /// and each miss cost two scans of the whole blob, which is what made large
@@ -5085,7 +5085,7 @@ fn is_entry_boundary(text_bytes: &[u8], bold_pos: usize) -> bool {
 /// Flattens headwords and inflected forms into a single sorted list
 /// where every form is a direct orth INDX entry pointing at its
 /// headword's text position. Matches lemma v1.0.0 / kindling v0.5.0
-/// behaviour, the last demonstrably on-device-working state.
+/// behavior, the last demonstrably on-device-working state.
 ///
 /// Whether a dictionary's headwords are predominantly Latin-script. Used to
 /// pick the default accent collation: Latin dictionaries need folded sorting

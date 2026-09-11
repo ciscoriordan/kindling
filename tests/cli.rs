@@ -578,7 +578,7 @@ mod validate {
         // Regression for issue #6: Kindle's library-search dictionary preview
         // mangles entries that carry class/style attributes, rendering raw
         // tag text (e.g. `li value="1">`) and truncating everything past the
-        // first styled table. kindlegen normalises these attributes away; so
+        // first styled table. kindlegen normalizes these attributes away; so
         // do we.
         let (tmp, opf) = stage_fixture("dict_styled_entry", "content.opf");
         let out = run_build(&["--no-validate", opf.to_str().unwrap()]);
@@ -613,7 +613,7 @@ mod validate {
         // so the Kindle popup rendered the lists with no numbers at all.
         //
         // A decimal level is numbered with <li value="N">, which the popup
-        // honours and kindlegen emits. A level that declared a lettered or
+        // honors and kindlegen emits. A level that declared a lettered or
         // roman style gets its marker written into the item text instead, and
         // no value: the popup draws no marker for an unnumbered ordered item,
         // so the literal one cannot collide with a drawn one.

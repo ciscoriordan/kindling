@@ -381,7 +381,7 @@ pub fn build_book_exth(
     // first_image_record - the same number EXTH 202 carries. kindlegen writes
     // 129 == 202 in every parity reference and calibre calls the record
     // `kf8_thumbnail_uri`. Without it, the library thumbnail pipeline and the
-    // open-book flow both fall back to a grey placeholder and, for
+    // open-book flow both fall back to a gray placeholder and, for
     // fixed-layout comics, the reader may refuse to open the file at all.
     if let Some(uri) = kf8_thumb_uri {
         if !uri.is_empty() {
@@ -395,7 +395,7 @@ pub fn build_book_exth(
     // firmware reads 201 for the cover display and 202 for the grid tile;
     // pointing both at the same record (as kindling <=0.7.7 did) makes the
     // grid tile pipeline try to render a 1072x1448 comic page as a 330x470
-    // library tile and silently fall back to the grey placeholder.
+    // library tile and silently fall back to the gray placeholder.
     if let Some(offset) = cover_offset {
         records.push(exth_record(201, &offset.to_be_bytes()));
         let thumb = thumb_offset.unwrap_or(offset);

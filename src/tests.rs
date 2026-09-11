@@ -7628,7 +7628,7 @@ p { margin: 0.3em 0; }
         let (_, _, offsets) = parse_palmdb(&data);
         let rec0 = get_record(&data, &offsets, 0);
 
-        // Inflections are flattened into the orth INDX (lemma v1.0.0 behaviour)
+        // Inflections are flattened into the orth INDX (lemma v1.0.0 behavior)
         // so there is no separate infl INDX. Offsets 28..60 should all be 0xFFFFFFFF.
         for off in (28..=60).step_by(4) {
             let val = read_u32_be(rec0, 16 + off);

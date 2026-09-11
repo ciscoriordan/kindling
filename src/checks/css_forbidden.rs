@@ -299,7 +299,7 @@ mod tests {
     // ---- R6.13 parse error ----
     //
     // R6.13 detection lives in `CssSummary::parse_error`, which is built by
-    // `ExtractedEpub::css_summary`. These tests pin lightningcss's behaviour
+    // `ExtractedEpub::css_summary`. These tests pin lightningcss's behavior
     // for the inputs we rely on so a future bump cannot silently turn a
     // hard error into a recoverable one.
 

@@ -515,13 +515,13 @@ fn check_cover_image(
         // EXTH 202 (thumbnail offset) must be present AND point at a
         // different record than EXTH 201. Pointing both at the same full
         // 1072x1448 cover record (as kindling <=0.7.7 did) is why the
-        // Vader Down build showed a grey placeholder: the Kindle thumbnail
+        // Vader Down build showed a gray placeholder: the Kindle thumbnail
         // pipeline refuses to render a full comic page as a 330x470
         // library tile and silently falls back.
         if exth202.is_none() {
             report.fail(
                 "comic MOBI is missing EXTH 202 (thumbnail_offset); the library \
-                 grid tile will fall back to the grey placeholder"
+                 grid tile will fall back to the gray placeholder"
                     .to_string(),
             );
         } else {

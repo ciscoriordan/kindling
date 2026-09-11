@@ -1479,7 +1479,7 @@ pub fn crop_page_numbers(img: &DynamicImage) -> DynamicImage {
     let gray = img.to_luma8();
     let (w, h) = gray.dimensions();
 
-    // Images too small to sensibly analyse - return unchanged.
+    // Images too small to sensibly analyze - return unchanged.
     if w < 20 || h < 40 {
         return img.clone();
     }
@@ -1570,7 +1570,7 @@ fn detect_strip_background(gray: &GrayImage, w: u32, h: u32) -> u8 {
     (sum / samples.len() as u32) as u8
 }
 
-/// Analyse a horizontal strip and return the number of rows to crop (0 if the
+/// Analyze a horizontal strip and return the number of rows to crop (0 if the
 /// strip does not look like an isolated page number).
 ///
 /// `y_start..y_end` defines the strip. The function counts "ink" pixels (those
@@ -3292,14 +3292,14 @@ mod alpha_flatten_tests {
         );
     }
 
-    /// Half-transparent black over white lands mid-grey rather than black.
+    /// Half-transparent black over white lands mid-gray rather than black.
     #[test]
     fn partial_alpha_blends_rather_than_snapping() {
         let mut rgba = image::RgbaImage::new(1, 1);
         rgba.put_pixel(0, 0, image::Rgba([0, 0, 0, 128]));
         let out = flatten_alpha_onto_white(DynamicImage::ImageRgba8(rgba)).to_rgb8();
         let v = out.get_pixel(0, 0).0[0];
-        assert!((120..=135).contains(&v), "expected a mid grey, got {v}");
+        assert!((120..=135).contains(&v), "expected a mid gray, got {v}");
     }
 
     /// An image with no alpha is returned as-is, so the common path costs

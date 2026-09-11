@@ -419,7 +419,7 @@ fn repair_epub_inner(
             .last_modified_time(fixed_timestamp());
 
         // Write mimetype first if present. The text-file classifier picks
-        // up `mimetype` only if it has a recognised extension, which it
+        // up `mimetype` only if it has a recognized extension, which it
         // does not, so it lives in `binary_files`.
         let mimetype_key = order.iter().find(|n| n.as_str() == "mimetype").cloned();
         if let Some(ref k) = mimetype_key {
@@ -554,7 +554,7 @@ fn has_xml_declaration(s: &str) -> bool {
 /// For every XHTML/HTML file whose `<body>` tag has an `id`, any href
 /// anywhere in the EPUB of the form `basename(file)#body-id` is rewritten to
 /// just `basename(file)`. This matches the reference's `fixBodyIdLink`
-/// behaviour, including doing a literal substring replacement.
+/// behavior, including doing a literal substring replacement.
 fn fix_body_id_link(text_files: &mut BTreeMap<String, String>, fixes: &mut Vec<Fix>) {
     // Step 1: collect (broken_href, repaired_href) pairs from every HTML
     // file with a body id.
@@ -1101,7 +1101,7 @@ mod tests {
     }
 
     #[test]
-    fn fix_encoding_uppercase_declaration_is_recognised() {
+    fn fix_encoding_uppercase_declaration_is_recognized() {
         // Declarations with upper-case XML are also valid and must not be
         // re-prepended.
         let ch1 = br#"<?XML version="1.0" encoding="UTF-8"?>
@@ -1614,7 +1614,7 @@ mod tests {
     }
 
     #[test]
-    fn has_xml_declaration_recognises_single_quotes() {
+    fn has_xml_declaration_recognizes_single_quotes() {
         assert!(has_xml_declaration(
             "<?xml version='1.0' encoding='utf-8'?>"
         ));
