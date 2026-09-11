@@ -1827,12 +1827,20 @@ fn webtoon_preprocess(
         vec![images]
     };
 
+    // The clock alone does not make this directory private. Two webtoon
+    // builds that start in the same millisecond, in one process or two, used
+    // to share it and write their page PNGs over each other, which surfaced
+    // as a CRC error or an unexpected end of file in whichever build read
+    // its pages second. The process id and a counter make it this build's.
+    static WEBTOON_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let temp_dir = std::env::temp_dir().join(format!(
-        "kindling_webtoon_{}",
+        "kindling_webtoon_{}_{}_{}",
+        std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
-            .as_millis()
+            .as_nanos(),
+        WEBTOON_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     fs::create_dir_all(&temp_dir)?;
 
