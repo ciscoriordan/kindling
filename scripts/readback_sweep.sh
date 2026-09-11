@@ -15,8 +15,16 @@
 # asks whether another implementation can read what we wrote, which is the one
 # question our own tests cannot ask.
 #
-# Requires calibre. On macOS the binary is inside the app bundle, which is
-# where this looks by default; override with EBOOK_CONVERT.
+# Two formats, two readers. calibre reads the MOBI/AZW3 side; sdcv reads the
+# StarDict side, and it has to be sdcv rather than a sequential reader,
+# because a StarDict index sorted the wrong way leaves headwords in the file
+# that only a binary search can fail to reach. Both our own tests and
+# pyglossary read those indexes sequentially and accepted a broken one
+# (issue #60).
+#
+# On macOS calibre lives inside the app bundle, which is where this looks by
+# default; override with EBOOK_CONVERT. sdcv comes from `brew install sdcv`
+# and is skipped if absent.
 #
 #   ./scripts/readback_sweep.sh [output-dir]
 #
@@ -72,6 +80,54 @@ for opf in $(find tests/fixtures -name '*.opf' | sort); do
         fi
     done
 done
+
+# StarDict is a separate output format with separate readers, and its own
+# failure mode: an index sorted the wrong way leaves headwords in the file
+# that a binary search cannot reach, which every sequential reader (ours,
+# pyglossary) happily accepts. sdcv is the one that settles it.
+SDCV=${SDCV:-sdcv}
+if command -v "$SDCV" >/dev/null 2>&1; then
+    echo
+    echo "StarDict bundles, read with sdcv:"
+    for opf in $(grep -rl "idx:entry" tests/fixtures --include='*.html' 2>/dev/null \
+                 | xargs -n1 dirname | sort -u \
+                 | xargs -I{} sh -c 'ls {}/*.opf 2>/dev/null | head -1'); do
+        name=$(echo "$opf" | sed 's|tests/fixtures/||; s|/|_|g; s|\.opf$||')
+        bundle="$OUT/sd_$name"
+        rm -rf "$bundle"
+        $K stardict "$opf" -o "$bundle" >"$OUT/sd_$name.log" 2>&1 || continue
+        # sdcv wants a directory of dictionary directories.
+        root="$OUT/sdroot_$name"; rm -rf "$root"; mkdir -p "$root/d"
+        cp "$bundle"/* "$root/d/" 2>/dev/null || continue
+        ifo=$(ls "$root/d"/*.ifo 2>/dev/null | head -1)
+        [ -n "$ifo" ] || continue
+        words=$(python3 - "$root/d" <<'PY'
+import glob, sys
+p = glob.glob(sys.argv[1] + "/*.idx")[0]
+d = open(p, "rb").read()
+out, i = [], 0
+while i < len(d) and len(out) < 12:
+    j = d.index(b"\x00", i); out.append(d[i:j].decode("utf-8", "replace")); i = j + 9
+print("\n".join(out))
+PY
+)
+        bad=0; n=0
+        while IFS= read -r w; do
+            [ -n "$w" ] || continue
+            n=$((n + 1))
+            sdcv --data-dir "$root" -n -e "$w" 2>/dev/null | grep -qF "$w" || {
+                echo "  UNREACHABLE: $name has '$w' in its index but sdcv cannot find it"
+                bad=$((bad + 1)); failed=$((failed + 1))
+            }
+        done <<EOF2
+$words
+EOF2
+        [ "$bad" -eq 0 ] && echo "  $name: $n headwords all reachable"
+    done
+else
+    echo
+    echo "sdcv not found, skipping the StarDict half (brew install sdcv)"
+fi
 
 echo
 echo "built $built file(s), $failed could not be read back"
