@@ -913,7 +913,7 @@ def probe_book(root):
         "<h1>Kindling device probe</h1>",
         "<p>Tap a word below, then use the dictionary name at the bottom of the popup "
         "to switch dictionaries. Every test dictionary here is English to English, so "
-        "all six appear in that list.</p>",
+        "all ten appear in that list.</p>",
         section(1, "1. Style, in all four dictionaries (issue 57)",
                 "Look up zstyle, then run it through KD-A, KD-B, KD-C and KD-D in turn. "
                 "In each one, UNDER and ITAL must both be much larger than the word plain, "
@@ -970,7 +970,17 @@ def probe_book(root):
                 "below and check each popup shows its own definition rather than the "
                 "heading in front of it.",
                 ["zgapapple", "zgapbanana", "zgapcherry"]),
-        "<h2>9. Controls</h2><p>These are ordinary entries in every dictionary. If they "
+        section(9, "9. Huffdic compression, in KD-J (issue 49)",
+                "Switch to KD-J. This is the one file in the round whose text is not "
+                "compressed the usual way, and the only question is whether the "
+                "firmware accepts the compression at all. Each of the three words "
+                "below must open a popup of readable English. Garbled characters or "
+                "an empty popup mean it does not. Report all three separately: they "
+                "sit at the front, the middle and the end of the file, so a decoder "
+                "that starts and then loses its place passes the first and fails the "
+                "other two.",
+                ["zhuffalpha", "zhuffmiddle", "zhuffomega"], cols=3),
+        "<h2>10. Controls</h2><p>These are ordinary entries in every dictionary. If they "
         "fail too, something is wrong with the round rather than with the fix.</p>"
         "<table><tr>" + "".join(f"<td>{w}</td>" for w, _ in FILLER) + "</tr></table>",
     ]
