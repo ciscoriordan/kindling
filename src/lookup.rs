@@ -77,6 +77,20 @@ pub struct LookupReport {
     /// this never explains a miss - it is here so a report on a huffdic file
     /// can say the compression was understood, or say plainly that it was not.
     pub huffdic_error: Option<String>,
+    /// The first few headwords in index order, decoded.
+    ///
+    /// A miss on a dictionary that plainly contains the word is nearly always
+    /// one of two things, and these tell them apart at a glance: if the
+    /// labels come back as mojibake then the label bytes were decoded wrong
+    /// and no query could ever match, and if they read as ordinary words then
+    /// the index is fine and the search is where to look.
+    pub first_labels: Vec<String>,
+    /// The headwords that sort either side of the query, decoded.
+    ///
+    /// Says where the query would have landed. A word that is missing from a
+    /// run of otherwise-sensible neighbors is a different problem from one
+    /// whose neighbors are also absent.
+    pub nearest: Vec<String>,
 }
 
 impl LookupReport {
@@ -446,6 +460,8 @@ pub fn report(mobi: &[u8], query: &str) -> LookupReport {
         compression: 0,
         unreadable: false,
         huffdic_error: None,
+        first_labels: Vec::new(),
+        nearest: Vec::new(),
     };
 
     let recs = match palmdb_records(mobi) {
@@ -474,7 +490,53 @@ pub fn report(mobi: &[u8], query: &str) -> LookupReport {
     out.index_record = Some(index.record);
     out.entries = index.entries.len();
     out.result = resolve(&index, query);
+    if out.result.is_none() {
+        out.first_labels = index
+            .entries
+            .iter()
+            .take(5)
+            .map(|(l, _)| l.clone())
+            .collect();
+        out.nearest = neighbors(&index, query, 2);
+    }
     out
+}
+
+/// The labels that sort either side of `query`, at most `each` on each side.
+///
+/// Compared the way the index's own collation compares, so the answer is
+/// where the firmware would have looked rather than where a byte sort would.
+/// Linear rather than a binary search on purpose: a file whose index is out
+/// of order is exactly the file this is being asked about, and a binary
+/// search on a misordered index reports neighbors that are not neighbors.
+fn neighbors(index: &OrthIndex, query: &str, each: usize) -> Vec<String> {
+    let key = |s: &str| match index.collation {
+        Collation::Fold => fold_key(s),
+        Collation::Literal => s.to_string(),
+        Collation::Plain => s.to_lowercase(),
+    };
+    let qk = key(query);
+    let mut below: Vec<(String, String)> = Vec::new();
+    let mut above: Vec<(String, String)> = Vec::new();
+    for (label, _) in &index.entries {
+        let k = key(label);
+        if k < qk {
+            below.push((k, label.clone()));
+            below.sort_unstable();
+            if below.len() > each {
+                below.remove(0);
+            }
+        } else if k > qk {
+            above.push((k, label.clone()));
+            above.sort_unstable();
+            above.truncate(each);
+        }
+    }
+    below
+        .into_iter()
+        .chain(above)
+        .map(|(_, label)| label)
+        .collect()
 }
 
 /// Match `query` against the decoded labels using the index's collation.

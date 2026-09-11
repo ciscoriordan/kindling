@@ -1614,12 +1614,31 @@ fn do_lookup(input: &PathBuf, word: &str) {
         }
         None => {
             match report.index_record {
-                Some(rec) => println!(
-                    "{word:?} does not resolve in {}: the orth index at record {rec} holds {} \
-                     headwords and none of them match.",
-                    input.display(),
-                    report.entries
-                ),
+                Some(rec) => {
+                    println!(
+                        "{word:?} does not resolve in {}: the orth index at record {rec} holds {} \
+                         headwords and none of them match.",
+                        input.display(),
+                        report.entries
+                    );
+                    // Stdout stays one line, so the diagnosis goes to stderr.
+                    // Without it a miss on someone else's dictionary is a dead
+                    // end: the count alone cannot say whether the headwords
+                    // were decoded correctly or where the query would land.
+                    if !report.first_labels.is_empty() {
+                        eprintln!(
+                            "note: the first headwords it read are {}. If those are not words, \
+                             the label bytes were decoded wrong and no query could match.",
+                            quoted(&report.first_labels)
+                        );
+                    }
+                    if !report.nearest.is_empty() {
+                        eprintln!(
+                            "note: {word:?} would sort among {}.",
+                            quoted(&report.nearest)
+                        );
+                    }
+                }
                 None => println!(
                     "{word:?} does not resolve in {}: the file has no dictionary index, so \
                      nothing can. It is a book rather than a dictionary, or its orth INDX is \
@@ -1630,6 +1649,15 @@ fn do_lookup(input: &PathBuf, word: &str) {
             std::process::exit(1);
         }
     }
+}
+
+/// Join labels as a readable list, for the lookup notes.
+fn quoted(labels: &[String]) -> String {
+    labels
+        .iter()
+        .map(|l| format!("{l:?}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Build a StarDict bundle from an OPF or EPUB dictionary input.
