@@ -762,6 +762,14 @@ fn extract_attr_generic(tag: &str, attr: &str) -> Option<String> {
 /// where `id=` can be preceded by a newline, not just a space.
 fn collect_ids(html: &str) -> HashSet<String> {
     let mut out = HashSet::new();
+    // A dictionary entry is reachable by its headword, whether or not the
+    // source declared an id for it. kindling resolves `#hw_<headword>` to the
+    // entry's own start offset, which is what makes a PyGlossary or
+    // reader.dict cross-reference navigate (issue #54), so the same names are
+    // anchors as far as this check is concerned. Without them R9.3 called
+    // every such link a dangling fragment and aborted the build, while the
+    // builder was resolving it correctly.
+    out.extend(headword_anchors(html));
     let bytes = html.as_bytes();
     let mut i = 0usize;
     while i < bytes.len() {
@@ -786,6 +794,64 @@ fn collect_ids(html: &str) -> HashSet<String> {
             }
         }
         i = tag_end + 1;
+    }
+    out
+}
+
+/// The `hw_<headword>` names a dictionary's cross-references aim at.
+///
+/// Both headword spellings the guidelines allow are read: the `value`
+/// attribute, and the element's own text for the body form PyGlossary emits.
+fn headword_anchors(html: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+    if !html.contains("<idx:orth") {
+        return out;
+    }
+    let mut rest = html;
+    while let Some(at) = rest.find("<idx:orth") {
+        rest = &rest[at..];
+        let Some(tag_end) = rest.find('>') else { break };
+        let tag = &rest[..tag_end];
+        // Attribute form: <idx:orth value="word"/>
+        if let Some(v) = attr_value(tag, "value") {
+            out.insert(format!("hw_{v}"));
+        }
+        // Body form: <idx:orth><b>word</b></idx:orth>
+        if !tag.ends_with('/') {
+            if let Some(close) = rest[tag_end..].find("</idx:orth>") {
+                let body = &rest[tag_end + 1..tag_end + close];
+                let text: String = strip_tags(body).trim().to_string();
+                if !text.is_empty() {
+                    out.insert(format!("hw_{text}"));
+                }
+            }
+        }
+        rest = &rest[tag_end..];
+    }
+    out
+}
+
+/// The value of one attribute in a tag body, double or single quoted.
+fn attr_value(tag: &str, wanted: &str) -> Option<String> {
+    for (name, value) in scan_attrs(tag) {
+        if name == wanted {
+            return Some(value);
+        }
+    }
+    None
+}
+
+/// Drop every tag, leaving the text between them.
+fn strip_tags(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut depth = 0usize;
+    for c in html.chars() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => out.push(c),
+            _ => {}
+        }
     }
     out
 }
@@ -889,6 +955,42 @@ mod tests {
     }
 
     // ---- id collector ----
+
+    /// A dictionary's cross-references aim at `hw_<headword>`, and kindling
+    /// resolves those to the entry whether or not the source declared an id
+    /// (issue #54). R9.3 called every one of them a dangling fragment and
+    /// aborted the build, while the builder was resolving them correctly.
+    #[test]
+    fn a_headword_is_an_anchor_even_with_no_declared_id() {
+        // Attribute form, which is what the guidelines describe.
+        let ids = collect_ids(r#"<idx:entry><idx:orth value="beta"/><p>x</p></idx:entry>"#);
+        assert!(ids.contains("hw_beta"), "got {ids:?}");
+
+        // Body form, which is what PyGlossary emits.
+        let ids = collect_ids("<idx:entry><idx:orth><b>gamma</b></idx:orth></idx:entry>");
+        assert!(ids.contains("hw_gamma"), "got {ids:?}");
+
+        // A declared id still counts, and both can be present at once.
+        let ids = collect_ids(
+            r#"<idx:entry id="hw_delta"><idx:orth value="delta"><b>delta</b></idx:orth></idx:entry>"#,
+        );
+        assert!(ids.contains("hw_delta"));
+    }
+
+    #[test]
+    fn a_headword_that_is_not_there_is_still_not_an_anchor() {
+        // The check has to keep failing a genuinely dead cross-reference,
+        // which is the whole reason R9.3 exists.
+        let ids = collect_ids(r#"<idx:entry><idx:orth value="beta"/></idx:entry>"#);
+        assert!(!ids.contains("hw_nosuchword"), "got {ids:?}");
+    }
+
+    #[test]
+    fn a_book_with_no_dictionary_markup_gains_no_anchors() {
+        let ids = collect_ids(r#"<p id="real">x</p><p>no idx markup here</p>"#);
+        assert_eq!(ids.len(), 1, "got {ids:?}");
+        assert!(ids.contains("real"));
+    }
 
     #[test]
     fn collect_ids_handles_double_quoted() {

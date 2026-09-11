@@ -903,7 +903,10 @@ pub const RULES: &[Rule] = &[
         description: "RSC_012: The file on the left of '#' exists in the manifest but the \
                       '#anchor' id is not declared anywhere inside that file. There is no \
                       byte to point the link at, so it ships inert and does nothing when \
-                      tapped, which is what kindlegen does with it too.",
+                      tapped, which is what kindlegen does with it too. In a dictionary, \
+                      'hw_<headword>' counts as declared for any headword the file \
+                      actually has, because that is the name kindling resolves a \
+                      cross-reference to whether or not the source wrote an id for it.",
         profile_mask: ALL_PROFILES,
     },
     Rule {
