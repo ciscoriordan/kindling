@@ -186,9 +186,9 @@ fn writes_a_huffdic_dictionary_that_reads_back_identically() {
     );
     let datp = parsed.palmdb.record(&huff_bytes, datp_idx);
     assert_eq!(&datp[..4], b"DATP", "0x78 does not point at a DATP record");
-    // Two files identical but for this word were tried in Mobipocket Reader
-    // for Windows: the one carrying kindlegen's value opened and the one
-    // carrying zero was called corrupted. Nobody here knows what it means.
+    // Dictionaries identical but for this word were tried in Mobipocket
+    // Reader for Windows: the one carrying zero was called corrupted, and
+    // every nonzero value tried opened. Nobody here knows what it means.
     assert_ne!(
         word(datp, 0x14),
         0,

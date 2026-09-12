@@ -3841,11 +3841,10 @@ fn huffdic_datp(lengths: &[usize]) -> Vec<u8> {
     rec.extend_from_slice(&(lengths.len() as u16).to_be_bytes());
     rec.extend_from_slice(&(total as u32).to_be_bytes());
     rec.extend_from_slice(&0u32.to_be_bytes());
-    // Not understood, but it cannot be left at zero: Mobipocket Reader for
-    // Windows opens a dictionary carrying kindlegen's value here and calls
-    // the same file with a zero "File corrupted" (issue #49). The value does
-    // not vary with the text: kindlegen writes 64925 in files of very
-    // different sizes.
+    // Not understood, but a dictionary cannot leave it at zero: Mobipocket
+    // Reader for Windows calls one with a zero here "File corrupted", and
+    // opens the same file with 1, 0xFFFF, 0x10000, 64925 or 65376 (issue
+    // #49). 64925 is the value in kindlegen's own Mobi 7 DATP.
     rec.extend_from_slice(&64925u32.to_be_bytes());
     for &len in lengths {
         debug_assert!(
