@@ -39,6 +39,21 @@
 //! `maxcode` is not stored as a code bound. It is stored as
 //! `lowest_index_at_this_length + highest_code_at_this_length`, so that
 //! subtracting the code yields the index directly.
+//!
+//! # Both byte orders
+//!
+//! The HUFF header carries four table offsets, not two. The first pair
+//! points at the prefix table and the per-length bounds in big-endian; the
+//! second pair points at the same two tables again, little-endian. Real
+//! kindlegen 2.9 output carries both, and this writes both to match it.
+//! calibre, KindleUnpack and libmobi read only the first pair, so none of
+//! them can tell whether the second is there.
+//!
+//! The second pair was not what made Mobipocket Reader for Windows open a
+//! kindling dictionary: it went on calling one that carried both pairs "File
+//! corrupted". What it wanted was the DATP record, which is built in
+//! `mobi.rs` (issue #49). The pairs are written anyway, because a file that
+//! matches kindlegen leaves one less thing to suspect.
 
 use std::collections::{HashMap, HashSet};
 
@@ -115,7 +130,7 @@ pub(crate) fn encode(chunks: &[Vec<u8>]) -> Option<Encoded> {
         let _ = std::fs::write(path, blob);
     }
     // Below this the phrase dictionary and its tables cost more than the
-    // codes save. The HUFF record alone is 1.3 KB.
+    // codes save. The HUFF record alone is 2.6 KB.
     if total < 64 * 1024 {
         return None;
     }
@@ -439,7 +454,7 @@ fn fit_model(chunks: &[Vec<u8>], total: usize) -> Option<Fit> {
                 bits.div_ceil(8)
             })
             .sum();
-        let dict_bytes: usize = phrases.iter().map(|p| p.len() + 4).sum::<usize>() + 1304;
+        let dict_bytes: usize = phrases.iter().map(|p| p.len() + 4).sum::<usize>() + 2584;
         let size = record_bytes + dict_bytes;
         if debug {
             let symbols: u64 = freq.iter().sum();
@@ -1170,15 +1185,21 @@ impl CodeTable {
         const HEADER_LEN: u32 = 24;
         let off1 = HEADER_LEN;
         let off2 = off1 + 256 * 4;
+        // The same two tables again, little-endian, after the big-endian pair.
+        let off3 = off2 + 32 * 8;
+        let off4 = off3 + 256 * 4;
 
-        let mut rec = Vec::with_capacity(off2 as usize + 32 * 8);
+        let mut rec = Vec::with_capacity(off4 as usize + 32 * 8);
         rec.extend_from_slice(b"HUFF");
         rec.extend_from_slice(&HEADER_LEN.to_be_bytes());
         rec.extend_from_slice(&off1.to_be_bytes());
         rec.extend_from_slice(&off2.to_be_bytes());
-        // Two reserved words kindlegen leaves zero.
-        rec.extend_from_slice(&0u32.to_be_bytes());
-        rec.extend_from_slice(&0u32.to_be_bytes());
+        // Where the little-endian copies start. These are not reserved words:
+        // they were written as zero here, copied from a fixture that had them
+        // zero, while real kindlegen output points them at a second,
+        // byte-swapped copy of both tables (issue #49).
+        rec.extend_from_slice(&off3.to_be_bytes());
+        rec.extend_from_slice(&off4.to_be_bytes());
 
         for prefix in 0..256u32 {
             // A code of eight bits or fewer is fully determined by these
@@ -1223,6 +1244,13 @@ impl CodeTable {
         for len in 1..=MAX_CODE_LEN {
             rec.extend_from_slice(&self.mincode[len].to_be_bytes());
             rec.extend_from_slice(&self.maxcode[len].to_be_bytes());
+        }
+        debug_assert_eq!(rec.len(), off3 as usize);
+        // Every table word again, byte-swapped. kindlegen writes both orders,
+        // and which one a reader uses is the reader's choice.
+        let big_endian = rec[off1 as usize..off3 as usize].to_vec();
+        for word in big_endian.chunks_exact(4) {
+            rec.extend(word.iter().rev());
         }
         rec
     }
@@ -1314,6 +1342,18 @@ mod tests {
             .sum();
         let t0 = std::time::Instant::now();
         let e = encode(&chunks).expect("corpus should compress");
+        // With KINDLING_HUFF_OUT set, write the encoding out as well, so a tool
+        // that is not kindling can assemble and read it.
+        if let Ok(dir) = std::env::var("KINDLING_HUFF_OUT") {
+            let dir = std::path::Path::new(&dir);
+            std::fs::write(dir.join("huff.bin"), &e.huff).unwrap();
+            for (i, c) in e.cdics.iter().enumerate() {
+                std::fs::write(dir.join(format!("cdic_{i}.bin")), c).unwrap();
+            }
+            for (i, r) in e.records.iter().enumerate() {
+                std::fs::write(dir.join(format!("rec_{i}.bin")), r).unwrap();
+            }
+        }
         let secs = t0.elapsed().as_secs_f64();
         let huff: usize = e.records.iter().map(|r| r.len()).sum::<usize>()
             + e.huff.len()
@@ -1492,8 +1532,25 @@ mod tests {
             u32::from_be_bytes(encoded.huff[4..8].try_into().unwrap()),
             24
         );
-        // 256 prefix entries plus 32 bound pairs, after a 24-byte header.
-        assert_eq!(encoded.huff.len(), 24 + 256 * 4 + 32 * 8);
+        // 256 prefix entries plus 32 bound pairs after a 24-byte header, then
+        // the same two tables little-endian, the way kindlegen writes them
+        // (issue #49).
+        assert_eq!(encoded.huff.len(), 24 + 2 * (256 * 4 + 32 * 8));
+        let word =
+            |o: usize| u32::from_be_bytes(encoded.huff[o..o + 4].try_into().unwrap()) as usize;
+        let (be1, be2, le1, le2) = (word(8), word(12), word(16), word(20));
+        assert_eq!((be1, be2, le1, le2), (24, 1048, 1304, 2328));
+        let swapped = |from: usize, len: usize| -> Vec<u8> {
+            encoded.huff[from..from + len]
+                .chunks_exact(4)
+                .flat_map(|w| w.iter().rev().copied())
+                .collect()
+        };
+        assert_eq!(
+            &encoded.huff[le1..le1 + 1024],
+            swapped(be1, 1024).as_slice()
+        );
+        assert_eq!(&encoded.huff[le2..le2 + 256], swapped(be2, 256).as_slice());
         assert!(!encoded.cdics.is_empty());
         for c in &encoded.cdics {
             assert_eq!(&c[..4], b"CDIC");

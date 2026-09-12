@@ -290,11 +290,17 @@ fn build_huff(codes: &Codes) -> Vec<u8> {
 
     let off1: u32 = 0x18;
     let off2: u32 = off1 + 256 * 4;
-    let mut rec = Vec::with_capacity(0x18 + 256 * 4 + 64 * 4);
+    // The same two tables again, little-endian, which is what kindlegen
+    // writes after the big-endian pair. This generator used to leave these
+    // two offsets at zero (issue #49).
+    let off3: u32 = off2 + 64 * 4;
+    let off4: u32 = off3 + 256 * 4;
+    let mut rec = Vec::with_capacity(0x18 + 2 * (256 * 4 + 64 * 4));
     rec.extend_from_slice(b"HUFF\x00\x00\x00\x18");
     rec.extend_from_slice(&off1.to_be_bytes());
     rec.extend_from_slice(&off2.to_be_bytes());
-    rec.resize(off1 as usize, 0);
+    rec.extend_from_slice(&off3.to_be_bytes());
+    rec.extend_from_slice(&off4.to_be_bytes());
     for p in 0..256usize {
         let v = if owner[p] != 0 {
             let l = owner[p];
@@ -308,6 +314,10 @@ fn build_huff(codes: &Codes) -> Vec<u8> {
     for l in 1..=32usize {
         rec.extend_from_slice(&min_raw[l].to_be_bytes());
         rec.extend_from_slice(&max_raw[l].to_be_bytes());
+    }
+    let big_endian = rec[off1 as usize..off3 as usize].to_vec();
+    for word in big_endian.chunks_exact(4) {
+        rec.extend(word.iter().rev());
     }
     rec
 }
