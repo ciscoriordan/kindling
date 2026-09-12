@@ -27,14 +27,15 @@ pub struct Finding {
 impl fmt::Display for Finding {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.rule_id {
-            Some(id) => {
-                let rule = kdp_rules::get(id);
-                write!(
+            // Cite KPG only where it covers the rule; see Rule::kpg.
+            Some(id) => match kdp_rules::get(id).kpg {
+                Some((section, page)) => write!(
                     f,
                     "[{} {}] section {} (p.{}): {}",
-                    self.level, id, self.section, rule.pdf_page, self.message
-                )?;
-            }
+                    self.level, id, section, page, self.message
+                )?,
+                None => write!(f, "[{} {}] {}", self.level, id, self.message)?,
+            },
             None => {
                 write!(
                     f,

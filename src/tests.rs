@@ -10975,7 +10975,7 @@ p { margin: 0.3em 0; }
     fn test_validate_large_table_warns() {
         let dir = TempDir::new("validate_10_5_1");
         let mut rows = String::new();
-        for i in 0..60 {
+        for i in 0..120 {
             rows.push_str(&format!("<tr><td>{}</td></tr>", i));
         }
         let html = format!(r#"<html><body><table>{}</table></body></html>"#, rows);
@@ -10988,6 +10988,25 @@ p { margin: 0.3em 0; }
         );
         let report = validate::validate_opf(&opf).unwrap();
         assert!(has_finding(&report, "10.5.1", Level::Warning));
+    }
+
+    #[test]
+    fn test_validate_table_below_100_rows_is_fine() {
+        let dir = TempDir::new("validate_10_5_1");
+        let mut rows = String::new();
+        for i in 0..99 {
+            rows.push_str(&format!("<tr><td>{}</td></tr>", i));
+        }
+        let html = format!(r#"<html><body><table>{}</table></body></html>"#, rows);
+        fs::write(dir.path().join("content.html"), html).unwrap();
+        let opf = write_opf(
+            dir.path(),
+            "",
+            r#"<item id="content" href="content.html" media-type="application/xhtml+xml"/>"#,
+            r#"<itemref idref="content"/>"#,
+        );
+        let report = validate::validate_opf(&opf).unwrap();
+        assert!(!has_finding(&report, "10.5.1", Level::Warning));
     }
 
     #[test]

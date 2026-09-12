@@ -82,7 +82,9 @@ fn check_content_html(href: &str, content: &str, report: &mut ValidationReport) 
     // 10.5.1 Avoid large tables (> 50 rows).
     let table_rows = count_table_rows(content);
     for (table_idx, row_count) in table_rows.iter().enumerate() {
-        if *row_count > 50 {
+        // KPG 11.5.1: "keeping tables below 100 rows". This used to fire
+        // from 51 rows, warning about tables that follow that advice.
+        if *row_count >= 100 {
             report.emit_at(
                 "R10.5.1",
                 format!("Table #{} has {} rows.", table_idx + 1, row_count),
