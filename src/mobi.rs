@@ -3358,6 +3358,15 @@ fn convert_list_markers(html: &str) -> String {
 /// Strip idx: namespace tags from HTML, keeping only display content.
 fn strip_idx_markup(html: &str) -> String {
     use std::sync::OnceLock;
+    // kindlegen drops a <script> element, content and all, from a
+    // dictionary's text (checked on a PyGlossary dictionary). Kept, its code
+    // would be text in the entry. The validator lets a dictionary with one
+    // build (issue #63), so it has to go here.
+    static SCRIPT_RE: OnceLock<Regex> = OnceLock::new();
+    let script_re = SCRIPT_RE
+        .get_or_init(|| Regex::new(r"(?is)<script\b[^>]*?(?:/>|>.*?</script\s*>)").unwrap());
+    let without_scripts = script_re.replace_all(html, "");
+    let html: &str = &without_scripts;
     // Hoist every regex into a process-wide OnceLock so
     // build_text_content_by_letter (called once per entry, 502k+ times on the
     // FR reader-dict) doesn't pay the regex compile cost per call. This used
@@ -4357,6 +4366,18 @@ mod record_split_tests {
     /// with literal characters rather than list markup, and 0.22.1
     /// established that an ordered item with no `value` draws nothing of its
     /// own, so the literal marker cannot collide with a drawn one.
+    #[test]
+    fn strip_idx_markup_drops_scripts_as_kindlegen_does() {
+        let out = strip_idx_markup(
+            r#"<idx:entry><idx:orth>zeta</idx:orth> sixth letter<script>var zzscript = 1;</script> and <SCRIPT src="a.js"/>more</idx:entry>"#,
+        );
+        assert!(!out.to_ascii_lowercase().contains("script"), "{out}");
+        assert!(
+            out.contains("sixth letter") && out.contains("more"),
+            "{out}"
+        );
+    }
+
     #[test]
     fn a_declared_sub_list_style_becomes_a_literal_marker() {
         let html = concat!(

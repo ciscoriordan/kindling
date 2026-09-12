@@ -1,12 +1,11 @@
-// Section 6.x / 10.3.1 / 10.5.1 / 17: content-file HTML/CSS checks.
+// Section 6.x / 10.5.1 / 17: content-file HTML/CSS checks.
 
 use std::fs;
 use std::path::PathBuf;
 
 use super::Check;
 use super::helpers::{
-    contains_tag, count_table_rows, find_nested_p, has_negative_css, heading_with_text_align,
-    try_parse_xml,
+    contains_tag, count_table_rows, find_nested_p, has_negative_css, try_parse_xml,
 };
 use crate::extracted::ExtractedEpub;
 use crate::validate::ValidationReport;
@@ -21,9 +20,7 @@ pub struct ContentChecks;
 
 impl Check for ContentChecks {
     fn ids(&self) -> &'static [&'static str] {
-        &[
-            "R6.1", "R6.2", "R6.3", "R6.4", "R10.3.1", "R10.5.1", "R17.1",
-        ]
+        &["R6.1", "R6.2", "R6.3", "R6.4", "R10.5.1", "R17.1"]
     }
 
     fn run(&self, epub: &ExtractedEpub, report: &mut ValidationReport) {
@@ -65,18 +62,6 @@ fn check_content_html(href: &str, content: &str, report: &mut ValidationReport) 
     for (line_no, line) in content.lines().enumerate() {
         if has_negative_css(line) {
             report.emit_at("R6.2", "", file.clone(), Some(line_no + 1));
-        }
-    }
-
-    // 10.3.1 Heading alignment.
-    for (line_no, line) in content.lines().enumerate() {
-        if let Some(tag) = heading_with_text_align(line) {
-            report.emit_at(
-                "R10.3.1",
-                format!("Tag: <{}>.", tag),
-                file.clone(),
-                Some(line_no + 1),
-            );
         }
     }
 

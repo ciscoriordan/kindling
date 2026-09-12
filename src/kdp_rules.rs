@@ -66,6 +66,35 @@ impl Rule {
     }
 }
 
+/// Rules that report as a warning instead of an error when the source is a
+/// dictionary.
+///
+/// An error withholds the whole file, and the usual way a dictionary is built,
+/// PyGlossary running kindling in place of kindlegen, ignores the exit status
+/// and never checks that the file exists: a dictionary with no cover came out
+/// as no file, and a log line saying it had been created (issue #63). So on a
+/// dictionary an error has to mean the dictionary would be broken, and these do
+/// not. Each guards something the dictionary builder never reads (the NCX, the
+/// guide, the nav document, `@font-face`), something KPG says a dictionary
+/// only "should" have (a cover, section 16), a link the lookup popup disables
+/// anyway (KPG 15.6.1), or markup kindlegen strips or ignores. kindlegen
+/// builds a dictionary with any of them, with a warning at most. They are
+/// still printed.
+pub const DICT_WARNINGS: &[&str] = &[
+    "R4.2.1", // no cover
+    "R5.2.3", // NCX link to a file not in the manifest
+    "R5.3.1", // guide link to a file not in the manifest
+    "R5.5",   // remote link in the NCX or nav document
+    "R5.7",   // NCX dtb:uid differs from the OPF identifier
+    "R5.10",  // guide target is not a content document
+    "R5.11",  // spine toc attribute does not name an NCX
+    "R6.3",   // <script>, which the dictionary builder drops as kindlegen does
+    "R6.17",  // @font-face that will be dropped
+    "R9.3",   // link to an id the target file does not have
+    "R9.6",   // href that is not a valid URL, such as bword://ice cream
+    "R17.1",  // tag Kindle does not support, such as <form> or <iframe>
+];
+
 /// Complete rule catalog. Order is not significant; checks look up rules by id.
 pub const RULES: &[Rule] = &[
     // ---- Section 4: Cover Image Guidelines ----
@@ -308,22 +337,13 @@ pub const RULES: &[Rule] = &[
     },
     // ---- Section 10: Text-Heavy Reflowable Books ----
     Rule {
-        id: "R10.3.1",
-        section: "10.3.1",
-        level: Severity::Warning,
-        title: "Heading alignment should use default",
-        pdf_page: 29,
-        description: "Heading has an explicit text-align. KPG 10.3.1 recommends letting \
-                      headings use the default alignment.",
-        profile_mask: ALL_PROFILES,
-    },
-    Rule {
         id: "R10.4.1",
         section: "10.4.1",
         level: Severity::Error,
         title: "Use supported image format",
         pdf_page: 38,
-        description: "Image is not in a supported format (JPEG, PNG, GIF, SVG).",
+        description: "Image is not in a format Kindle supports: JPEG, PNG or GIF, or \
+                      SVG in a book.",
         profile_mask: ALL_PROFILES,
     },
     Rule {
@@ -1287,7 +1307,10 @@ pub const RULES: &[Rule] = &[
     Rule {
         id: "R16.3",
         section: "16",
-        level: Severity::Error,
+        // A warning because the build writes dc:date into EXTH 106 as it is
+        // and nothing parses it. epubcheck agrees only for EPUB 3, where this
+        // is OPF-053; for EPUB 2 it reports OPF-054, an error.
+        level: Severity::Warning,
         title: "<dc:date> is not W3CDTF syntax (OPF_053)",
         pdf_page: 14,
         description: "OPF_053: <dc:date> must follow W3CDTF (YYYY, YYYY-MM, YYYY-MM-DD, \
@@ -1302,7 +1325,8 @@ pub const RULES: &[Rule] = &[
         title: "<dc:date> is W3CDTF-shaped but not a valid date (OPF_054)",
         pdf_page: 14,
         description: "OPF_054: <dc:date> value parses as W3CDTF syntactically but names \
-                      an impossible calendar date (e.g. 2024-02-30).",
+                      an impossible date, time of day or time zone (e.g. 2024-02-30, or \
+                      a zone of +25:00).",
         profile_mask: ALL_PROFILES,
     },
     Rule {
@@ -1329,12 +1353,13 @@ pub const RULES: &[Rule] = &[
     Rule {
         id: "R16.7",
         section: "16",
-        level: Severity::Error,
-        title: "opf:scheme=\"UUID\" value is not a valid RFC 4122 UUID (OPF_085)",
+        // A warning, as in epubcheck.
+        level: Severity::Warning,
+        title: "opf:scheme=\"UUID\" value is not a UUID (OPF_085)",
         pdf_page: 14,
-        description: "OPF_085: A <dc:identifier opf:scheme=\"UUID\"> value must be a \
-                      valid RFC 4122 UUID string. Kindle uses this to deduplicate \
-                      uploads; a malformed UUID can cause the upload to be rejected.",
+        description: "OPF_085: A <dc:identifier opf:scheme=\"UUID\"> value should be a \
+                      UUID: 32 hex digits in groups of 8-4-4-4-12, optionally prefixed \
+                      urn:uuid:.",
         profile_mask: ALL_PROFILES,
     },
     Rule {
@@ -1391,6 +1416,22 @@ mod tests {
     #[test]
     fn test_kpg_version_set() {
         assert!(!KPG_VERSION.is_empty());
+    }
+
+    #[test]
+    fn dict_warnings_name_error_rules_that_reach_dictionaries() {
+        for id in DICT_WARNINGS {
+            let rule = get(id);
+            assert_eq!(
+                rule.level,
+                Severity::Error,
+                "{id} is not an error, so there is nothing to lower"
+            );
+            assert!(
+                rule.applies_to(Profile::Dict),
+                "{id} never fires on a dictionary"
+            );
+        }
     }
 
     #[test]

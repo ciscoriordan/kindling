@@ -134,24 +134,6 @@ pub fn has_negative_css(line: &str) -> bool {
     false
 }
 
-/// Returns the heading tag name if `line` has a heading with explicit text-align.
-pub fn heading_with_text_align(line: &str) -> Option<&'static str> {
-    let l = line.to_ascii_lowercase();
-    let tags: &[&'static str] = &["h1", "h2", "h3", "h4", "h5", "h6"];
-    for tag in tags {
-        let open = format!("<{}", tag);
-        if let Some(idx) = l.find(&open) {
-            if let Some(end) = l[idx..].find('>') {
-                let tag_content = &l[idx..idx + end];
-                if tag_content.contains("text-align") {
-                    return Some(tag);
-                }
-            }
-        }
-    }
-    None
-}
-
 /// Count `<tr>` rows per `<table>`. Returns one entry per table.
 pub fn count_table_rows(content: &str) -> Vec<usize> {
     let lower = content.to_ascii_lowercase();

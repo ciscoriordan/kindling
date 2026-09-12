@@ -126,10 +126,10 @@ fn check_dc_date(content: &str, file: &Option<PathBuf>, report: &mut ValidationR
                     None,
                 );
             }
-            DateKind::SyntaxOkButInvalid => {
+            DateKind::SyntaxOkButInvalid(what) => {
                 report.emit_at(
                     "R16.4",
-                    format!("Value \"{}\" is not a valid calendar date.", trimmed),
+                    format!("Value \"{}\" names an impossible {}.", trimmed, what),
                     file.clone(),
                     None,
                 );
@@ -142,16 +142,23 @@ fn check_dc_date(content: &str, file: &Option<PathBuf>, report: &mut ValidationR
 /// Result of classifying a W3CDTF candidate string.
 enum DateKind {
     BadSyntax,
-    SyntaxOkButInvalid,
+    /// Well formed, but naming a date, time of day or zone that cannot exist.
+    SyntaxOkButInvalid(&'static str),
     Valid,
 }
 
 /// Classify `value` as W3CDTF: bad syntax, good syntax with bad date, or valid.
+///
+/// W3CDTF is the six forms of the W3C's note on dates and times: a year, a
+/// month, a day, then a time to the minute, to the second, or to a fraction
+/// of a second. A time must carry its zone, `Z` or `+hh:mm` or `-hh:mm`.
+/// Digits are ASCII only, as in the note; the regex crate's `\d` would also
+/// take the digits of other scripts, which then fail to parse.
 fn parse_w3cdtf(value: &str) -> DateKind {
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| {
         Regex::new(
-            r"^(?P<y>\d{4})(?:-(?P<mo>\d{2})(?:-(?P<d>\d{2})(?:T(?P<hh>\d{2}):(?P<mm>\d{2}):(?P<ss>\d{2})Z)?)?)?$",
+            r"^(?P<y>[0-9]{4})(?:-(?P<mo>[0-9]{2})(?:-(?P<d>[0-9]{2})(?:T(?P<hh>[0-9]{2}):(?P<mm>[0-9]{2})(?::(?P<ss>[0-9]{2})(?:\.[0-9]+)?)?(?:Z|[+-](?P<tzh>[0-9]{2}):(?P<tzm>[0-9]{2})))?)?)?$",
         )
         .unwrap()
     });
@@ -166,7 +173,7 @@ fn parse_w3cdtf(value: &str) -> DateKind {
         None => return DateKind::Valid,
     };
     if !(1..=12).contains(&month) {
-        return DateKind::SyntaxOkButInvalid;
+        return DateKind::SyntaxOkButInvalid("calendar date");
     }
 
     // YYYY-MM is valid as long as the month is in range.
@@ -176,17 +183,20 @@ fn parse_w3cdtf(value: &str) -> DateKind {
     };
     let year: i32 = caps.name("y").unwrap().as_str().parse().unwrap_or(0);
     if !is_valid_ymd(year, month, day) {
-        return DateKind::SyntaxOkButInvalid;
+        return DateKind::SyntaxOkButInvalid("calendar date");
     }
 
-    // Time component, if present, must be in-range.
-    if let Some(h) = caps.name("hh") {
-        let hh: u32 = h.as_str().parse().unwrap_or(0);
-        let mm: u32 = caps.name("mm").unwrap().as_str().parse().unwrap_or(0);
-        let ss: u32 = caps.name("ss").unwrap().as_str().parse().unwrap_or(0);
-        if hh > 23 || mm > 59 || ss > 59 {
-            return DateKind::SyntaxOkButInvalid;
-        }
+    // Time and zone, if present, must be in range. Every capture is ASCII
+    // digits, so a parse cannot fail here, and an absent field reads as 0.
+    let field = |name: &str| -> u32 {
+        caps.name(name)
+            .map_or(0, |m| m.as_str().parse().unwrap_or(0))
+    };
+    if field("hh") > 23 || field("mm") > 59 || field("ss") > 59 {
+        return DateKind::SyntaxOkButInvalid("time of day");
+    }
+    if field("tzh") > 23 || field("tzm") > 59 {
+        return DateKind::SyntaxOkButInvalid("time zone");
     }
 
     DateKind::Valid
@@ -297,7 +307,7 @@ fn meta_has_payload_attributes(open_tag_body: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Emit R16.7 for every `<dc:identifier opf:scheme="UUID">...</dc:identifier>`
-/// whose body is not a syntactically-valid RFC 4122 UUID. Identifiers that
+/// whose body is not a UUID. Identifiers that
 /// carry no `opf:scheme` attribute at all must be silent, even if the body
 /// text is not a UUID.
 fn check_uuid_identifier(content: &str, file: &Option<PathBuf>, report: &mut ValidationReport) {
@@ -313,7 +323,7 @@ fn check_uuid_identifier(content: &str, file: &Option<PathBuf>, report: &mut Val
         if !is_valid_uuid(value) {
             report.emit_at(
                 "R16.7",
-                format!("Value \"{}\" is not a valid RFC 4122 UUID.", value),
+                format!("Value \"{}\" is not a UUID.", value),
                 file.clone(),
                 None,
             );
@@ -321,13 +331,17 @@ fn check_uuid_identifier(content: &str, file: &Option<PathBuf>, report: &mut Val
     }
 }
 
-/// True if `value` matches `xxxxxxxx-xxxx-Mxxx-Nxxx-xxxxxxxxxxxx` where M is
-/// 1-5 and N is one of 8, 9, a, b (RFC 4122 variants).
+/// True if `value` is a UUID: 32 hex digits in groups of 8-4-4-4-12, with an
+/// optional `urn:uuid:` prefix.
+///
+/// The version and variant digits are not checked. epubcheck does not check
+/// them either (it parses with `java.util.UUID.fromString`), and RFC 9562 has
+/// since added versions 6 to 8, which a check for 1 to 5 rejected.
 fn is_valid_uuid(value: &str) -> bool {
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| {
         Regex::new(
-            r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+            r"^(?i:urn:uuid:)?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
         )
         .unwrap()
     });
@@ -747,18 +761,87 @@ mod tests {
     }
 
     #[test]
+    fn r16_3_every_w3cdtf_form_is_valid() {
+        // Each of these was rejected as bad syntax, which failed the build.
+        for value in [
+            "2026-04-15T12:34Z",
+            "2026-04-15T12:34:56+00:00",
+            "2026-04-15T12:34:56-05:30",
+            "2026-04-15T12:34:56.789Z",
+            "2026-04-15T12:34:56.5+01:00",
+        ] {
+            assert!(matches!(parse_w3cdtf(value), DateKind::Valid), "{value}");
+        }
+    }
+
+    #[test]
+    fn r16_3_a_time_needs_a_zone() {
+        for value in [
+            "2026-04-15T12:34",
+            "2026-04-15T12:34:56",
+            "2026-04-15T12:34:56+0100",
+        ] {
+            assert!(
+                matches!(parse_w3cdtf(value), DateKind::BadSyntax),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn r16_4_out_of_range_time_or_zone_is_invalid() {
+        for value in [
+            "2026-04-15T24:00Z",
+            "2026-04-15T12:34+24:00",
+            "2026-04-15T12:34-05:60",
+        ] {
+            assert!(
+                matches!(parse_w3cdtf(value), DateKind::SyntaxOkButInvalid(_)),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn r16_3_only_ascii_digits_count() {
+        for value in [
+            "２０２６",
+            "２０２３-02-29",
+            "2026-04-15T12:34+٩٩:٠٠",
+            "2026-04-15T12:34:56.٣Z",
+            "2026-04-15T１２:９９Z",
+        ] {
+            assert!(
+                matches!(parse_w3cdtf(value), DateKind::BadSyntax),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn r16_4_says_which_part_is_impossible() {
+        let what = |value: &str| match parse_w3cdtf(value) {
+            DateKind::SyntaxOkButInvalid(what) => what,
+            _ => "not reported as impossible",
+        };
+        assert_eq!(what("2024-02-30"), "calendar date");
+        assert_eq!(what("2026-04-15T24:00Z"), "time of day");
+        assert_eq!(what("2026-04-15T12:34+24:00"), "time zone");
+    }
+
+    #[test]
     fn r16_4_invalid_calendar_date_fires() {
         assert!(matches!(
             parse_w3cdtf("2024-02-30"),
-            DateKind::SyntaxOkButInvalid
+            DateKind::SyntaxOkButInvalid(_)
         ));
         assert!(matches!(
             parse_w3cdtf("2024-13-01"),
-            DateKind::SyntaxOkButInvalid
+            DateKind::SyntaxOkButInvalid(_)
         ));
         assert!(matches!(
             parse_w3cdtf("2024-04-31"),
-            DateKind::SyntaxOkButInvalid
+            DateKind::SyntaxOkButInvalid(_)
         ));
     }
 
@@ -767,7 +850,7 @@ mod tests {
         assert!(matches!(parse_w3cdtf("2024-02-29"), DateKind::Valid));
         assert!(matches!(
             parse_w3cdtf("2023-02-29"),
-            DateKind::SyntaxOkButInvalid
+            DateKind::SyntaxOkButInvalid(_)
         ));
     }
 
@@ -899,10 +982,22 @@ mod tests {
         assert!(!is_valid_uuid(""));
         assert!(!is_valid_uuid("LemmaGreekENEL"));
         assert!(!is_valid_uuid("not-a-uuid"));
-        // Wrong version nibble:
-        assert!(!is_valid_uuid("550e8400-e29b-61d4-a716-446655440000"));
-        // Wrong variant nibble:
-        assert!(!is_valid_uuid("550e8400-e29b-41d4-c716-446655440000"));
+        assert!(!is_valid_uuid("550e8400e29b41d4a716446655440000"));
+        assert!(!is_valid_uuid("550e8400-e29b-41d4-a716-44665544000"));
+        assert!(!is_valid_uuid("urn:uuid:"));
+    }
+
+    #[test]
+    fn uuid_regex_accepts_what_epubcheck_accepts() {
+        // Version 7, from RFC 9562, which a version check of 1 to 5 rejected.
+        assert!(is_valid_uuid("01890a5d-ac96-774b-bcce-b302099a8057"));
+        // Neither the version nor the variant digit is checked.
+        assert!(is_valid_uuid("550e8400-e29b-61d4-a716-446655440000"));
+        assert!(is_valid_uuid("550e8400-e29b-41d4-c716-446655440000"));
+        assert!(is_valid_uuid("00000000-0000-0000-0000-000000000000"));
+        assert!(is_valid_uuid(
+            "urn:uuid:550e8400-e29b-41d4-a716-446655440000"
+        ));
     }
 
     // ---- R16.8 ----

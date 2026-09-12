@@ -5,6 +5,8 @@ use std::path::PathBuf;
 
 use super::Check;
 use crate::extracted::ExtractedEpub;
+use crate::kdp_rules::Severity;
+use crate::profile::Profile;
 use crate::validate::ValidationReport;
 
 const SUPPORTED_IMAGE_MEDIA: &[&str] = &[
@@ -40,6 +42,22 @@ impl Check for ImageChecks {
                 report.emit_at(
                     "R10.4.1",
                     format!("{} has media-type '{}'.", href, media_type),
+                    Some(PathBuf::from(href)),
+                    None,
+                );
+            } else if epub.profile == Profile::Dict && media_type == "image/svg+xml" {
+                // A dictionary is Mobi 7 (KPG 16.3.1), which cannot show SVG
+                // (KPG 11.4.1), and kindling has no rasterizer, so the image
+                // would reach the device as bytes it cannot draw. A warning
+                // rather than an error: the rest of the dictionary still works.
+                report.emit_at_level(
+                    "R10.4.1",
+                    Severity::Warning,
+                    format!(
+                        "{} is SVG, which a dictionary cannot show: dictionaries are Mobi 7, \
+                         and Mobi 7 has no SVG.",
+                        href
+                    ),
                     Some(PathBuf::from(href)),
                     None,
                 );
@@ -80,5 +98,75 @@ impl Check for ImageChecks {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Validate a one-image source, as a dictionary or as a book.
+    fn findings_for_svg(dictionary: bool) -> ValidationReport {
+        let dir = std::env::temp_dir().join(format!(
+            "kindling_images_svg_{}_{}_{}",
+            dictionary,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let x_metadata = if dictionary {
+            "<x-metadata><DictionaryInLanguage>en</DictionaryInLanguage>\
+             <DictionaryOutLanguage>en</DictionaryOutLanguage></x-metadata>"
+        } else {
+            ""
+        };
+        fs::write(
+            dir.join("content.opf"),
+            format!(
+                r#"<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="uid">
+<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>T</dc:title><dc:language>en</dc:language><dc:identifier id="uid">x</dc:identifier>{x_metadata}</metadata>
+<manifest><item id="c" href="c.xhtml" media-type="application/xhtml+xml"/><item id="i" href="i.svg" media-type="image/svg+xml"/></manifest>
+<spine><itemref idref="c"/></spine></package>"#
+            ),
+        )
+        .unwrap();
+        fs::write(dir.join("c.xhtml"), "<html><body><p>x</p></body></html>").unwrap();
+        fs::write(
+            dir.join("i.svg"),
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>"#,
+        )
+        .unwrap();
+        let epub =
+            crate::extracted::ExtractedEpub::from_opf_path(&dir.join("content.opf")).unwrap();
+        let mut report = ValidationReport::new();
+        ImageChecks.run(&epub, &mut report);
+        fs::remove_dir_all(&dir).ok();
+        report
+    }
+
+    #[test]
+    fn an_svg_in_a_dictionary_is_a_warning() {
+        let report = findings_for_svg(true);
+        let svg: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|f| f.rule_id == Some("R10.4.1"))
+            .collect();
+        assert_eq!(svg.len(), 1, "{svg:?}");
+        assert_eq!(svg[0].level, Severity::Warning);
+    }
+
+    #[test]
+    fn an_svg_in_a_book_is_fine() {
+        let report = findings_for_svg(false);
+        assert!(
+            report.findings.iter().all(|f| f.rule_id != Some("R10.4.1")),
+            "{:?}",
+            report.findings
+        );
     }
 }

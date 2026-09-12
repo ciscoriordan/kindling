@@ -143,6 +143,118 @@ mod validate {
         }
     }
 
+    #[test]
+    fn a_pyglossary_style_dictionary_with_imperfect_markup_still_builds() {
+        // Each of these stopped the build, and kindlegen builds all of them: a
+        // cross-reference to a headword with a space in it, a link to an
+        // anchor that is not there, a script, tags Kindle does not support,
+        // and an @font-face naming a font the manifest does not have
+        // (issue #63). The script is dropped from the text, as kindlegen does.
+        let dir = std::env::temp_dir().join(format!(
+            "kindling_dict_imperfect_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("content.opf"),
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="uid">
+<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Imperfect</dc:title><dc:language>en</dc:language><dc:identifier id="uid">imperfect-dict</dc:identifier>
+<x-metadata><DictionaryInLanguage>en</DictionaryInLanguage><DictionaryOutLanguage>en</DictionaryOutLanguage></x-metadata></metadata>
+<manifest><item id="d" href="dict.xhtml" media-type="application/xhtml+xml"/><item id="s" href="style.css" media-type="text/css"/></manifest>
+<spine><itemref idref="d"/></spine></package>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("style.css"),
+            r#"@font-face { font-family: "Gloss"; src: url(fonts/missing.ttf); }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("dict.xhtml"),
+            r##"<html xmlns:idx="https://kindlegen.s3.amazonaws.com/AmazonKindlePublishingGuidelines.pdf" xmlns:mbp="https://kindlegen.s3.amazonaws.com/AmazonKindlePublishingGuidelines.pdf"><head><link rel="stylesheet" href="style.css"/></head><body><mbp:frameset>
+<idx:entry scriptable="yes"><idx:orth value="cone"><b>cone</b></idx:orth> a wafer that holds <a href="bword://ice cream">ice cream</a></idx:entry><hr/>
+<idx:entry scriptable="yes"><idx:orth value="gelato"><b>gelato</b></idx:orth> Italian ice cream, see <a href="#nowhere">nowhere</a><script>var zzscript = 1;</script></idx:entry><hr/>
+<idx:entry scriptable="yes"><idx:orth value="ice cream"><b>ice cream</b></idx:orth> a frozen dessert <form><input type="text"/></form><iframe src="x.html"></iframe></idx:entry>
+</mbp:frameset></body></html>"##,
+        )
+        .unwrap();
+
+        let opf = dir.join("content.opf");
+        let out = run_validate(&[opf.to_str().unwrap()]);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "no error should be left on this dictionary\n{}",
+            dump(&out)
+        );
+        let mobi = dir.join("dict.mobi");
+        let built = Command::new(kindling_bin())
+            .args([
+                "build",
+                opf.to_str().unwrap(),
+                "-o",
+                mobi.to_str().unwrap(),
+                "--no-compress",
+            ])
+            .output()
+            .expect("spawn kindling-cli");
+        assert!(built.status.success(), "build failed\n{}", dump(&built));
+        let bytes = std::fs::read(&mobi).expect("no file was written");
+        let has = |needle: &[u8]| bytes.windows(needle.len()).any(|w| w == needle);
+        assert!(
+            has(b"frozen dessert"),
+            "the text is not stored uncompressed, so the next check would prove nothing"
+        );
+        assert!(!has(b"zzscript"), "the script reached the dictionary text");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_dictionary_without_a_cover_still_builds() {
+        // PyGlossary writes no cover unless one is configured, runs kindling
+        // in place of kindlegen, and never checks that a file appeared. A
+        // missing cover was an error on a dictionary too, so the build
+        // stopped and PyGlossary reported a file that did not exist
+        // (issue #63). On a dictionary it is a warning now.
+        let opf = fixture_dir("dict_list_markers").join("content.opf");
+        let out = run_validate(&[opf.to_str().unwrap()]);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "a dictionary without a cover should validate\n{}",
+            dump(&out)
+        );
+        assert!(
+            stdout.contains("[warning R4.2.1]"),
+            "the missing cover should still be reported\n{}",
+            dump(&out)
+        );
+
+        let dir = std::env::temp_dir().join(format!(
+            "kindling_dict_no_cover_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mobi = dir.join("dict.mobi");
+        let built = Command::new(kindling_bin())
+            .args(["build", opf.to_str().unwrap(), "-o", mobi.to_str().unwrap()])
+            .output()
+            .expect("spawn kindling-cli");
+        assert!(built.status.success(), "build failed\n{}", dump(&built));
+        assert!(mobi.exists(), "no file was written");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     // ---------------------------------------------------------------------------
     // Error fixture: must flag the rules it was constructed to trigger
     // ---------------------------------------------------------------------------

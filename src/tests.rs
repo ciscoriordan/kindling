@@ -10896,7 +10896,10 @@ p { margin: 0.3em 0; }
     // --- 10.3.1: heading alignment ---
 
     #[test]
-    fn test_validate_heading_text_align_warns() {
+    fn test_validate_heading_text_align_is_not_flagged() {
+        // There used to be a warning here, telling authors to leave heading
+        // alignment at the default. KPG 11.3.1 says the opposite: it strongly
+        // recommends setting the alignment of every heading.
         let dir = TempDir::new("validate_10_3_1");
         fs::write(
             dir.path().join("content.html"),
@@ -10910,7 +10913,14 @@ p { margin: 0.3em 0; }
             r#"<itemref idref="content"/>"#,
         );
         let report = validate::validate_opf(&opf).unwrap();
-        assert!(has_finding(&report, "10.3.1", Level::Warning));
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|f| f.section.starts_with("10.3")),
+            "{:?}",
+            report.findings
+        );
     }
 
     // --- 10.4.1: supported image formats ---

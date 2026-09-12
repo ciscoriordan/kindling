@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use super::Check;
 use crate::extracted::ExtractedEpub;
 use crate::opf::ManifestItem;
+use crate::profile::Profile;
 use crate::validate::ValidationReport;
 
 /// Build artifacts we expect to find beside an unpacked OPF that must not
@@ -75,7 +76,12 @@ impl Check for ManifestSpineChecks {
         );
 
         // R7.2, R7.3: declared vs. actual media-type.
-        check_media_type_magic(opf.base_dir.as_path(), &opf.manifest_items, report);
+        check_media_type_magic(
+            opf.base_dir.as_path(),
+            &opf.manifest_items,
+            epub.profile,
+            report,
+        );
 
         // R7.4: spine must have at least one linear itemref.
         check_spine_all_nonlinear(&opf.raw_itemrefs, report);
@@ -255,7 +261,12 @@ pub(crate) enum DetectedKind {
 }
 
 /// Inspect each manifest item's declared media-type against the file bytes.
-fn check_media_type_magic(base_dir: &Path, items: &[ManifestItem], report: &mut ValidationReport) {
+fn check_media_type_magic(
+    base_dir: &Path,
+    items: &[ManifestItem],
+    profile: Profile,
+    report: &mut ValidationReport,
+) {
     for item in items {
         let path = base_dir.join(strip_fragment(&item.href));
         let bytes = match fs::read(&path) {
@@ -267,8 +278,27 @@ fn check_media_type_magic(base_dir: &Path, items: &[ManifestItem], report: &mut 
 
         if let Some(expected_kinds) = media_type_to_kinds(&declared) {
             if detected != DetectedKind::Unknown && !expected_kinds.contains(&detected) {
-                report.emit_at(
+                // A dictionary keeps its images as the bytes they are and never
+                // reads the declared type, so one raster format labeled as
+                // another still builds. PyGlossary declares a cover by its file
+                // extension, so a PNG named cover.jpg is exactly this (issue #63).
+                let raster = |k: &DetectedKind| {
+                    matches!(
+                        k,
+                        DetectedKind::Jpeg | DetectedKind::Png | DetectedKind::Gif
+                    )
+                };
+                let level = if profile == Profile::Dict
+                    && raster(&detected)
+                    && expected_kinds.iter().all(raster)
+                {
+                    crate::kdp_rules::Severity::Warning
+                } else {
+                    crate::kdp_rules::get("R7.2").level
+                };
+                report.emit_at_level(
                     "R7.2",
+                    level,
                     format!(
                         "Item id=\"{}\" href=\"{}\" declares media-type \"{}\" but file bytes \
                          look like {}.",
@@ -718,11 +748,48 @@ mod tests {
 
         let item = mk_item("img", "pretend.jpg", "image/jpeg", None, None);
         let mut report = empty_report();
-        check_media_type_magic(&dir, &[item], &mut report);
+        check_media_type_magic(&dir, &[item], Profile::Default, &mut report);
 
         assert!(
             report.findings.iter().any(|f| f.rule_id == Some("R7.2")),
             "expected R7.2 to fire"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_mislabeled_raster_image_is_only_a_warning_in_a_dictionary() {
+        let dir = std::env::temp_dir().join(format!(
+            "kindling_ms_r72_dict_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("cover.jpg"),
+            [0x89u8, 0x50, 0x4E, 0x47, 0x0D, 0x0A],
+        )
+        .unwrap();
+        let level_for = |profile| {
+            let item = mk_item("img", "cover.jpg", "image/jpeg", None, None);
+            let mut report = empty_report();
+            check_media_type_magic(&dir, &[item], profile, &mut report);
+            report
+                .findings
+                .iter()
+                .find(|f| f.rule_id == Some("R7.2"))
+                .map(|f| f.level)
+        };
+        assert_eq!(
+            level_for(Profile::Dict),
+            Some(crate::kdp_rules::Severity::Warning)
+        );
+        assert_eq!(
+            level_for(Profile::Default),
+            Some(crate::kdp_rules::Severity::Error)
         );
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -743,7 +810,7 @@ mod tests {
 
         let item = mk_item("img", "weird.bin", "application/x-secret", None, None);
         let mut report = empty_report();
-        check_media_type_magic(&dir, &[item], &mut report);
+        check_media_type_magic(&dir, &[item], Profile::Default, &mut report);
 
         assert!(
             report.findings.iter().any(|f| f.rule_id == Some("R7.3")),
@@ -767,7 +834,7 @@ mod tests {
         std::fs::write(&path, [0xFFu8, 0xD8, 0xFF, 0xE0]).unwrap();
         let item = mk_item("img", "real.jpg", "image/jpeg", None, None);
         let mut report = empty_report();
-        check_media_type_magic(&dir, &[item], &mut report);
+        check_media_type_magic(&dir, &[item], Profile::Default, &mut report);
         assert!(
             report
                 .findings

@@ -7,6 +7,7 @@ use crate::checks;
 use crate::extracted::ExtractedEpub;
 use crate::kdp_rules;
 use crate::kdp_rules::Severity;
+use crate::profile::Profile;
 
 /// Severity of a validation finding. Alias kept for the existing test/call
 /// sites during the Phase 0 refactor.
@@ -114,6 +115,23 @@ impl ValidationReport {
         });
     }
 
+    /// Emit a finding for `rule_id` at `level` rather than the catalog's, for
+    /// a check that knows one particular case is less serious than the rule
+    /// in general.
+    pub fn emit_at_level(
+        &mut self,
+        rule_id: &'static str,
+        level: Level,
+        context: impl Into<String>,
+        file: Option<PathBuf>,
+        line: Option<usize>,
+    ) {
+        self.emit_at(rule_id, context, file, line);
+        if let Some(f) = self.findings.last_mut() {
+            f.level = level;
+        }
+    }
+
     pub fn error_count(&self) -> usize {
         self.findings
             .iter()
@@ -148,6 +166,18 @@ pub fn validate(epub: &ExtractedEpub) -> ValidationReport {
         f.rule_id
             .is_none_or(|id| kdp_rules::get(id).applies_to(profile))
     });
+    // Some errors are only warnings on a dictionary; see
+    // kdp_rules::DICT_WARNINGS for which, and why.
+    if profile == Profile::Dict {
+        for f in &mut report.findings {
+            if f.level == Level::Error
+                && f.rule_id
+                    .is_some_and(|id| kdp_rules::DICT_WARNINGS.contains(&id))
+            {
+                f.level = Level::Warning;
+            }
+        }
+    }
     report
 }
 

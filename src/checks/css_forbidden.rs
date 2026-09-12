@@ -92,8 +92,19 @@ impl Check for CssForbiddenChecks {
                 }
             }
 
-            // R6.16 url() unresolvable.
+            // R6.16 url() unresolvable. An @font-face src url is left to
+            // R6.17, which says what happens to the font. Reported here as
+            // well, it was a second error for the same url, and on a
+            // dictionary the one that still stopped the build.
+            let font_srcs: HashSet<&str> = summary
+                .font_faces
+                .iter()
+                .flat_map(|face| face.src_urls.iter().map(|(_, target)| target.as_str()))
+                .collect();
             for (line, target) in &summary.url_refs {
+                if font_srcs.contains(target.as_str()) {
+                    continue;
+                }
                 if let Some(reason) =
                     classify_url(target, href, &manifest_hrefs, base_dir.as_path())
                 {
