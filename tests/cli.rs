@@ -935,9 +935,9 @@ mod validate {
         //
         // A decimal level is numbered with <li value="N">, which the popup
         // honors and kindlegen emits. A level that declared a lettered or
-        // roman style gets its marker written into the item text instead, and
-        // no value: the popup draws no marker for an unnumbered ordered item,
-        // so the literal one cannot collide with a drawn one.
+        // roman style is written as plain lines with its marker as text, not
+        // as list items: firmware 5.19.2 draws 65535 for an ordered item
+        // without a value (issue #56).
         let (tmp, opf) = stage_fixture("dict_list_markers", "content.opf");
         let out = run_build(&["--no-validate", opf.to_str().unwrap()]);
         assert!(
@@ -963,12 +963,16 @@ mod validate {
             "outer list's second sense is numbered 2\n{rawml}"
         );
         assert!(
-            rawml.contains("<li>a. "),
-            "the lower-alpha level carries a literal marker\n{rawml}"
+            rawml.contains("<div>a. "),
+            "the lower-alpha level is a plain line with a literal marker\n{rawml}"
         );
         assert!(
-            rawml.contains("<li>i. "),
-            "the lower-roman level carries a literal marker\n{rawml}"
+            rawml.contains("<div>i. "),
+            "the lower-roman level is a plain line with a literal marker\n{rawml}"
+        );
+        assert!(
+            !rawml.contains("<li>"),
+            "an ordered item without a value draws 65535 on firmware 5.19.2\n{rawml}"
         );
         assert!(
             !rawml.contains("style="),

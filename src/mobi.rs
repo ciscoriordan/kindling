@@ -3141,23 +3141,6 @@ fn entry_needle(stripped: &str) -> Box<[u8]> {
     stripped.as_bytes()[..end].into()
 }
 
-/// Number the `<li>` items of every `<ol>` with an explicit `value="N"`
-/// attribute, matching how kindlegen renders ordered lists for the MOBI7
-/// dictionary popup.
-///
-/// reader-dict authors numbered senses as `<ol>` and lettered / roman
-/// sub-senses as `<ol style="list-style-type:lower-alpha|lower-roman">`
-/// (issue #16). The Kindle popup renderer ignores `list-style-type` CSS *and*
-/// the `<ol type>` attribute; `strip_idx_markup`'s blanket `style=`/`class=`
-/// removal (issue #6) dropped the only marker hint, so lists rendered with no
-/// numbers at all (the symptom looked like `list-style-type: none`). kindlegen
-/// drops the list CSS too, but writes the item number onto each `<li>` as
-/// `value="N"`, which the popup *does* honor. We reproduce that exactly:
-/// each `<ol>` keeps its own 1-based counter, every nested `<ol>` restarts at
-/// 1, and `<ul>` items are left alone (bullets need no number). `style=` /
-/// `class=` are still removed from the list tags, keeping the issue #6 fix
-/// intact. MOBI7 has no lettered/roman lists, so nested lists fall back to
-/// decimal here, as they do under kindlegen.
 /// The marker a declared ordered-list level draws.
 ///
 /// Only the styles a source actually declares are represented. Everything
@@ -3245,6 +3228,26 @@ fn roman_marker(n: u32, upper: bool) -> String {
     if upper { out.to_ascii_uppercase() } else { out }
 }
 
+/// Number the `<li>` items of every `<ol>` with an explicit `value="N"`
+/// attribute, matching how kindlegen renders ordered lists for the MOBI7
+/// dictionary popup.
+///
+/// reader-dict authors numbered senses as `<ol>` and lettered / roman
+/// sub-senses as `<ol style="list-style-type:lower-alpha|lower-roman">`
+/// (issue #16). The Kindle popup renderer ignores `list-style-type` CSS *and*
+/// the `<ol type>` attribute; `strip_idx_markup`'s blanket `style=`/`class=`
+/// removal (issue #6) dropped the only marker hint, so lists rendered with no
+/// numbers at all (the symptom looked like `list-style-type: none`). kindlegen
+/// drops the list CSS too, but writes the item number onto each `<li>` as
+/// `value="N"`, which the popup *does* honor. We reproduce that: each `<ol>`
+/// keeps its own 1-based counter, every nested `<ol>` restarts at 1, and
+/// `<ul>` items are left alone (bullets need no number). `style=` / `class=`
+/// are still removed from the list tags, keeping the issue #6 fix intact.
+///
+/// A level that declares a lettered or roman style is not written as a list
+/// at all: it becomes `<div>` blocks with the marker as text (issue #56).
+/// Every `<li>` left in an `<ol>` carries a `value`, because firmware 5.19.2
+/// draws 65535 for an ordered item without one, where 5.18.1 draws nothing.
 fn convert_list_markers(html: &str) -> String {
     use std::sync::OnceLock;
     static LIST_TAG: OnceLock<Regex> = OnceLock::new();
@@ -3285,11 +3288,15 @@ fn convert_list_markers(html: &str) -> String {
             let name = caps[2].to_ascii_lowercase();
             let attrs = &caps[3];
             match (closing, name.as_str()) {
-                (true, "ol") | (true, "ul") => {
-                    stack.pop();
-                    format!("</{name}>")
-                }
-                (true, "li") => "</li>".to_string(),
+                (true, "ol") | (true, "ul") => match stack.pop() {
+                    // A lettered or roman level was written as blocks.
+                    Some((Some(style), _)) if style != ListStyle::Decimal => "</div>".to_string(),
+                    _ => format!("</{name}>"),
+                },
+                (true, "li") => match stack.last() {
+                    Some((Some(style), _)) if *style != ListStyle::Decimal => "</div>".to_string(),
+                    _ => "</li>".to_string(),
+                },
                 (false, "ol") | (false, "ul") => {
                     if name == "ul" {
                         stack.push((None, 1));
@@ -3305,14 +3312,14 @@ fn convert_list_markers(html: &str) -> String {
                         .or_else(|| type_attr.captures(attrs).map(|c| ListStyle::parse(&c[1])))
                         .unwrap_or(ListStyle::Decimal);
                     stack.push((Some(style), 1));
-                    let mut cleaned = strip(attrs);
                     if style != ListStyle::Decimal {
-                        // The marker is written into the item text below, so
-                        // any `type` here would be a second one if the device
-                        // happens to draw it.
-                        cleaned = type_attr.replace_all(&cleaned, "").into_owned();
+                        // A lettered or roman level is written as plain
+                        // blocks, its items below carrying their marker as
+                        // text, so it has no `type` to keep either.
+                        let cleaned = type_attr.replace_all(&strip(attrs), "").into_owned();
+                        return format!("<div{cleaned}>");
                     }
-                    format!("<ol{cleaned}>")
+                    format!("<ol{}>", strip(attrs))
                 }
                 (false, "li") => {
                     let cleaned = strip(attrs);
@@ -3332,17 +3339,15 @@ fn convert_list_markers(html: &str) -> String {
                                     format!("<li value=\"{n}\"{cleaned}>")
                                 }
                             } else {
-                                // A lettered or roman level: the marker goes
-                                // into the text and the item carries no
-                                // `value` (issue #56). Amazon's own Oxford
-                                // dictionary distinguishes its sub-senses
-                                // with literal characters rather than list
-                                // markup, and 0.22.1 established that an
-                                // ordered item with no `value` draws nothing
-                                // of its own, so there is no second marker to
-                                // collide with this one.
+                                // A lettered or roman level: a plain block with
+                                // the marker as text, not a list item (issue
+                                // #56). Amazon's own Oxford dictionary marks
+                                // its sub-senses with literal characters and no
+                                // list markup. An ordered item without a
+                                // `value` draws nothing on firmware 5.18.1 but
+                                // 65535 on 5.19.2, so none may be left.
                                 let cleaned = value_num.replace_all(&cleaned, "").into_owned();
-                                format!("<li{cleaned}>{} ", style.marker(n))
+                                format!("<div{cleaned}>{} ", style.marker(n))
                             }
                         }
                         // <ul> item (or a stray <li> outside any list): no number.
@@ -4355,16 +4360,6 @@ mod record_split_tests {
         );
     }
 
-    /// reader-dict (issues #16 and #56): numbered senses are `<ol>`, and
-    /// lettered or roman sub-senses declare an inline `list-style-type`.
-    ///
-    /// A decimal level keeps `value="N"`, which is the one marker the MOBI7
-    /// popup is confirmed to draw. A declared lettered or roman level gets
-    /// its marker written into the item text instead, and carries no `value`
-    /// at all: Amazon's own Oxford dictionary distinguishes its sub-senses
-    /// with literal characters rather than list markup, and 0.22.1
-    /// established that an ordered item with no `value` draws nothing of its
-    /// own, so the literal marker cannot collide with a drawn one.
     #[test]
     fn strip_idx_markup_drops_scripts_as_kindlegen_does() {
         let out = strip_idx_markup(
@@ -4377,8 +4372,16 @@ mod record_split_tests {
         );
     }
 
+    /// reader-dict (issues #16 and #56): numbered senses are `<ol>`, and
+    /// lettered or roman sub-senses declare an inline `list-style-type`.
+    ///
+    /// A decimal level keeps `value="N"`, the one marker the MOBI7 popup is
+    /// confirmed to draw on every firmware. A declared lettered or roman
+    /// level is written as plain lines with its marker as text: an ordered
+    /// item without a `value` draws nothing on firmware 5.18.1 but 65535 on
+    /// 5.19.2, so none may be left.
     #[test]
-    fn a_declared_sub_list_style_becomes_a_literal_marker() {
+    fn a_declared_sub_list_becomes_plain_lines() {
         let html = concat!(
             "<idx:entry><idx:orth><b>peri</b></idx:orth>",
             "<p><b>Nom</b></p><ol>",
@@ -4395,10 +4398,17 @@ mod record_split_tests {
         assert!(out.contains("<li value=\"1\">main sense</li>"), "{out}");
         assert!(out.contains("<li value=\"2\">second sense</li>"), "{out}");
 
-        // The declared levels carry their marker as text and no value.
-        assert!(out.contains("<li>a. sub one</li>"), "{out}");
-        assert!(out.contains("<li>b. sub two</li>"), "{out}");
-        assert!(out.contains("<li>i. sub sub</li>"), "{out}");
+        // The declared levels are plain lines with their marker as text.
+        assert!(out.contains("<div>a. sub one</div>"), "{out}");
+        assert!(out.contains("<div>b. sub two</div>"), "{out}");
+        assert!(out.contains("<div>i. sub sub</div>"), "{out}");
+        // No ordered item is left without a value.
+        assert!(!out.contains("<li>"), "an unnumbered ordered item: {out}");
+        assert_eq!(
+            out.matches("<ol").count(),
+            1,
+            "only the decimal level is a list: {out}"
+        );
 
         assert!(!out.contains("style="), "style attr must be gone: {out}");
         assert!(
