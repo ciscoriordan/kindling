@@ -173,6 +173,55 @@ fn writes_a_huffdic_dictionary_that_reads_back_identically() {
         "huffdic should have produced the smaller file"
     );
 
+    // A huffdic file needs a DATP record, the decoded length of every text
+    // record, and record 0 has to point at it: Mobipocket Reader for Windows
+    // reports a huffdic file without one as corrupted (issue #49).
+    let word = |r: &[u8], o: usize| u32::from_be_bytes(r[o..o + 4].try_into().unwrap()) as usize;
+    let half = |r: &[u8], o: usize| u16::from_be_bytes([r[o], r[o + 1]]) as usize;
+    let datp_idx = word(record0, 0x78);
+    assert_eq!(
+        word(record0, 0x7C),
+        1,
+        "record 0 should point at one DATP record"
+    );
+    let datp = parsed.palmdb.record(&huff_bytes, datp_idx);
+    assert_eq!(&datp[..4], b"DATP", "0x78 does not point at a DATP record");
+    // Two files identical but for this word were tried in Mobipocket Reader
+    // for Windows: the one carrying kindlegen's value opened and the one
+    // carrying zero was called corrupted. Nobody here knows what it means.
+    assert_ne!(
+        word(datp, 0x14),
+        0,
+        "the DATP word at 0x14 must not be zero"
+    );
+    let text_count = half(record0, 8);
+    let record_size = half(record0, 10);
+    assert_eq!(half(datp, 10), text_count, "one DATP entry per text record");
+    let total = word(datp, 12);
+    assert_eq!(
+        total,
+        word(record0, 4),
+        "DATP total should be the text length"
+    );
+    let lengths: Vec<usize> = (0..text_count).map(|i| half(datp, 24 + 2 * i)).collect();
+    assert_eq!(lengths.iter().sum::<usize>(), total);
+    assert!(
+        lengths[..text_count - 1].iter().all(|&l| l == record_size),
+        "every record but the last holds a full record's text"
+    );
+    assert_eq!(
+        half(record0, 0xC2),
+        datp_idx,
+        "the DATP should be the last content record, as kindlegen has it"
+    );
+    let plain_bytes = std::fs::read(&plain).unwrap();
+    let plain_parsed = parse_mobi_file(&plain_bytes).expect("parse plain MOBI");
+    assert_eq!(
+        word(plain_parsed.palmdb.record(&plain_bytes, 0), 0x78),
+        0,
+        "a PalmDOC build needs no DATP"
+    );
+
     assert_eq!(
         text_of(&huff),
         text_of(&plain),

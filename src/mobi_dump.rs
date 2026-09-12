@@ -141,10 +141,11 @@ fn parse_palmdb(data: &[u8]) -> io::Result<PalmDb> {
 /// load, how many phrases they hold, and whether the text records they cover
 /// decompress to the length record 0 declares.
 ///
-/// kindling never writes huffdic, so this only ever runs on files built
-/// elsewhere - `kindlegen -c2` output and Amazon's own store dictionaries
-/// (issue #49). Reporting the decoded length is the point: it is the one line
-/// that proves the model was understood rather than merely parsed.
+/// kindling writes huffdic only when KINDLING_HUFFDIC asks for it, so this
+/// mostly runs on files built elsewhere - `kindlegen -c2` output and Amazon's
+/// own store dictionaries (issue #49). Reporting the decoded length is the
+/// point: it is the one line that proves the model was understood rather than
+/// merely parsed.
 fn dump_huffdic(out: &mut String, label: &str, data: &[u8], palmdb: &PalmDb, section_start: usize) {
     let record0 = match palmdb.record(data, section_start) {
         Some(r) => r,

@@ -1574,10 +1574,11 @@ fn do_lookup(input: &PathBuf, word: &str) {
     // subcommand keeps working as the scriptable assertion the README
     // documents.
     //
-    // Say so on a huffdic file. kindling never writes HUFF/CDIC, so anyone
-    // looking one up built it elsewhere (`kindlegen -c2`, or an Amazon store
-    // dictionary) and deserves to know the compression was understood rather
-    // than being left to guess it was the reason for a miss (issue #49).
+    // Say so on a huffdic file. kindling writes HUFF/CDIC only when
+    // KINDLING_HUFFDIC asks for it, so most people looking one up built it
+    // elsewhere (`kindlegen -c2`, or an Amazon store dictionary) and deserve
+    // to know the compression was understood rather than being left to guess
+    // it was the reason for a miss (issue #49).
     if report.is_huffdic() {
         eprintln!(
             "note: text records use HUFF/CDIC compression (kindlegen -c2). The lookup index is \

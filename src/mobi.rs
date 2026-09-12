@@ -573,8 +573,21 @@ fn build_dictionary_mobi(
     let num_optional =
         srcs_record.as_ref().map_or(0, |_| 1) + cmet_record.as_ref().map_or(0, |_| 1);
 
+    // A huffdic text also needs its per-record lengths in a DATP record, from
+    // the same chunking the encoder compressed (issue #49).
+    let datp_record: Option<Vec<u8>> = huffdic_encoded.as_ref().map(|e| {
+        let chunk = compute_chunk_size(text_content.len());
+        let lengths: Vec<usize> = split_on_utf8_boundaries(&text_content, chunk)
+            .iter()
+            .map(|&(start, end)| end - start)
+            .collect();
+        debug_assert_eq!(lengths.len(), e.records.len());
+        huffdic_datp(&lengths)
+    });
+    let num_datp = usize::from(datp_record.is_some());
+
     // Calculate record indices
-    // Layout: record0 | text | [HUFF + CDICs] | image records | orth_INDX | infl_INDX | FLIS | FCIS | [SRCS] | [CMET] | EOF
+    // Layout: record0 | text | [HUFF + CDICs] | image records | orth_INDX | infl_INDX | [DATP] | FLIS | FCIS | [SRCS] | [CMET] | EOF
     //
     // The huffdic model sits directly after the text, which is where
     // kindlegen puts it and where huff_rec_index points, so everything past
@@ -588,7 +601,12 @@ fn build_dictionary_mobi(
     };
     let orth_index_record = after_model + num_image_records;
     let infl_index_record = 0xFFFFFFFFusize;
-    let flis_record = orth_index_record + indx_records.len();
+    // DATP goes directly before FLIS, where kindlegen puts it, which also
+    // makes it the last content record (flis_record - 1) as kindlegen has it.
+    let datp_index = datp_record
+        .as_ref()
+        .map(|_| orth_index_record + indx_records.len());
+    let flis_record = orth_index_record + indx_records.len() + num_datp;
     let fcis_record = flis_record + 1;
     let srcs_record_idx = if srcs_record.is_some() {
         Some(fcis_record + 1)
@@ -600,6 +618,7 @@ fn build_dictionary_mobi(
         + num_model
         + num_image_records
         + indx_records.len()
+        + num_datp
         + 3
         + num_optional;
 
@@ -638,6 +657,7 @@ fn build_dictionary_mobi(
         None, // no doc_type for dictionaries
         0,    // unused: the dictionary EXTH (build_exth) writes its own 125
         huffdic_model,
+        datp_index,
     );
 
     // Assemble all records
@@ -646,6 +666,9 @@ fn build_dictionary_mobi(
     all_records.extend(model_records);
     all_records.extend(image_records);
     all_records.extend(indx_records);
+    if let Some(datp) = datp_record {
+        all_records.push(datp);
+    }
     all_records.push(flis);
     all_records.push(fcis);
     if let Some(srcs) = srcs_record {
@@ -1465,6 +1488,7 @@ fn build_book_mobi(
             // EXTH 125: resources live in the KF7 section of a dual file
             (num_image_records + num_font_records) as u32,
             None, // books keep PalmDOC; huffdic is a dictionary option
+            None, // books and comics are never huffdic, so no DATP
         );
 
         // Build KF8 record 0 (version=8, KF8-relative indices)
@@ -3788,6 +3812,42 @@ fn insert_guide_reference(text_bytes: &[u8]) -> Vec<u8> {
 /// Threshold for parallel compression (1 MB).
 const PARALLEL_THRESHOLD: usize = 1024 * 1024;
 
+/// The DATP record a huffdic text needs: how many bytes each text record
+/// decodes to.
+///
+/// A PalmDOC record is cheap to size by decompressing it; a huffdic record
+/// cannot be sized without walking its whole bitstream, so a reader keeps
+/// this table instead. Mobipocket Reader for Windows reports a huffdic file
+/// as "File corrupted" when record 0 does not point at one (issue #49).
+///
+/// The layout is read off kindlegen 2.9 output: the magic, a word of 12, the
+/// bytes 1 and 4, the record count, the total text length, a zero word, a
+/// word whose meaning is not known, then one u16 per text record.
+fn huffdic_datp(lengths: &[usize]) -> Vec<u8> {
+    let total: usize = lengths.iter().sum();
+    let mut rec = Vec::with_capacity(24 + 2 * lengths.len());
+    rec.extend_from_slice(b"DATP");
+    rec.extend_from_slice(&12u32.to_be_bytes());
+    rec.extend_from_slice(&[1, 4]);
+    rec.extend_from_slice(&(lengths.len() as u16).to_be_bytes());
+    rec.extend_from_slice(&(total as u32).to_be_bytes());
+    rec.extend_from_slice(&0u32.to_be_bytes());
+    // Not understood, but it cannot be left at zero: Mobipocket Reader for
+    // Windows opens a dictionary carrying kindlegen's value here and calls
+    // the same file with a zero "File corrupted" (issue #49). The value does
+    // not vary with the text: kindlegen writes 64925 in files of very
+    // different sizes.
+    rec.extend_from_slice(&64925u32.to_be_bytes());
+    for &len in lengths {
+        debug_assert!(
+            len <= u16::MAX as usize,
+            "a text record longer than a DATP entry"
+        );
+        rec.extend_from_slice(&(len as u16).to_be_bytes());
+    }
+    rec
+}
+
 /// Compute the chunk size used when splitting text into records.
 ///
 /// The PalmDOC `record_size` field in the header is an upper bound on
@@ -5489,6 +5549,8 @@ fn build_record0(
     // `(first model record, model record count)` when the text is huffdic
     // compressed; the count covers the HUFF record and its CDICs.
     huffdic: Option<(usize, usize)>,
+    // The DATP record, when there is one (huffdic text only).
+    datp: Option<usize>,
 ) -> Vec<u8> {
     let default_name = if is_dictionary { "Dictionary" } else { "Book" };
     let full_name = if opf.title.is_empty() {
@@ -5575,6 +5637,13 @@ fn build_record0(
     let (huff_record, huff_count) = huffdic.unwrap_or((0, 0));
     put32(&mut mobi, 96, huff_record as u32);
     put32(&mut mobi, 100, huff_count as u32);
+    // kindlegen writes the DATP record number and a count of 1 here, and
+    // Mobipocket Reader for Windows will not open a huffdic file that leaves
+    // them at zero (issue #49).
+    if let Some(datp) = datp {
+        put32(&mut mobi, 104, datp as u32);
+        put32(&mut mobi, 108, 1);
+    }
 
     // EXTH flags / locale marker at offset 112.
     // Dictionaries: 0x50 (bit 6 = EXTH present, bit 4 set) - matches Kindle Previewer output.
