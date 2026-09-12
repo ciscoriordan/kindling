@@ -957,6 +957,34 @@ pub fn check_mobi_file(
     Ok(report)
 }
 
+/// Check that an INDX record's IDXT entry offsets are in order and inside
+/// the record's entries. They are 16-bit, so a record past 64 KB wraps them
+/// and every later entry points at the wrong bytes, while the IDXT magic
+/// still sits where the header says. kindling's KF8 indexes did exactly that
+/// for big books before they were split across records the way kindlegen
+/// splits them.
+fn idxt_entry_problem(rec: &[u8]) -> Option<String> {
+    let idxt_off = read_u32_be(rec, 20)? as usize;
+    if idxt_off == 0 || rec.get(idxt_off..idxt_off + 4)? != b"IDXT" {
+        return None;
+    }
+    let count = read_u32_be(rec, 24)? as usize;
+    let mut prev = 0usize;
+    for j in 0..count {
+        let at = idxt_off + 4 + 2 * j;
+        let off = u16::from_be_bytes(rec.get(at..at + 2)?.try_into().ok()?) as usize;
+        if off < 192 || off >= idxt_off || (j > 0 && off <= prev) {
+            return Some(format!(
+                "entry {} of {} starts at offset {}, out of order or outside the entries; \
+                 an index record past 64 KB wraps its 16-bit IDXT offsets",
+                j, count, off
+            ));
+        }
+        prev = off;
+    }
+    None
+}
+
 /// Walk every PalmDB record and verify INDX/FCIS/FLIS/FDST records have the
 /// right magic + minimum header size. Returns only warnings (P1) because a
 /// single garbled index record still lets the rest of the metadata checks
@@ -1003,6 +1031,8 @@ fn check_structural_records(data: &[u8], palmdb: &PalmDb, report: &mut CheckRepo
                         "INDX record {}: IDXT offset {} does not point at IDXT magic",
                         i, idxt_off
                     ));
+                } else if let Some(problem) = idxt_entry_problem(rec) {
+                    report.warn(format!("INDX record {}: {}", i, problem));
                 }
             }
             b"FCIS" => {
@@ -1077,6 +1107,39 @@ pub fn report_result(path: &Path, report: &CheckReport) -> Result<(), Box<dyn st
 
 #[cfg(test)]
 mod tests {
+    /// An INDX record whose IDXT lists `offsets`, with entries of one byte
+    /// each laid out from offset 192.
+    fn indx_with_idxt(offsets: &[u16]) -> Vec<u8> {
+        let entries = 8usize;
+        let idxt = 192 + entries;
+        let mut rec = vec![0u8; idxt];
+        rec[..4].copy_from_slice(b"INDX");
+        rec[4..8].copy_from_slice(&192u32.to_be_bytes());
+        rec[20..24].copy_from_slice(&(idxt as u32).to_be_bytes());
+        rec[24..28].copy_from_slice(&(offsets.len() as u32).to_be_bytes());
+        rec.extend_from_slice(b"IDXT");
+        for o in offsets {
+            rec.extend_from_slice(&o.to_be_bytes());
+        }
+        rec
+    }
+
+    #[test]
+    fn idxt_offsets_in_order_are_fine() {
+        assert_eq!(idxt_entry_problem(&indx_with_idxt(&[192, 194, 197])), None);
+    }
+
+    #[test]
+    fn wrapped_idxt_offsets_are_reported() {
+        // What a record past 64 KB looks like: an offset that wrapped back.
+        let problem = idxt_entry_problem(&indx_with_idxt(&[192, 197, 13])).expect("a wrap");
+        assert!(problem.contains("entry 2 of 3"), "{problem}");
+        assert!(
+            idxt_entry_problem(&indx_with_idxt(&[192, 250])).is_some(),
+            "past the IDXT"
+        );
+    }
+
     use super::*;
 
     /// Minimal book OPF + HTML fixture on disk.

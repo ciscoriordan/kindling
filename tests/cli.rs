@@ -215,6 +215,215 @@ mod validate {
     }
 
     #[test]
+    fn a_book_with_thousands_of_toc_entries_gets_a_sound_index() {
+        // One index record cannot hold 6,000 TOC entries: its 16-bit entry
+        // offsets wrapped past 64 KB and scrambled the rest of the TOC, and
+        // the same happened to the skeleton and fragment indexes of books with
+        // thousands of chapters. The indexes are split across records the way
+        // kindlegen splits them, and the post-build check now looks for a wrap.
+        let dir = std::env::temp_dir().join(format!(
+            "kindling_big_toc_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let n = 6000;
+        std::fs::write(
+            dir.join("content.opf"),
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="uid">
+<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Big TOC</dc:title><dc:language>en</dc:language><dc:identifier id="uid">big-toc</dc:identifier></metadata>
+<manifest><item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/><item id="c" href="c.xhtml" media-type="application/xhtml+xml"/></manifest>
+<spine toc="ncx"><itemref idref="c"/></spine></package>"#,
+        )
+        .unwrap();
+        let points: String = (0..n)
+            .map(|i| {
+                format!(
+                    r#"<navPoint id="n{i}" playOrder="{}"><navLabel><text>Heading {i}</text></navLabel><content src="c.xhtml#h{i}"/></navPoint>"#,
+                    i + 1
+                )
+            })
+            .collect();
+        std::fs::write(
+            dir.join("toc.ncx"),
+            format!(
+                r#"<?xml version="1.0" encoding="utf-8"?><ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><head><meta name="dtb:uid" content="big-toc"/></head><docTitle><text>Big TOC</text></docTitle><navMap>{points}</navMap></ncx>"#
+            ),
+        )
+        .unwrap();
+        let body: String = (0..n)
+            .map(|i| format!(r#"<h2 id="h{i}">Heading {i}</h2><p>Text {i}.</p>"#))
+            .collect();
+        std::fs::write(
+            dir.join("c.xhtml"),
+            format!(
+                r#"<?xml version="1.0" encoding="utf-8"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>Big</title></head><body>{body}</body></html>"#
+            ),
+        )
+        .unwrap();
+
+        let out_path = dir.join("big.azw3");
+        let built = Command::new(kindling_bin())
+            .args([
+                "build",
+                dir.join("content.opf").to_str().unwrap(),
+                "-o",
+                out_path.to_str().unwrap(),
+                "--no-validate",
+            ])
+            .output()
+            .expect("spawn kindling-cli");
+        let log = format!(
+            "{}{}",
+            String::from_utf8_lossy(&built.stdout),
+            String::from_utf8_lossy(&built.stderr)
+        );
+        assert!(built.status.success(), "build failed\n{log}");
+        assert!(
+            log.contains(" 0 P1 warnings"),
+            "the post-build check flagged the index\n{log}"
+        );
+
+        // Read the NCX index back: several data records, every IDXT in order.
+        let b = std::fs::read(&out_path).unwrap();
+        let be32 = |o: usize| u32::from_be_bytes(b[o..o + 4].try_into().unwrap()) as usize;
+        let count = u16::from_be_bytes([b[76], b[77]]) as usize;
+        let offsets: Vec<usize> = (0..count)
+            .map(|i| be32(78 + 8 * i))
+            .chain([b.len()])
+            .collect();
+        let rec = |i: usize| &b[offsets[i]..offsets[i + 1]];
+        let ncx = u32::from_be_bytes(rec(0)[0xF4..0xF8].try_into().unwrap()) as usize;
+        let primary = rec(ncx);
+        assert_eq!(&primary[..4], b"INDX");
+        let data_records = u32::from_be_bytes(primary[24..28].try_into().unwrap()) as usize;
+        assert!(data_records > 1, "6,000 TOC entries in one index record");
+        let mut entries = 0;
+        for k in 0..data_records {
+            let d = rec(ncx + 1 + k);
+            let idxt = u32::from_be_bytes(d[20..24].try_into().unwrap()) as usize;
+            let n = u32::from_be_bytes(d[24..28].try_into().unwrap()) as usize;
+            let offs: Vec<u16> = (0..n)
+                .map(|j| u16::from_be_bytes([d[idxt + 4 + 2 * j], d[idxt + 5 + 2 * j]]))
+                .collect();
+            assert!(offs.windows(2).all(|w| w[0] < w[1]), "record {k} wrapped");
+            entries += n;
+        }
+        assert_eq!(entries, n);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_book_with_thousands_of_chapters_gets_sound_skeleton_and_fragment_indexes() {
+        // One skeleton entry and at least one fragment entry per chapter: in
+        // one record, the skeleton index wrapped past about 2,300 chapters and
+        // the fragment index past about 3,100.
+        let dir = std::env::temp_dir().join(format!(
+            "kindling_many_chapters_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let n = 3000;
+        let items: String = (0..n)
+            .map(|i| {
+                format!(r#"<item id="c{i}" href="c{i}.xhtml" media-type="application/xhtml+xml"/>"#)
+            })
+            .collect();
+        let refs: String = (0..n)
+            .map(|i| format!(r#"<itemref idref="c{i}"/>"#))
+            .collect();
+        std::fs::write(
+            dir.join("content.opf"),
+            format!(
+                r#"<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="uid">
+<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Many chapters</dc:title><dc:language>en</dc:language><dc:identifier id="uid">many-chapters</dc:identifier></metadata>
+<manifest>{items}</manifest><spine>{refs}</spine></package>"#
+            ),
+        )
+        .unwrap();
+        for i in 0..n {
+            std::fs::write(
+                dir.join(format!("c{i}.xhtml")),
+                format!(
+                    r#"<?xml version="1.0" encoding="utf-8"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>C{i}</title></head><body><h1>Chapter {i}</h1><p>Text {i}.</p></body></html>"#
+                ),
+            )
+            .unwrap();
+        }
+
+        let out_path = dir.join("many.azw3");
+        let built = Command::new(kindling_bin())
+            .args([
+                "build",
+                dir.join("content.opf").to_str().unwrap(),
+                "-o",
+                out_path.to_str().unwrap(),
+                "--no-validate",
+            ])
+            .output()
+            .expect("spawn kindling-cli");
+        let log = format!(
+            "{}{}",
+            String::from_utf8_lossy(&built.stdout),
+            String::from_utf8_lossy(&built.stderr)
+        );
+        assert!(built.status.success(), "build failed\n{log}");
+        assert!(
+            log.contains(" 0 P1 warnings"),
+            "the post-build check flagged an index\n{log}"
+        );
+
+        let b = std::fs::read(&out_path).unwrap();
+        let be32 = |o: usize| u32::from_be_bytes(b[o..o + 4].try_into().unwrap()) as usize;
+        let count = u16::from_be_bytes([b[76], b[77]]) as usize;
+        let offsets: Vec<usize> = (0..count)
+            .map(|i| be32(78 + 8 * i))
+            .chain([b.len()])
+            .collect();
+        let rec = |i: usize| &b[offsets[i]..offsets[i + 1]];
+        for (field, name) in [(0xF8usize, "fragment"), (0xFC, "skeleton")] {
+            let at = u32::from_be_bytes(rec(0)[field..field + 4].try_into().unwrap()) as usize;
+            let primary = rec(at);
+            assert_eq!(&primary[..4], b"INDX", "{name} index");
+            let data_records = u32::from_be_bytes(primary[24..28].try_into().unwrap()) as usize;
+            assert!(
+                data_records > 1,
+                "{name} index of {n} chapters in one record"
+            );
+            let mut entries = 0;
+            for k in 0..data_records {
+                let d = rec(at + 1 + k);
+                let idxt = u32::from_be_bytes(d[20..24].try_into().unwrap()) as usize;
+                let m = u32::from_be_bytes(d[24..28].try_into().unwrap()) as usize;
+                let offs: Vec<u16> = (0..m)
+                    .map(|j| u16::from_be_bytes([d[idxt + 4 + 2 * j], d[idxt + 5 + 2 * j]]))
+                    .collect();
+                assert!(
+                    offs.windows(2).all(|w| w[0] < w[1]),
+                    "{name} record {k} wrapped"
+                );
+                entries += m;
+            }
+            let total = u32::from_be_bytes(primary[36..40].try_into().unwrap()) as usize;
+            assert_eq!(entries, total, "{name} entries across records");
+            assert!(
+                total >= n,
+                "{name} index has {total} entries for {n} chapters"
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn a_dictionary_without_a_cover_still_builds() {
         // PyGlossary writes no cover unless one is configured, runs kindling
         // in place of kindlegen, and never checks that a file appeared. A

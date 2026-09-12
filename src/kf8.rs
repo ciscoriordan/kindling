@@ -1903,6 +1903,52 @@ fn build_indx_primary(
     record
 }
 
+/// How big an INDX data record may grow, counted before its padding. Each
+/// entry's position in a record is a 16-bit IDXT offset, so a record cannot
+/// pass 64 KB. kindlegen starts a new record before the header, the entries
+/// and the IDXT would pass 64,504 bytes counted before each is padded to 4
+/// bytes, so a record it writes can come to 64,508. Counted that way this
+/// reproduces kindlegen's own splits exactly; counted after the padding it
+/// puts one entry fewer in some records. kindling used to write every entry
+/// into one record, which wrapped those offsets: from the 2,341st entry of a
+/// skeleton index and the 3,170th of a fragment index, the rest of the index
+/// pointed at the wrong bytes.
+const MAX_INDX_DATA_RECORD: usize = 64_504;
+
+/// The primary record's routing list: each data record's last label and
+/// entry count.
+type IndxGeometry = Vec<(Vec<u8>, u32)>;
+
+/// Split `(label, encoded entry)` pairs into INDX data records the way
+/// kindlegen does (see MAX_INDX_DATA_RECORD), and return them with each
+/// record's (last label, entry count) for the primary record. An index that
+/// fits in one record comes out exactly as `build_indx_data_record` writes it.
+fn build_indx_data_records(entries: &[(Vec<u8>, Vec<u8>)]) -> (Vec<Vec<u8>>, IndxGeometry) {
+    // Header, entries and IDXT, before padding, as kindlegen counts them.
+    let unpadded_len =
+        |entry_bytes: usize, count: usize| INDX_HEADER_LENGTH + entry_bytes + 4 + 2 * count;
+    let mut records = Vec::new();
+    let mut geometry = Vec::new();
+    let mut start = 0;
+    while start < entries.len() {
+        let mut end = start;
+        let mut bytes = 0;
+        while end < entries.len() {
+            let with_next = bytes + entries[end].1.len();
+            if end > start && unpadded_len(with_next, end + 1 - start) > MAX_INDX_DATA_RECORD {
+                break;
+            }
+            bytes = with_next;
+            end += 1;
+        }
+        let group: Vec<Vec<u8>> = entries[start..end].iter().map(|(_, e)| e.clone()).collect();
+        records.push(build_indx_data_record(&group));
+        geometry.push((entries[end - 1].0.clone(), (end - start) as u32));
+        start = end;
+    }
+    (records, geometry)
+}
+
 /// Build the skeleton INDX (primary + data).
 ///
 /// Tag layout (Calibre SkelIndex):
@@ -1928,7 +1974,7 @@ fn build_skeleton_indx(skels: &[SkeletonEntry]) -> Vec<Vec<u8>> {
     ];
     let tagx = build_tagx(&[(1, 1, 3), (6, 2, 12)]);
 
-    let mut entries: Vec<Vec<u8>> = Vec::with_capacity(skels.len());
+    let mut entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(skels.len());
     for s in skels {
         let chunk_count_vals = vec![s.chunk_count as u32, s.chunk_count as u32];
         let geom_vals = vec![
@@ -1942,20 +1988,12 @@ fn build_skeleton_indx(skels: &[SkeletonEntry]) -> Vec<Vec<u8>> {
             &tag_defs,
             &[chunk_count_vals, geom_vals],
         );
-        entries.push(entry);
+        entries.push((s.label.as_bytes().to_vec(), entry));
     }
 
-    let data_record = build_indx_data_record(&entries);
-    let last_label = skels.last().unwrap().label.as_bytes().to_vec();
-    let primary = build_indx_primary(
-        &tagx,
-        1,
-        skels.len(),
-        0,
-        &[(last_label, skels.len() as u32)],
-    );
-
-    vec![primary, data_record]
+    let (data_records, geometry) = build_indx_data_records(&entries);
+    let primary = build_indx_primary(&tagx, data_records.len(), skels.len(), 0, &geometry);
+    std::iter::once(primary).chain(data_records).collect()
 }
 
 /// Build the fragment INDX (primary + data) and the CNCX records that
@@ -2000,7 +2038,7 @@ fn build_fragment_indx_with_cncx(frags: &[FragmentEntry]) -> (Vec<Vec<u8>>, Vec<
     let mut cncx = CncxBuilder::new();
     let cncx_offsets: Vec<u32> = frags.iter().map(|f| cncx.add(&f.selector)).collect();
 
-    let mut entries: Vec<Vec<u8>> = Vec::with_capacity(frags.len());
+    let mut entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(frags.len());
     for (f, cncx_off) in frags.iter().zip(cncx_offsets.iter()) {
         // Label is the decimal insert position, 10 chars, zero-padded.
         // libmobi/Kindle parse this with strtoul to recover the byte
@@ -2015,23 +2053,18 @@ fn build_fragment_indx_with_cncx(frags: &[FragmentEntry]) -> (Vec<Vec<u8>>, Vec<
             vec![f.start_pos as u32, f.length as u32],
         ];
         let entry = encode_indx_entry(label_bytes, &tag_defs, &values);
-        entries.push(entry);
+        entries.push((label_bytes.to_vec(), entry));
     }
 
     let cncx_records = cncx.into_records();
     let num_cncx = cncx_records.len();
 
-    let data_record = build_indx_data_record(&entries);
-    let last_label = format!("{:010}", frags.last().unwrap().insert_pos).into_bytes();
-    let primary = build_indx_primary(
-        &tagx,
-        1,
-        frags.len(),
-        num_cncx,
-        &[(last_label, frags.len() as u32)],
-    );
-
-    (vec![primary, data_record], cncx_records)
+    let (data_records, geometry) = build_indx_data_records(&entries);
+    let primary = build_indx_primary(&tagx, data_records.len(), frags.len(), num_cncx, &geometry);
+    (
+        std::iter::once(primary).chain(data_records).collect(),
+        cncx_records,
+    )
 }
 
 /// Build the NCX INDX from the resolved (breadth-first ordered) entries.
@@ -2157,8 +2190,7 @@ fn build_ncx_indx(title: &str, entries: &[NcxIndexEntry]) -> (Vec<Vec<u8>>, Vec<
     // Entry labels are fixed-width zero-padded decimal indices so they
     // sort correctly for the primary record's binary search.
     let label_width = (entries.len() - 1).to_string().len();
-    let mut encoded: Vec<Vec<u8>> = Vec::with_capacity(entries.len());
-    let mut last_label: Vec<u8> = Vec::new();
+    let mut encoded: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(entries.len());
     for (i, e) in entries.iter().enumerate() {
         let label_offset = ncx_cncx.add(&e.label);
         let label = format!("{:0width$}", i, width = label_width).into_bytes();
@@ -2177,7 +2209,10 @@ fn build_ncx_indx(title: &str, entries: &[NcxIndexEntry]) -> (Vec<Vec<u8>>, Vec<
                 opt(e.last_child),
                 pos_fid,
             ];
-            encoded.push(encode_indx_entry(&label, &deep_tag_defs, &values));
+            encoded.push((
+                label.clone(),
+                encode_indx_entry(&label, &deep_tag_defs, &values),
+            ));
         } else {
             let values: [Vec<u32>; 5] = [
                 vec![e.offset as u32],
@@ -2186,22 +2221,26 @@ fn build_ncx_indx(title: &str, entries: &[NcxIndexEntry]) -> (Vec<Vec<u8>>, Vec<
                 vec![0], // flat depth
                 pos_fid,
             ];
-            encoded.push(encode_indx_entry(&label, &flat_tag_defs, &values));
+            encoded.push((
+                label.clone(),
+                encode_indx_entry(&label, &flat_tag_defs, &values),
+            ));
         }
-        last_label = label;
     }
 
-    let data_record = build_indx_data_record(&encoded);
+    let (data_records, geometry) = build_indx_data_records(&encoded);
     let ncx_cncx_count = ncx_cncx.record_count();
     let primary = build_indx_primary(
         &tagx,
-        1,
+        data_records.len(),
         entries.len(),
         ncx_cncx_count,
-        &[(last_label, entries.len() as u32)],
+        &geometry,
     );
-
-    (vec![primary, data_record], ncx_cncx.into_records())
+    (
+        std::iter::once(primary).chain(data_records).collect(),
+        ncx_cncx.into_records(),
+    )
 }
 
 /// Build a DATP record.
@@ -2782,6 +2821,98 @@ mod tests {
             })
             .collect();
         resolve_ncx_hierarchy(&nodes, html_length)
+    }
+
+    /// `(label, entry)` pairs shaped like TOC entries: a four-digit label and
+    /// one offset value.
+    fn toc_like_entries(n: usize) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let tags = [TagMeta {
+            number: 1,
+            values_per_entry: 1,
+            mask: 1,
+        }];
+        (0..n)
+            .map(|i| {
+                let label = format!("{i:04}").into_bytes();
+                let entry = encode_indx_entry(&label, &tags, &[vec![i as u32 * 40]]);
+                (label, entry)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_large_index_is_split_across_full_records() {
+        let entries = toc_like_entries(20_000);
+        let (records, geometry) = build_indx_data_records(&entries);
+        assert!(records.len() > 1, "20,000 entries cannot fit in one record");
+        assert_eq!(records.len(), geometry.len());
+        let mut start = 0;
+        for (k, (rec, (last_label, count))) in records.iter().zip(&geometry).enumerate() {
+            let n = *count as usize;
+            assert!(rec.len() < 0x10000, "record of {} bytes", rec.len());
+            let idxt = u32::from_be_bytes(rec[20..24].try_into().unwrap()) as usize;
+            assert_eq!(&rec[idxt..idxt + 4], b"IDXT");
+            assert_eq!(
+                u32::from_be_bytes(rec[24..28].try_into().unwrap()) as usize,
+                n
+            );
+            let offsets: Vec<usize> = (0..n)
+                .map(|j| {
+                    u16::from_be_bytes([rec[idxt + 4 + 2 * j], rec[idxt + 5 + 2 * j]]) as usize
+                })
+                .collect();
+            assert!(
+                offsets.windows(2).all(|w| w[0] < w[1]),
+                "IDXT offsets out of order"
+            );
+            // The primary routes by each record's last label.
+            let last = offsets[n - 1];
+            let len = rec[last] as usize;
+            assert_eq!(&rec[last + 1..last + 1 + len], last_label.as_slice());
+            // Each record is within the cap, and each but the last is full:
+            // one more entry would take it past.
+            let bytes: usize = entries[start..start + n].iter().map(|(_, e)| e.len()).sum();
+            assert!(INDX_HEADER_LENGTH + bytes + 4 + 2 * n <= MAX_INDX_DATA_RECORD);
+            if k + 1 < records.len() {
+                let next = entries[start + n].1.len();
+                assert!(
+                    INDX_HEADER_LENGTH + bytes + next + 4 + 2 * (n + 1) > MAX_INDX_DATA_RECORD,
+                    "record {k} is not full"
+                );
+            }
+            start += n;
+        }
+        assert_eq!(start, 20_000);
+    }
+
+    #[test]
+    fn a_record_is_split_where_kindlegen_splits_it() {
+        // kindlegen's own NCX index for an 8,000-entry book has a data record
+        // of 2,999 entries in 58,309 bytes: 64,503 bytes before padding and
+        // 64,508 after. Entries of the same sizes, and one more, split there
+        // too, which they do only when the cap is counted before padding.
+        let mut entries: Vec<(Vec<u8>, Vec<u8>)> = (0..2999)
+            .map(|i| {
+                (
+                    format!("{i:04}").into_bytes(),
+                    vec![0u8; if i < 1328 { 20 } else { 19 }],
+                )
+            })
+            .collect();
+        assert_eq!(entries.iter().map(|(_, e)| e.len()).sum::<usize>(), 58_309);
+        entries.push((b"2999".to_vec(), vec![0u8; 20]));
+        let (_, geometry) = build_indx_data_records(&entries);
+        let counts: Vec<u32> = geometry.iter().map(|g| g.1).collect();
+        assert_eq!(counts, vec![2999, 1]);
+    }
+
+    #[test]
+    fn an_index_that_fits_in_one_record_is_written_exactly_as_before() {
+        let entries = toc_like_entries(300);
+        let (records, geometry) = build_indx_data_records(&entries);
+        let plain: Vec<Vec<u8>> = entries.iter().map(|(_, e)| e.clone()).collect();
+        assert_eq!(records, vec![build_indx_data_record(&plain)]);
+        assert_eq!(geometry, vec![(b"0299".to_vec(), 300)]);
     }
 
     #[test]

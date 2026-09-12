@@ -347,30 +347,46 @@ pub fn build_orth_indx(
         char_entries.push(entry);
     }
 
-    let char_data_rec = if char_entries.is_empty() {
-        build_indx_data_record(&[])
-    } else {
-        build_indx_data_record(&char_entries)
-    };
-
-    let last_char_label = if let Some(ch) = chars.last() {
-        let cp = *ch as u32;
+    // One entry per distinct headword character, so a big CJK dictionary
+    // passes 64 KB. Split it across records the way the headword index above
+    // is split; in one record its 16-bit IDXT offsets wrapped from the
+    // 13,070th character and scrambled the rest of the index.
+    let char_label = |ch: char| {
+        let cp = ch as u32;
         vec![(cp >> 8) as u8, (cp & 0xFF) as u8]
-    } else {
-        vec![]
     };
+    let mut char_records: Vec<Vec<u8>> = Vec::new();
+    let mut char_last_labels: Vec<Vec<u8>> = Vec::new();
+    let mut char_counts: Vec<u32> = Vec::new();
+    let mut chunk_start = 0;
+    let mut chunk_size = 0usize;
+    for (i, entry) in char_entries.iter().enumerate() {
+        let overhead = entry.len() + 2;
+        if chunk_size + overhead > MAX_INDX_DATA_SIZE && i > chunk_start {
+            char_records.push(build_indx_data_record(&char_entries[chunk_start..i]));
+            char_last_labels.push(char_label(chars[i - 1]));
+            char_counts.push((i - chunk_start) as u32);
+            chunk_start = i;
+            chunk_size = 0;
+        }
+        chunk_size += overhead;
+    }
+    char_records.push(build_indx_data_record(&char_entries[chunk_start..]));
+    char_last_labels.push(chars.last().map_or(vec![], |&ch| char_label(ch)));
+    char_counts.push((char_entries.len() - chunk_start) as u32);
 
     let char_primary = build_indx_primary(
         &tagx2,
-        1,
+        char_records.len(),
         chars.len(),
-        &[last_char_label],
-        &[chars.len() as u32],
+        &char_last_labels,
+        &char_counts,
         192,
         index_language,
         OrdtMode::None,
     );
-    let sub2 = vec![char_primary, char_data_rec];
+    let mut sub2 = vec![char_primary];
+    sub2.extend(char_records);
 
     // --- Sub-index 3: "default" index name ---
     let tag_defs3 = [TagDef {
@@ -932,6 +948,60 @@ mod tests {
         assert_eq!(routing[0].1, 4970, "leaf 0 count as u16");
         assert_eq!(routing[1].0, short);
         assert_eq!(routing[1].1, 1041, "leaf 1 count as u16");
+    }
+
+    /// Build a one-term dictionary whose headwords use `chars`, and return
+    /// the character-map sub-index: its primary and data records.
+    fn character_map(chars: &HashSet<char>) -> Vec<Vec<u8>> {
+        let terms = vec![LookupTerm {
+            label_bytes: encode_indx_label("a"),
+            label: "a".to_string(),
+            start_pos: 0,
+            text_len: 1,
+            headword_display_len: 1,
+            source_ordinal: 0,
+        }];
+        let recs = build_orth_indx(&terms, chars, false, 4, None);
+        // Sub-index 1 is its primary and data records; the map comes next.
+        let start = 1 + rd32(&recs[0], 24) as usize;
+        let n = rd32(&recs[start], 24) as usize;
+        recs[start..start + 1 + n].to_vec()
+    }
+
+    #[test]
+    fn a_character_map_of_many_thousands_of_characters_is_split() {
+        let chars: HashSet<char> = (0x4E00u32..0x4E00 + 14_000)
+            .filter_map(char::from_u32)
+            .collect();
+        let map = character_map(&chars);
+        let n = rd32(&map[0], 24) as usize;
+        assert!(n >= 2, "14,000 characters in {n} record(s)");
+        let routing = parse_routing(&map[0]);
+        assert_eq!(routing.len(), n);
+        let mut total = 0;
+        for k in 0..n {
+            let d = &map[1 + k];
+            let idxt = rd32(d, 20) as usize;
+            let count = rd32(d, 24) as usize;
+            assert_eq!(count as u32, routing[k].1, "routing count of record {k}");
+            let offsets: Vec<u16> = (0..count)
+                .map(|j| u16::from_be_bytes([d[idxt + 4 + 2 * j], d[idxt + 5 + 2 * j]]))
+                .collect();
+            assert!(
+                offsets.windows(2).all(|w| w[0] < w[1]),
+                "record {k} wrapped"
+            );
+            total += count;
+        }
+        assert_eq!(total, 14_000);
+    }
+
+    #[test]
+    fn a_small_character_map_stays_in_one_record() {
+        let chars: HashSet<char> = "abcdefghij".chars().collect();
+        let map = character_map(&chars);
+        assert_eq!(map.len(), 2, "a primary and one data record");
+        assert_eq!(rd32(&map[1], 24), 10);
     }
 
     #[test]
