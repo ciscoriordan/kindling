@@ -826,6 +826,7 @@ Thanks to the ebook-tooling community whose public documentation and reverse-eng
 ## Related projects
 
 - [Lemma](https://github.com/ciscoriordan/lemma) - Greek-English Kindle dictionary built with Kindling
+- [Greenfield New Testament Greek-English Lexicon](https://github.com/open-greek/greenfield-nt-lexicon) - Public-domain Greek-English dictionary published as EPUB, Kindle MOBI, and StarDict with Kindling
 
 ## Reporting bugs
 
