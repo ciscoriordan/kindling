@@ -161,11 +161,12 @@ mod tests {
 
         // OPF with dictionary metadata
         let opf = r#"<?xml version="1.0" encoding="UTF-8"?>
-<package version="2.0" xmlns="http://www.idpf.org/2007/opf">
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookId">
   <metadata>
     <dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">Test Dict</dc:title>
     <dc:language xmlns:dc="http://purl.org/dc/elements/1.1/">en</dc:language>
     <dc:creator xmlns:dc="http://purl.org/dc/elements/1.1/">Tester</dc:creator>
+    <dc:identifier xmlns:dc="http://purl.org/dc/elements/1.1/" id="BookId">TestDictionaryIdentity</dc:identifier>
     <x-metadata>
       <DictionaryInLanguage>en</DictionaryInLanguage>
       <DictionaryOutLanguage>en</DictionaryOutLanguage>
@@ -8913,6 +8914,38 @@ p { margin: 0.3em 0; }
             "Dict should NOT have EXTH 501 (DocType)"
         );
         println!("  \u{2713} Dict EXTH 501 (DocType) absent");
+    }
+
+    #[test]
+    fn test_dict_exth_113_and_504_are_matching_stable_ids() {
+        let dir = TempDir::new("dict_exth_identity");
+        let opf = create_dict_fixture(dir.path(), &[("word", &["words"])]);
+        let data = build_mobi_bytes(&opf, dir.path(), true, false, None);
+        let (_, _, offsets) = parse_palmdb(&data);
+        let rec0 = get_record(&data, &offsets, 0);
+        let exth = parse_exth_records(rec0);
+
+        let id_113 = exth
+            .get(&113)
+            .and_then(|values| values.first())
+            .expect("Dict EXTH 113 should be present");
+        let id_504 = exth
+            .get(&504)
+            .and_then(|values| values.first())
+            .expect("Dict EXTH 504 should be present");
+        assert!(!id_113.is_empty(), "Dict identity must not be empty");
+        assert_eq!(id_113, id_504, "EXTH 113 and 504 must match");
+        assert_eq!(
+            std::str::from_utf8(id_113).unwrap(),
+            crate::exth::dictionary_content_id(
+                "TestDictionaryIdentity",
+                "Test Dict",
+                "Tester",
+                "en",
+                "en",
+            )
+        );
+        assert!(!exth.contains_key(&501), "EXTH 501 must remain absent");
     }
 
     #[test]

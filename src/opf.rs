@@ -126,6 +126,8 @@ impl OPFData {
         let mut in_manifest = false;
         let mut in_spine = false;
         let mut current_tag = String::new();
+        let mut package_unique_identifier_id = String::new();
+        let mut current_identifier_id = String::new();
         let mut buf = Vec::new();
 
         loop {
@@ -141,9 +143,16 @@ impl OPFData {
                     match lower.as_str() {
                         "package" => {
                             for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"version" {
-                                    self.package_version =
-                                        String::from_utf8_lossy(&attr.value).to_string();
+                                match attr.key.as_ref() {
+                                    b"version" => {
+                                        self.package_version =
+                                            String::from_utf8_lossy(&attr.value).to_string();
+                                    }
+                                    b"unique-identifier" => {
+                                        package_unique_identifier_id =
+                                            String::from_utf8_lossy(&attr.value).to_string();
+                                    }
+                                    _ => {}
                                 }
                             }
                         }
@@ -165,6 +174,15 @@ impl OPFData {
                             if in_metadata =>
                         {
                             current_tag = lower.clone();
+                            if lower == "identifier" {
+                                current_identifier_id.clear();
+                                for attr in e.attributes().flatten() {
+                                    if attr.key.as_ref() == b"id" {
+                                        current_identifier_id =
+                                            String::from_utf8_lossy(&attr.value).to_string();
+                                    }
+                                }
+                            }
                         }
                         "type" if in_metadata => {
                             current_tag = "type".to_string();
@@ -315,7 +333,16 @@ impl OPFData {
                                 self.language_specified = true;
                             }
                             "identifier" => {
-                                self.identifier = text.clone();
+                                // The package's `unique-identifier` attribute names the
+                                // authoritative dc:identifier. If an older OEB source does
+                                // not declare that binding, retain the first identifier
+                                // rather than silently changing identity to the last one.
+                                if self.identifier.is_empty()
+                                    || (!package_unique_identifier_id.is_empty()
+                                        && current_identifier_id == package_unique_identifier_id)
+                                {
+                                    self.identifier = text.clone();
+                                }
                                 self.dc_identifiers.push(text);
                             }
                             "date" => self.date = text,
@@ -344,6 +371,7 @@ impl OPFData {
                         "metadata" => in_metadata = false,
                         "manifest" => in_manifest = false,
                         "spine" => in_spine = false,
+                        "identifier" => current_identifier_id.clear(),
                         _ => {}
                     }
                     current_tag.clear();
@@ -1245,6 +1273,36 @@ verb
         assert_eq!(data.language, "en");
         assert_eq!(data.identifier, "x");
         assert_eq!(data.embedded_cover_href, None);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn opf_parse_uses_the_package_unique_identifier() {
+        let dir = temp_dir("bound_unique_identifier");
+        let opf = r#"<?xml version="1.0"?>
+<package unique-identifier="primary" xmlns="http://www.idpf.org/2007/opf">
+<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+<dc:title>Several IDs</dc:title>
+<dc:identifier id="secondary">not-the-publication-id</dc:identifier>
+<dc:identifier id="primary">LemmaGreekENEL</dc:identifier>
+<dc:identifier id="tertiary">also-not-the-publication-id</dc:identifier>
+</metadata>
+<manifest><item id="c" href="c.xhtml" media-type="application/xhtml+xml"/></manifest>
+<spine><itemref idref="c"/></spine>
+</package>"#;
+        let opf_path = dir.join("content.opf");
+        fs::write(&opf_path, opf).unwrap();
+
+        let data = OPFData::parse(&opf_path).unwrap();
+        assert_eq!(data.identifier, "LemmaGreekENEL");
+        assert_eq!(
+            data.dc_identifiers,
+            vec![
+                "not-the-publication-id",
+                "LemmaGreekENEL",
+                "also-not-the-publication-id"
+            ]
+        );
         fs::remove_dir_all(&dir).ok();
     }
 
