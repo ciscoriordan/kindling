@@ -3964,27 +3964,48 @@ fn pad_text_for_chunking(text: &[u8], chunk_size: usize) -> Vec<u8> {
             break;
         }
         // Find a safe split point in text[src..src+remaining_in_chunk].
-        // Preference: walk backward from the natural end looking for the
-        // last `>` immediately followed by `<` (the gap between two HTML
-        // elements). Padding between those bytes sits in HTML inter-element
-        // whitespace, ignored by parsers.
+        // Prefer the last `>` immediately followed by `<` (the gap between
+        // elements). Also remember where the tag containing the natural
+        // boundary began: a long paragraph may have no `><` in this whole
+        // chunk, and moving the boundary before that `<` is still harmless.
         let chunk = &text[src..src + remaining_in_chunk];
         let mut split_at: Option<usize> = None;
-        for i in (1..chunk.len()).rev() {
-            if chunk[i - 1] == b'>' && chunk[i] == b'<' {
-                split_at = Some(i);
-                break;
+        let mut in_tag = false;
+        let mut current_tag_start: Option<usize> = None;
+        let mut last_text_space: Option<usize> = None;
+        for (i, &byte) in chunk.iter().enumerate() {
+            if byte == b'<' && !in_tag {
+                in_tag = true;
+                current_tag_start = Some(i);
+                if i > 0 && chunk[i - 1] == b'>' {
+                    split_at = Some(i);
+                }
+            } else if byte == b'>' && in_tag {
+                in_tag = false;
+                current_tag_start = None;
+            } else if !in_tag && byte.is_ascii_whitespace() {
+                last_text_space = Some(i + 1);
             }
         }
-        // Fallback: if no `><` boundary in the chunk (rare for HTML
-        // dict text), back off to a UTF-8 character boundary. Records
-        // produced this way may have whitespace inside an element, but
-        // they remain valid UTF-8.
+        // If the natural boundary is inside a tag, move the whole tag to the
+        // next record. Spaces before an opening or closing tag do not change
+        // the rendered content, and find_entry_anchor tolerates this padding.
+        if in_tag {
+            if let Some(tag_start) = current_tag_start.filter(|&start| start > 0) {
+                split_at = Some(tag_start);
+            }
+        }
+        // Otherwise, if there is no usable tag boundary, back off only as far
+        // as needed for UTF-8. Most such records end at the natural boundary.
         let safe_n = match split_at {
             Some(n) => n,
             None => {
                 let trailing = incomplete_utf8_tail_bytes(chunk);
-                if trailing >= remaining_in_chunk {
+                if trailing == 0 {
+                    remaining_in_chunk
+                } else if let Some(space) = last_text_space {
+                    space
+                } else if trailing >= remaining_in_chunk {
                     1
                 } else {
                     remaining_in_chunk - trailing
@@ -4865,16 +4886,17 @@ fn entry_span(text_bytes: &[u8], block_start: usize, after: usize) -> (usize, us
 ///
 /// `pad_text_for_chunking` runs before this and inserts a run of spaces between
 /// a `>` and the `<` that follows it, so roughly one entry per PalmDOC record
-/// no longer matches byte for byte. Padding can only ever appear at those
-/// junctions, so split the needle there and allow a space run between the
-/// pieces; the segments themselves are guaranteed padding-free.
+/// no longer matches byte for byte. Padding normally appears at a `><`
+/// junction, but a very long text node can make a boundary land inside the
+/// following tag; the padder then inserts spaces immediately before `<`.
+/// Split the needle before tags and allow a space run there.
 fn find_entry_anchor(text_bytes: &[u8], needle: &[u8], from: usize) -> Option<usize> {
     let mut segments: Vec<&[u8]> = Vec::new();
     let mut seg_start = 0usize;
-    for i in 0..needle.len().saturating_sub(1) {
-        if needle[i] == b'>' && needle[i + 1] == b'<' {
-            segments.push(&needle[seg_start..=i]);
-            seg_start = i + 1;
+    for i in 1..needle.len() {
+        if needle[i] == b'<' {
+            segments.push(&needle[seg_start..i]);
+            seg_start = i;
         }
     }
     segments.push(&needle[seg_start..]);
@@ -8071,6 +8093,48 @@ mod entry_anchor_tests {
             Some(want),
             "a needle straddling a padded junction must still anchor"
         );
+    }
+
+    /// A long text node can put the natural boundary inside its closing tag.
+    /// The whole tag must move to the next record, and the resulting padding
+    /// must not stop that entry from being located.
+    #[test]
+    fn long_text_padding_moves_a_partial_tag_and_keeps_the_anchor() {
+        let body = format!("<b>long</b><p>{}</p><hr/>", "a".repeat(4090));
+        let source = format!("<html><body>{body}</body></html>");
+        let padded = pad_text_for_chunking(source.as_bytes(), 4096);
+        let ranges = split_on_utf8_boundaries(&padded, 4096);
+        let issues = crate::html_check::validate_records(&padded, &ranges, 20);
+        assert!(
+            issues.is_empty(),
+            "padding left a record inside a tag: {issues:?}"
+        );
+
+        let needle = entry_needle(&body);
+        assert_eq!(
+            find_entry_anchor(&padded, &needle, 0),
+            Some("<html><body>".len())
+        );
+    }
+
+    #[test]
+    fn long_text_padding_does_not_insert_spaces_inside_a_utf8_word() {
+        let source = format!("<p>{}</p>", "λέξις μακρά ".repeat(30));
+        let padded = pad_text_for_chunking(source.as_bytes(), 64);
+        let ranges = split_on_utf8_boundaries(&padded, 64);
+        for (start, end) in ranges {
+            assert!(
+                std::str::from_utf8(&padded[start..end]).is_ok(),
+                "a record must contain complete UTF-8"
+            );
+        }
+        let collapsed = String::from_utf8(padded)
+            .unwrap()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let expected = source.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert_eq!(collapsed, expected);
     }
 
     /// With no needles the old markup-shape search still runs.
