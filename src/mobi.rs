@@ -3060,6 +3060,28 @@ fn normalize_exotic_spaces(label: &str) -> String {
         .collect()
 }
 
+/// The other spellings of a label written with Romanian s or t: every
+/// comma-below letter (ș ț, U+0218 to U+021B) as its cedilla form, and, in a
+/// Romanian dictionary only, every cedilla letter (ş ţ) as its comma-below
+/// form. Empty when the label has none of these letters.
+fn romanian_letter_aliases(label: &str, romanian: bool) -> Vec<String> {
+    let respell = |from: [char; 4], to: [char; 4]| -> Option<String> {
+        label.contains(from).then(|| {
+            label
+                .chars()
+                .map(|c| from.iter().position(|&f| f == c).map_or(c, |i| to[i]))
+                .collect()
+        })
+    };
+    let comma_below = ['Ș', 'ș', 'Ț', 'ț'];
+    let cedilla = ['Ş', 'ş', 'Ţ', 'ţ'];
+    let mut aliases: Vec<String> = respell(comma_below, cedilla).into_iter().collect();
+    if romanian {
+        aliases.extend(respell(cedilla, comma_below));
+    }
+    aliases
+}
+
 /// Move any CSS rule whose selector carries an escaped colon to the end of the
 /// `<style>` block.
 ///
@@ -4633,6 +4655,10 @@ mod record_split_tests {
         assert_eq!(mobi_locale_code("ur"), 0x0020);
         assert_eq!(mobi_locale_code("ps"), 0x0063);
         assert_eq!(mobi_locale_code("ckb"), 0x0092);
+
+        // Thai has its own id, as kindlegen writes it; Esperanto has none.
+        assert_eq!(mobi_locale_code("th"), 0x001E);
+        assert_eq!(mobi_locale_code("eo"), 0x0009);
     }
 
     #[test]
@@ -5181,10 +5207,11 @@ fn is_entry_boundary(text_bytes: &[u8], bold_pos: usize) -> bool {
 /// behavior, the last demonstrably on-device-working state.
 ///
 /// Whether a dictionary's headwords are predominantly Latin-script. Used to
-/// pick the default accent collation: Latin dictionaries need folded sorting
-/// and default to exact-accent matching, while Greek and Cyrillic keep the
-/// byte-order path the firmware already collates correctly. A pure-ASCII
-/// (English) headword set counts as Latin.
+/// pick the default accent collation: Latin dictionaries default to the
+/// exact-accent table, while Greek, Cyrillic and other scripts keep plain
+/// UTF-16 labels. Either way the labels are sorted by the weights a Kindle
+/// lookup gives each character (see `crate::ordt::device_weight`). A
+/// pure-ASCII (English) headword set counts as Latin.
 fn headwords_are_latin(entries: &[DictionaryEntry]) -> bool {
     let mut latin = 0usize;
     let mut other = 0usize;
@@ -5238,6 +5265,43 @@ fn strip_stress_marks(form: &str) -> String {
     form.chars()
         .filter(|&c| c != '\u{0300}' && c != '\u{0301}')
         .collect()
+}
+
+/// How many letters of `label` are accented Latin letters from U+00C0 to
+/// U+017F that weigh as a letter from `a` to `z`, such as `é`, `Å` and `ş`.
+/// `Ø`, `Đ`, `Ħ`, `Ĳ`, `Ł`, `Ŀ`, `Ŋ` and `Ŧ` with their lowercase forms, and
+/// `İ` and `ı`, do not count: when a Kindle picks among labels it compares the
+/// case of the first eight, reads `İ` as `I` followed by a dot above and `ı` as
+/// a letter apart from `i`, so moving them would change which label a lookup
+/// opens.
+fn accented_letter_count(label: &str) -> usize {
+    label
+        .chars()
+        .filter(|&c| {
+            matches!(c, '\u{C0}'..='\u{17F}')
+                && !matches!(
+                    c,
+                    'Ø' | 'ø'
+                        | 'Ł'
+                        | 'ł'
+                        | 'Ŀ'
+                        | 'ŀ'
+                        | 'Đ'
+                        | 'đ'
+                        | 'Ħ'
+                        | 'ħ'
+                        | 'İ'
+                        | 'ı'
+                        | 'Ĳ'
+                        | 'ĳ'
+                        | 'Ŋ'
+                        | 'ŋ'
+                        | 'Ŧ'
+                        | 'ŧ'
+                )
+                && matches!(crate::ordt::device_weight(c as u16), 0x61..=0x7A)
+        })
+        .count()
 }
 
 /// For languages on the generated-ORDT path (Japanese, Chinese, Korean,
@@ -5323,17 +5387,41 @@ fn build_lookup_terms(
     // duplicating entries). Add stress-stripped and lowercased spellings of
     // every indexed form as extra flat entries pointing at the same
     // definition, so a source only needs to ship one spelling. Forms the
-    // source already provides dedupe. `--strict-accents` (the exact-match
-    // override) skips the pass.
-    if !strict_accents && headwords_are_cyrillic(entries) {
+    // source already provides dedupe.
+    //
+    // `--strict-accents` (the exact-match override) skips the stress-stripped
+    // spellings. A Russian dictionary still gets the lowercase one: the
+    // Paperwhite 4 (firmware 5.16.5) lowercases every word it looks up in a
+    // Russian dictionary, so there a capitalized headword with no lowercase
+    // label ("Москва", "США") is found by no spelling at all. Ukrainian,
+    // Bulgarian and other Cyrillic dictionaries are looked up as typed on the
+    // Kindle 4 and the Paperwhite 4, so under `--strict-accents` they get
+    // no alias.
+    let russian = locale_code(dict_lang) & 0xFF == 0x19;
+    if (!strict_accents || russian) && headwords_are_cyrillic(entries) {
+        // In a Russian dictionary the lowercase alias is lowercased the way
+        // the Paperwhite 4 and 5 lowercase the word they search for, which
+        // keeps `σ` in `ΑΣ1Α` and `ΑΣ-Α` and writes `ς` in `ΑΣ:Α`.
+        let lowercase = |word: &str| {
+            if russian {
+                crate::lookup::lowercase_for_russian(word)
+            } else {
+                word.to_lowercase()
+            }
+        };
         let mut added = 0usize;
         let snapshot: Vec<String> = ordered_labels.clone();
         for label in snapshot {
             let target = terms[&label];
-            let stripped = strip_stress_marks(&label);
-            let lowered = label.to_lowercase();
-            let lowered_stripped = stripped.to_lowercase();
-            for alias in [stripped, lowered, lowered_stripped] {
+            let aliases = if strict_accents {
+                vec![lowercase(&label)]
+            } else {
+                let stripped = strip_stress_marks(&label);
+                let lowered = lowercase(&label);
+                let lowered_stripped = lowercase(&stripped);
+                vec![stripped, lowered, lowered_stripped]
+            };
+            for alias in aliases {
                 if alias != label && !terms.contains_key(&alias) {
                     ordered_labels.push(alias.clone());
                     terms.insert(alias, target);
@@ -5342,7 +5430,11 @@ fn build_lookup_terms(
             }
         }
         if added > 0 {
-            eprintln!("  Added {added} Cyrillic stress/case lookup aliases");
+            if strict_accents {
+                eprintln!("  Added {added} Cyrillic lowercase lookup aliases");
+            } else {
+                eprintln!("  Added {added} Cyrillic stress/case lookup aliases");
+            }
         }
     }
 
@@ -5369,29 +5461,257 @@ fn build_lookup_terms(
         }
     }
 
+    // Romanian s and t with a comma below (ș ț) or a cedilla (ş ţ). Both
+    // spellings are common in Romanian text, and the Kindle 4 and the
+    // Paperwhite 4 weigh them differently: the comma-below letters count for
+    // nothing, the cedilla letters as s and t. So "şcoală" typed with a
+    // cedilla never finds a headword written "școală", and the other way
+    // round. Every label with a comma-below letter gets its cedilla spelling,
+    // which the search weighs as the same word written with a plain s or t.
+    // So where the dictionary lacks those words, the alias also opens for the
+    // plain spelling ("tară" opens "țară") and for a word whose comma-below
+    // letters, weighing nothing, leave the same letters: "servește" opens
+    // "șervete" and "știe" opens "ție". A word the dictionary has as a label
+    // still opens its own entry. A label with a cedilla letter gets its
+    // comma-below spelling only in a Romanian dictionary: elsewhere, as in
+    // Turkish "şehir", that alias would weigh as "ehir" and open for words
+    // that merely lack the letter.
+    //
+    // Japanese, Chinese, Korean and Arabic-script dictionaries get no such
+    // alias. Their generated tables sort "Timişoara" before "Timișoara", the
+    // reverse of the Kindle's order, so there the alias hid the headword it
+    // was added for.
+    let generated = crate::ordt::uses_generated_ordt(dict_lang);
+    if !generated {
+        let romanian = locale_code(dict_lang) & 0xFF == 0x18;
+        let mut added = 0usize;
+        let snapshot: Vec<String> = ordered_labels.clone();
+        for label in snapshot {
+            let target = terms[&label];
+            for alias in romanian_letter_aliases(&label, romanian) {
+                if let std::collections::hash_map::Entry::Vacant(slot) = terms.entry(alias) {
+                    ordered_labels.push(slot.key().clone());
+                    slot.insert(target);
+                    added += 1;
+                }
+            }
+        }
+        if added > 0 {
+            eprintln!("  Added {added} Romanian s/t spelling lookup aliases");
+        }
+    }
+
+    // The spelling a Kindle looks a label up by. A Kindle rewrites a tapped
+    // word before searching (`lookup::kindle_spellings` gives the Paperwhite
+    // 5's rewrite and the Kindle 4's), so a label the rewrite changes is never
+    // matched as written. When the rewrite only drops characters that weigh
+    // nothing, as in "Bsp." and "Bsp", the label is still found. When it drops
+    // letters or digits it is not: "MP3" is looked up as "MP", "COVID-19" as
+    // "COVID", a Thai word ending in U+0E4C without it, and in an Italian or
+    // French book "l'altro" as "altro". Such a label gets the rewritten
+    // spelling as an alias for its entry, for a book in the dictionary's
+    // language and for a book in a language with no rules of its own. The
+    // Kindle 4 also drops the marks at the end of a word that the Paperwhite 4
+    // and 5 keep, such as the Thai vowel signs and tone marks and a final
+    // combining accent, so a label also gets the spelling the Kindle 4 looks
+    // it up by in a book in the dictionary's language, except with
+    // --strict-accents. The alias is left out when some label, or another
+    // rewritten spelling, of a different entry weighs the same, since the
+    // alias would then take that entry's lookups or open for the wrong word:
+    // "MP3" and "MP4" get no "MP".
+    // The Japanese, Chinese, Korean and Arabic-script dictionaries keep the
+    // labels the source gives.
+    if !generated {
+        use rayon::prelude::*;
+        let language = (locale_code(dict_lang) & 0xFF) as u8;
+        // The weights of a label as it is stored, before any length cut.
+        let key_of = |text: &str| {
+            let units: Vec<u16> =
+                crate::ordt::label_codepoints(&crate::ordt::stored_label_text(text))
+                    .into_iter()
+                    .filter_map(char::from_u32)
+                    .collect::<String>()
+                    .encode_utf16()
+                    .collect();
+            crate::ordt::device_collation_key(&units)
+        };
+        // Each rewritten spelling no label has and whose weights differ from
+        // its label's, with those weights, whether only the Kindle 4 looks
+        // the label up by it, and the label's term, in label order.
+        type Alias = (String, Vec<u16>, bool, (usize, usize, usize, usize));
+        let aliases: Vec<Alias> = ordered_labels
+            .par_iter()
+            .flat_map_iter(|label| {
+                let target = terms[label];
+                let mut label_key = None;
+                let mut out = Vec::new();
+                // A label that spells a letter as its marker and second letter,
+                // as an unpacked dictionary does, is stored as that letter, so
+                // it is rewritten as that letter too: U+0001 followed by
+                // "Euvre" is "Œuvre", which the rewrite leaves alone, and not
+                // "Euvre", which would become an alias.
+                let written = crate::ordt::marker_pairs_joined(label);
+                for spelling in crate::lookup::kindle_spellings(&written, language) {
+                    // A Kindle 4 spelling can drop a combining accent, which
+                    // --strict-accents asks to keep.
+                    if (strict_accents && spelling.kindle4_only)
+                        || terms.contains_key(&spelling.text)
+                    {
+                        continue;
+                    }
+                    let key = key_of(&spelling.text);
+                    if !key.is_empty() && key != *label_key.get_or_insert_with(|| key_of(label)) {
+                        out.push((spelling.text, key, spelling.kindle4_only, target));
+                    }
+                }
+                out
+            })
+            .collect();
+        if !aliases.is_empty() {
+            // For each key an alias would have, whether only Kindle 4
+            // spellings have it, and the entry it would open, or None once
+            // two entries weigh the same. A Paperwhite spelling takes the key
+            // from Kindle 4 spellings of other entries, so a Kindle 4 alias
+            // never takes a key a Paperwhite looks some label up by.
+            let mut claims: HashMap<Vec<u16>, (bool, Option<usize>)> = HashMap::new();
+            for (_, key, kindle4_only, target) in &aliases {
+                let claim = claims
+                    .entry(key.clone())
+                    .or_insert((*kindle4_only, Some(target.3)));
+                if claim.0 && !*kindle4_only {
+                    *claim = (false, Some(target.3));
+                } else if claim.0 == *kindle4_only && claim.1 != Some(target.3) {
+                    claim.1 = None;
+                }
+            }
+            let taken: Vec<Vec<u16>> = terms
+                .par_iter()
+                .filter_map(|(label, target)| {
+                    let key = key_of(label);
+                    match claims.get(&key) {
+                        Some((_, Some(entry))) if *entry != target.3 => Some(key),
+                        _ => None,
+                    }
+                })
+                .collect();
+            for key in taken {
+                if let Some(claim) = claims.get_mut(&key) {
+                    claim.1 = None;
+                }
+            }
+            let mut added = 0usize;
+            for (spelling, key, kindle4_only, target) in aliases {
+                if claims[&key] != (kindle4_only, Some(target.3)) {
+                    continue;
+                }
+                if let std::collections::hash_map::Entry::Vacant(slot) = terms.entry(spelling) {
+                    ordered_labels.push(slot.key().clone());
+                    slot.insert(target);
+                    added += 1;
+                }
+            }
+            if added > 0 {
+                eprintln!("  Added {added} lookup aliases spelled the way a Kindle looks them up");
+            }
+        }
+    }
+
+    // A capitalized prefix such as "Nach-" in a German dictionary. A Kindle
+    // looks up a tapped "Nach-" as "Nach", and a German book tells case apart
+    // when it chooses among the labels found, so with no label spelled "Nach"
+    // it opens the first label that begins with the word: "Nach-", not
+    // "nach". A sentence that starts with "Nach", "Zu" or "Über" then opens
+    // the prefix, on the Kindle 4 (firmware 4.1.4), the Paperwhite 4
+    // (firmware 5.16.5) and the Paperwhite 5 (firmware 5.19.2) alike. Such
+    // words are far more common in text than a capitalized prefix, so the
+    // spelling without the hyphen becomes an alias of the entry whose label
+    // is that spelling with a lowercase first letter, when no label is
+    // spelled that way. "Nach" and "Nach-" then open "nach", as they do in a
+    // kindlegen dictionary that lists "Nach-" as an inflected form.
+    if locale_code(dict_lang) & 0xFF == 0x07 {
+        let mut added = 0usize;
+        let snapshot: Vec<String> = ordered_labels.clone();
+        for label in snapshot {
+            let word = label.trim_end_matches('-');
+            let mut chars = word.chars();
+            let Some(first) = chars.next() else { continue };
+            if word.len() == label.len() || !first.is_uppercase() {
+                continue;
+            }
+            let lowercase: String = first.to_lowercase().chain(chars).collect();
+            let Some(&target) = terms.get(&lowercase) else {
+                continue;
+            };
+            if target.3 == terms[&label].3 {
+                continue;
+            }
+            if let std::collections::hash_map::Entry::Vacant(slot) = terms.entry(word.to_string()) {
+                ordered_labels.push(slot.key().clone());
+                slot.insert(target);
+                added += 1;
+            }
+        }
+        if added > 0 {
+            eprintln!("  Added {added} German capitalized lookup aliases");
+        }
+    }
+
     eprintln!("Encoding {} unique lookup terms...", terms.len());
-    // Is this a Latin-script dictionary? Latin headwords need folded
-    // collation, because the firmware folds Latin diacritics at lookup and a
-    // raw byte-order label sort scatters accented letters far from their base
-    // (ś = U+015B sorts after z, where the Polish search never looks, so
-    // `świat` is never found - issue #8). Greek and Cyrillic already sort the
-    // same in byte order as the firmware collates them, so they keep the
-    // byte-order path.
+    // A Kindle weighs the Hangul jamo in an order this sort does not
+    // reproduce (see `ordt::is_unmodeled_hangul_jamo`), so name the labels
+    // that may be out of reach rather than leave that to a failed lookup.
+    if !generated {
+        let mut jamo: Vec<&String> = terms
+            .keys()
+            .filter(|label| {
+                label
+                    .encode_utf16()
+                    .any(crate::ordt::is_unmodeled_hangul_jamo)
+            })
+            .collect();
+        if !jamo.is_empty() {
+            jamo.sort_unstable();
+            let examples: Vec<String> = jamo.iter().take(5).map(|l| format!("{l:?}")).collect();
+            let (terms_contain, these, them) = if jamo.len() == 1 {
+                ("lookup term contains", "this term", "it")
+            } else {
+                ("lookup terms contain", "these terms", "them")
+            };
+            eprintln!(
+                "Warning: {} {terms_contain} Hangul jamo (U+1100 to U+11F9 or U+3131 to \
+                 U+318E): {}{}. A Kindle weighs these characters in an order kindling does not \
+                 reproduce in this dictionary, so {these}, and terms stored near {them}, may \
+                 open nothing on the device.",
+                jamo.len(),
+                examples.join(", "),
+                if jamo.len() > examples.len() {
+                    format!(" and {} more", jamo.len() - examples.len())
+                } else {
+                    String::new()
+                }
+            );
+        }
+    }
+    // Is this a Latin-script dictionary? Latin dictionaries default to the
+    // exact-accent table below; Greek, Cyrillic and other scripts keep plain
+    // UTF-16 labels. Either way the labels are sorted the way the Kindle
+    // weighs them (see `crate::ordt::device_weight`).
     let is_latin = headwords_are_latin(entries);
 
-    // Accent collation:
-    //   - CJK (ja/zh/ko/ar): generated kana/literal ORDT (per-character).
-    //   - Exact mode: a full per-character ORDT where every letter is its own
-    //     symbol but accent/case variants share a collation weight, so accents
-    //     match exactly while still sorting folded (issue #8). This is the
-    //     DEFAULT for Latin dictionaries, and what `--strict-accents` forces
-    //     for any script.
-    //   - Fold mode (no ORDT here): the diacritic-folding Greek ORDT/SPL blob,
-    //     matching kindlegen. The DEFAULT for Greek/Cyrillic, and what
-    //     `--fold-accents` forces for Latin. Latin fold builds still need the
-    //     folded label sort below so accent-initial headwords resolve.
+    // Label storage:
+    //   - Japanese, Chinese, Korean and Arabic-script dictionaries: generated
+    //     kana/literal ORDT tables (per character).
+    //   - Exact mode: a per-character ORDT in which every character is its own
+    //     symbol, so the Kindle shows each headword as written. The DEFAULT for
+    //     Latin dictionaries (kindlegen's Latin layout too), and what
+    //     `--strict-accents` forces for any script.
+    //   - Otherwise plain UTF-16 labels: with the ORDT/SPL blob taken from a
+    //     kindlegen Greek dictionary for Greek, and for Latin with
+    //     `--fold-accents`; with no blob for Cyrillic and other scripts.
+    //   Outside the generated tables every mode sorts labels by
+    //   `ordt::device_collation_key`, so the modes open the same entries.
     let want_exact = strict_accents || (is_latin && !fold_accents);
-    let gen_ordt = if crate::ordt::uses_generated_ordt(dict_lang) {
+    let gen_ordt = if generated {
         let refs: Vec<&str> = ordered_labels.iter().map(|s| s.as_str()).collect();
         Some(crate::ordt::OrdtTables::new(&refs))
     } else if want_exact {
@@ -5405,17 +5725,20 @@ fn build_lookup_terms(
     for label in terms.keys() {
         let bytes = match &gen_ordt {
             Some(tables) => tables.encode_label(label),
-            None => indx::encode_indx_label(label),
+            // Plain UTF-16 labels are stored as the exact table stores them
+            // (see `ordt::encode_plain_label`).
+            None => crate::ordt::encode_plain_label(label),
         };
         label_bytes_map.insert(label.clone(), bytes);
     }
 
     let mut sorted_labels: Vec<String> = terms.keys().cloned().collect();
     match &gen_ordt {
-        Some(tables) => {
+        Some(tables) if generated => {
             // Sort by ORDT collation key (the order Kindle's lookup
-            // expects); ties broken by encoded bytes for determinism.
-            // Equal keys are fine on-device: the firmware scans
+            // expects); ties broken by encoded bytes, then by the label text
+            // for labels cut to the same bytes, so every build writes one
+            // order. Equal keys are fine on-device: the firmware scans
             // equal-weight ranges.
             let sort_keys: HashMap<&String, Vec<u32>> = label_bytes_map
                 .iter()
@@ -5425,27 +5748,143 @@ fn build_lookup_terms(
                 sort_keys[a]
                     .cmp(&sort_keys[b])
                     .then_with(|| label_bytes_map[a].cmp(&label_bytes_map[b]))
+                    .then_with(|| a.cmp(b))
             });
         }
-        None if is_latin => {
-            // Fold mode on a Latin dictionary (`--fold-accents`): the Greek
-            // ORDT/SPL blob folds at lookup, so the labels must be pre-sorted
-            // in folded order or accent-initial headwords are missed. Tie-break
-            // by raw bytes for determinism.
-            let fold_keys: HashMap<&String, Vec<char>> = label_bytes_map
-                .keys()
-                .map(|label| (label, crate::ordt::folded_sort_key(label)))
+        _ => {
+            // Every other dictionary, whether its labels are exact-table
+            // symbols or plain UTF-16: the order the Kindle 4 and the
+            // Paperwhite 4 search in, by the weights they give each stored
+            // unit (see `ordt::device_collation_key`). A label sorted anywhere
+            // else can be missed, and so can neighbors the search steps over:
+            // "T-shirt" sorted with its hyphen as a low letter hid "tabacco",
+            // Romanian "școală" sorted as "scoala" hid "copil", "из-под" in
+            // byte order hid "изба", and "Zebra" in byte order hid "apple".
+            //
+            // The Kindle returns every label with the word's key, in stored
+            // order, and opens the one spelled exactly like the word, else the
+            // first one equal to it ignoring case (German books compare the
+            // case of every letter too, and Danish books the case of `a`, `c`,
+            // `d`, `e`, `i`, `o` and `y`), else a prefix match, else the first
+            // of them. So among equal keys the order decides what opens for a
+            // word spelled like none of them. The order is:
+            //
+            // 1. A label the Kindle rewrites when it is tapped (see
+            //    `lookup::kindle_rewrites_label`). Such a label never equals
+            //    the word it is looked up by, so it opens for its own spelling
+            //    only as the first of its run, while a label the Kindle keeps
+            //    is still found by its exact spelling wherever it is stored. In
+            //    a Norwegian dictionary "-aren" is looked up as "aren", and
+            //    now opens itself rather than "åren".
+            // 2. More apostrophes (', ’ or ʼ): a tapped "Дем’янюка" is looked
+            //    up as "Дем'янюка", which equals neither "Дем’янюка" nor
+            //    "Демянюка" in that comparison, and "donʼt" equals neither
+            //    "don't" nor "dont", so they would otherwise open "Демянюка"
+            //    and "dont".
+            // 3. Outside Danish dictionaries, fewer accented Latin letters. A
+            //    word that equals none of the labels then opens the plain one:
+            //    in a Norwegian dictionary "FØRER" opens "fører" rather than
+            //    "fôrer", and in a German book a sentence-initial "Schlagen"
+            //    opens "schlagen" rather than "Schlägen". Most books ignore the
+            //    case of accented letters in that comparison, so an accented
+            //    label still opens for its own spelling in capitals. A German
+            //    book compares case, so there "ABSCHLÄGE" equals none of the
+            //    labels and opens "abschlage" rather than "Abschläge". In a
+            //    Danish dictionary, where `å` is a letter of its own, counting
+            //    accents made capitalized words such as "ÅRET" open a different
+            //    word.
+            // 4. Fewer capital letters, so a sentence-initial "If" opens "if"
+            //    rather than "IF". In a German or Danish dictionary only a label
+            //    with no lowercase letter moves back: there a word in capitals
+            //    equals neither twin and opens the first, and "HAUS" should
+            //    open "Haus" rather than "haus". Capitals do not count for
+            //    rewritten labels: "A.I." and "a.i." are both looked up without
+            //    the last period, so only the first opens, and "A.I." opens for
+            //    its own spelling, as it did in 0.45.1.
+            // 5. Fewer units that weigh nothing.
+            // 6. The spelling without `ß`, `æ`, `œ` or `ĳ` ("DASS" opens
+            //    "dass" rather than "daß" in a German book).
+            // 7. The units that weigh nothing, compared in code order, so
+            //    "andr-" comes before "Andr." and opens for its own spelling,
+            //    as it did in 0.45.1.
+            // 8. Encoded bytes. Labels stored as the same bytes, such as two
+            //    cut to the same 254 bytes, are then ordered by their text, so
+            //    every build of a dictionary writes the same file.
+            //
+            // The keys and the other counts that come from the stored label
+            // use the units as stored, cut to the entry writer's 254 bytes,
+            // since that is what the Kindle compares.
+            struct Order {
+                key: Vec<u16>,
+                rewritten: bool,
+                apostrophes: usize,
+                accented: usize,
+                capitals: usize,
+                skipped: Vec<u16>,
+                pairs: usize,
+            }
+            let language = (locale_code(dict_lang) & 0xFF) as u8;
+            // Danish (0x06) and German (0x07).
+            let case_compared = matches!(language, 0x06 | 0x07);
+            let danish = language == 0x06;
+            let orders: HashMap<&String, Order> = label_bytes_map
+                .iter()
+                .map(|(label, bytes)| {
+                    let stored = &bytes[..bytes.len().min(indx::MAX_INDX_LABEL_BYTES)];
+                    let units: Vec<u16> = match &gen_ordt {
+                        Some(tables) => tables.stored_units(stored),
+                        None => stored
+                            .chunks_exact(2)
+                            .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                            .collect(),
+                    };
+                    // The letters a label spells as a marker and its second
+                    // letter count as the letters they are stored as.
+                    let text = crate::ordt::marker_pairs_joined(label);
+                    let rewritten = crate::lookup::kindle_rewrites_label(&units, language);
+                    let capitals = if rewritten {
+                        0
+                    } else if case_compared {
+                        usize::from(
+                            text.chars().any(char::is_uppercase)
+                                && !text.chars().any(char::is_lowercase),
+                        )
+                    } else {
+                        text.chars().filter(|c| c.is_uppercase()).count()
+                    };
+                    let order = Order {
+                        key: crate::ordt::device_collation_key(&units),
+                        rewritten,
+                        apostrophes: text
+                            .chars()
+                            .filter(|c| matches!(c, '\'' | '\u{2019}' | '\u{2BC}'))
+                            .count(),
+                        accented: if danish {
+                            0
+                        } else {
+                            accented_letter_count(&text)
+                        },
+                        capitals,
+                        skipped: crate::ordt::skipped_units(&units),
+                        pairs: crate::ordt::one_letter_pair_count(label),
+                    };
+                    (label, order)
+                })
                 .collect();
             sorted_labels.sort_by(|a, b| {
-                fold_keys[a]
-                    .cmp(&fold_keys[b])
+                let (oa, ob) = (&orders[a], &orders[b]);
+                oa.key
+                    .cmp(&ob.key)
+                    .then_with(|| ob.rewritten.cmp(&oa.rewritten))
+                    .then_with(|| ob.apostrophes.cmp(&oa.apostrophes))
+                    .then_with(|| oa.accented.cmp(&ob.accented))
+                    .then_with(|| oa.capitals.cmp(&ob.capitals))
+                    .then_with(|| oa.skipped.len().cmp(&ob.skipped.len()))
+                    .then_with(|| oa.pairs.cmp(&ob.pairs))
+                    .then_with(|| oa.skipped.cmp(&ob.skipped))
                     .then_with(|| label_bytes_map[a].cmp(&label_bytes_map[b]))
+                    .then_with(|| a.cmp(b))
             });
-        }
-        None => {
-            // Greek / Cyrillic / other: byte order already matches how the
-            // firmware collates these scripts.
-            sorted_labels.sort_by(|a, b| label_bytes_map[a].cmp(&label_bytes_map[b]));
         }
     }
 
@@ -5464,6 +5903,853 @@ fn build_lookup_terms(
         })
         .collect();
     (lookup_terms, gen_ordt)
+}
+
+#[cfg(test)]
+mod punctuated_label_order_tests {
+    use super::*;
+
+    fn entry(headword: &str) -> DictionaryEntry {
+        DictionaryEntry {
+            headword: headword.to_string(),
+            inflections: Vec::new(),
+            html_content: String::new(),
+        }
+    }
+
+    // Labels around the ones a Kindle 4 could not find in reader.dict's
+    // Italian dictionary (tabacco, T-shirt, tabaccaio, tutta, posta, -a, a,
+    // 'ndrangheta, cittadini, sia), mixed with other labels from that
+    // dictionary and with made-up ones (ts, tutt’altro, post-it, a.C., aaa,
+    // ndrangheta, l'acqua, «ciao», ciaa, sì—no, n, n.º, naa, nzz, Fuß,
+    // Futter, exa, tshirt) that pin the Latin-1, General Punctuation and ß
+    // cases.
+    const LATIN: &[&str] = &[
+        "tabacco",
+        "T-shirt",
+        "tabaccaio",
+        "tè",
+        "tsunami",
+        "ts",
+        "tutta",
+        "tutt'al più",
+        "tutt’altro",
+        "tutto",
+        "posta",
+        "post-it",
+        "postare",
+        "a.C.",
+        "aaa",
+        "abaco",
+        "-a",
+        "a",
+        "'ndrangheta",
+        "ndrangheta",
+        "città",
+        "cittadini",
+        "perché",
+        "l'acqua",
+        "lacca",
+        "«ciao»",
+        "ciaa",
+        "ciao",
+        "sì—no",
+        "sia",
+        "sinistra",
+        "n",
+        "n.º",
+        "naa",
+        "nzz",
+        "Fuß",
+        "Futter",
+        "fusa",
+        "ex",
+        "ex-",
+        "exa",
+        "tshirt",
+    ];
+
+    /// The key a Kindle lookup compares these labels by, written out
+    /// independently of `crate::ordt`: case and the few accents used above
+    /// folded, the punctuation the Kindle skips left out, and ß compared as ss.
+    fn device_key(s: &str) -> Vec<char> {
+        s.replace('ß', "ss")
+            .chars()
+            .filter(|c| !matches!(c, '-' | '\'' | '.' | '’' | '«' | '»' | '—' | 'º'))
+            .flat_map(char::to_lowercase)
+            .map(|c| match c {
+                'à' => 'a',
+                'è' | 'é' => 'e',
+                'ì' => 'i',
+                'ù' => 'u',
+                c => c,
+            })
+            .collect()
+    }
+
+    fn sorted(headwords: &[&str], lang: &str, fold_accents: bool) -> Vec<String> {
+        let entries: Vec<DictionaryEntry> = headwords.iter().map(|h| entry(h)).collect();
+        let positions: Vec<(usize, usize)> = entries.iter().map(|_| (0, 0)).collect();
+        let (terms, _) =
+            build_lookup_terms(&entries, &positions, b"", false, lang, false, fold_accents);
+        terms.into_iter().map(|t| t.label).collect()
+    }
+
+    #[test]
+    fn punctuated_latin_headwords_sort_as_if_unpunctuated() {
+        for fold_accents in [false, true] {
+            let labels = sorted(LATIN, "it", fold_accents);
+            // The one alias is "acqua", the spelling an Italian book looks
+            // "l'acqua" up by.
+            assert_eq!(labels.len(), LATIN.len() + 1);
+            assert!(labels.iter().any(|l| l == "acqua"));
+            for w in labels.windows(2) {
+                assert!(
+                    device_key(&w[0]) <= device_key(&w[1]),
+                    "fold_accents={fold_accents}: {:?} sorts before {:?} in {labels:?}",
+                    w[0],
+                    w[1]
+                );
+            }
+            let pos = |s: &str| labels.iter().position(|l| l == s).unwrap();
+            assert!(pos("ts") < pos("T-shirt") && pos("T-shirt") < pos("tsunami"));
+            assert!(pos("tutta") < pos("tutt'al più") && pos("tutt'al più") < pos("tutto"));
+            assert!(pos("tutt’altro") < pos("tutto"));
+            assert!(pos("ciaa") < pos("«ciao»") && pos("«ciao»") < pos("sia"));
+            assert!(pos("sia") < pos("sinistra") && pos("sinistra") < pos("sì—no"));
+            assert!(pos("n.º") < pos("naa"), "º is skipped, not sorted after z");
+            assert!(pos("fusa") < pos("Fuß") && pos("Fuß") < pos("Futter"));
+            // Equal keys: a label the Kindle rewrites ("ex-" is looked up as
+            // "ex") comes first, then the one with more apostrophes, then the
+            // one with fewer accented letters, then fewer capitals, then fewer
+            // skipped characters.
+            assert!(pos("tshirt") < pos("T-shirt"));
+            assert!(pos("ex-") < pos("ex") && pos("ex") < pos("exa"));
+            assert!(pos("'ndrangheta") < pos("ndrangheta"));
+        }
+    }
+
+    #[test]
+    fn punctuated_cyrillic_headwords_sort_as_if_unpunctuated() {
+        // Byte order for the letters, as before, with hyphens and periods
+        // skipped: "из-под" collates as "изпод", "т.к." as "тк". "те" and
+        // "т.е." have the same letters. The Kindle looks "т.е." up without
+        // its last period, so it comes first, while "ό,τι", which it looks up
+        // as written, comes after "ότι", which has fewer skipped characters.
+        let labels = sorted(
+            &["т.к.", "из-под", "изба", "т.е.", "те", "театр", "избегать"],
+            "ru",
+            false,
+        );
+        assert_eq!(
+            labels,
+            ["изба", "избегать", "из-под", "т.е.", "те", "театр", "т.к."]
+        );
+        let labels = sorted(&["κλπ", "ότι", "κ.λπ.", "ό,τι"], "el", false);
+        assert_eq!(labels, ["κ.λπ.", "κλπ", "ότι", "ό,τι"]);
+    }
+
+    #[test]
+    fn two_letter_forms_sort_spelled_out_in_every_path() {
+        // ß, æ and œ sort as ss, ae and oe, and ĳ as ij, whether the labels
+        // use the exact table, the fold blob or plain UTF-16 labels. Among equal
+        // keys the spelling without the letter comes first.
+        let de = [
+            "Futter", "Fuß", "Fusion", "Strasse", "Straße", "Strauch", "daß", "dass", "da",
+        ];
+        for fold_accents in [false, true] {
+            let labels = sorted(&de, "de", fold_accents);
+            assert_eq!(
+                labels,
+                [
+                    "da", "dass", "daß", "Fusion", "Fuß", "Futter", "Strasse", "Straße", "Strauch"
+                ],
+                "fold_accents={fold_accents}"
+            );
+        }
+        let labels = sorted(
+            &["zebra", "cœur", "Zebra", "apple", "Fuß", "из", "coeur"],
+            "ru",
+            false,
+        );
+        // The Cyrillic case aliases of the Latin labels come along.
+        let pos = |s: &str| labels.iter().position(|l| l == s).unwrap();
+        assert!(pos("apple") < pos("cœur") && pos("coeur") < pos("Fuß"));
+        assert!(pos("Fuß") < pos("Zebra") && pos("zebra") < pos("из"));
+    }
+
+    #[test]
+    fn plain_utf16_labels_store_the_marker_form() {
+        let entries: Vec<DictionaryEntry> = ["Straße", "из"].iter().map(|h| entry(h)).collect();
+        let positions: Vec<(usize, usize)> = entries.iter().map(|_| (0, 0)).collect();
+        let (terms, tables) =
+            build_lookup_terms(&entries, &positions, b"", false, "ru", false, false);
+        assert!(tables.is_none());
+        let strasse = terms.iter().find(|t| t.label == "Straße").unwrap();
+        let units: Vec<u16> = strasse
+            .label_bytes
+            .chunks(2)
+            .map(|c| u16::from_be_bytes([c[0], c[1]]))
+            .collect();
+        assert_eq!(units, [0x53, 0x74, 0x72, 0x61, 5, 0x73, 0x65]);
+    }
+
+    #[test]
+    fn cyrillic_no_break_space_and_superscripts_sort_as_space_and_digit() {
+        // In raw byte order U+00A0 and ² sort after every ASCII character, so
+        // "м²" landed after "м3" and "до\u{A0}свидания" after "до2".
+        let labels = sorted(
+            &["м3", "м²", "м1", "до2", "до\u{A0}свидания", "до1"],
+            "ru",
+            false,
+        );
+        // The build also adds the plain-space spelling as an alias (issue
+        // #36); it ties with the no-break one and sorts first by bytes.
+        assert_eq!(
+            labels,
+            [
+                "до свидания",
+                "до\u{A0}свидания",
+                "до1",
+                "до2",
+                "м1",
+                "м²",
+                "м3"
+            ]
+        );
+        let labels = sorted(&["пʼять", "пан", "пап"], "uk", false);
+        assert_eq!(labels, ["пан", "пап", "пʼять"]);
+        // A character outside the BMP is written as a surrogate pair and
+        // still takes part in the order.
+        let labels = sorted(&["а\u{1F600}", "аа", "а"], "ru", false);
+        assert_eq!(labels, ["а", "аа", "а\u{1F600}"]);
+    }
+
+    #[test]
+    fn non_latin_capitals_sort_apart_from_lowercase() {
+        // The Kindle 4 and the Paperwhite 4 find a Greek, Cyrillic or Armenian
+        // capital only where its code point puts it (Ω before α, but Ѡ after
+        // я and Ἀ after ἀ), in every mode and in a Latin dictionary too.
+        let entries: Vec<DictionaryEntry> = ["πχ", "π.Χ.", "πάθος", "πατέρας", "πυρ"]
+            .iter()
+            .map(|h| entry(h))
+            .collect();
+        let positions = vec![(0, 0); entries.len()];
+        let (terms, _) = build_lookup_terms(&entries, &positions, b"", false, "el", true, false);
+        let labels: Vec<String> = terms.into_iter().map(|t| t.label).collect();
+        assert_eq!(labels, ["π.Χ.", "πάθος", "πατέρας", "πυρ", "πχ"]);
+
+        let latin = [
+            "ω", "Ω", "β", "Β", "zebra", "più", "però", "perché", "così", "città",
+        ];
+        for fold_accents in [false, true] {
+            assert_eq!(
+                sorted(&latin, "it", fold_accents),
+                [
+                    "città", "così", "perché", "però", "più", "zebra", "Β", "Ω", "β", "ω"
+                ],
+                "fold_accents = {fold_accents}"
+            );
+        }
+    }
+
+    /// The labels a build writes, in index order, for each way it can store
+    /// them.
+    fn sorted_in(headwords: &[&str], lang: &str, strict: bool, fold: bool) -> Vec<String> {
+        let entries: Vec<DictionaryEntry> = headwords.iter().map(|h| entry(h)).collect();
+        let positions = vec![(0, 0); entries.len()];
+        let (terms, _) = build_lookup_terms(&entries, &positions, b"", false, lang, strict, fold);
+        terms.into_iter().map(|t| t.label).collect()
+    }
+
+    /// Every build path: the exact table (Latin default, `--strict-accents`),
+    /// plain UTF-16 labels with the fold blob (`--fold-accents`, Greek) and
+    /// without it (Cyrillic).
+    const PATHS: &[(&str, bool, bool)] = &[
+        ("it", false, false),
+        ("it", false, true),
+        ("uk", false, false),
+        ("uk", true, false),
+        ("el", false, false),
+        ("el", true, false),
+    ];
+
+    /// Asserts that `want` appears in `labels` in this order, whatever
+    /// aliases the build added in between.
+    fn assert_in_order(labels: &[String], want: &[&str], path: &(&str, bool, bool)) {
+        let positions: Vec<usize> = want
+            .iter()
+            .map(|w| {
+                labels
+                    .iter()
+                    .position(|l| l == w)
+                    .unwrap_or_else(|| panic!("{path:?}: {w:?} missing from {labels:?}"))
+            })
+            .collect();
+        assert!(
+            positions.windows(2).all(|p| p[0] < p[1]),
+            "{path:?}: want {want:?}, got {labels:?}"
+        );
+    }
+
+    #[test]
+    fn romanian_comma_below_letters_weigh_nothing_in_every_path() {
+        // On the Kindle 4 and the Paperwhite 4, ș and ț weigh nothing, so
+        // "școală" is searched for between "coală" and "copil". Sorted as s
+        // and t, these words left "școală", "șarpe", "țară" and "țigară"
+        // out of reach: "școală" and "țară" opened "coală" and "ară", and
+        // "șarpe" and "țigară" opened nothing.
+        let words = [
+            "școală", "copil", "coală", "stat", "șarpe", "sat", "țară", "ară", "tară", "timp",
+            "țigară", "acasă", "scoală",
+        ];
+        let want = [
+            "acasă", "ară", "țară", "șarpe", "coală", "școală", "copil", "țigară", "sat", "scoală",
+            "stat", "tară", "timp",
+        ];
+        for (strict, fold) in [(false, false), (false, true), (true, false)] {
+            let labels: Vec<String> = sorted_in(&words, "ro", strict, fold)
+                .into_iter()
+                .filter(|l| words.contains(&l.as_str()))
+                .collect();
+            assert_eq!(labels, want, "strict={strict} fold={fold}");
+        }
+    }
+
+    #[test]
+    fn romanian_s_and_t_get_their_other_spelling() {
+        // The cedilla letters weigh as s and t and the comma-below letters as
+        // nothing, so each spelling is found only by itself unless the other
+        // one is stored too.
+        for (strict, fold) in [(false, false), (false, true), (true, false)] {
+            let labels = sorted_in(&["școală", "Timişoara", "sat"], "ro", strict, fold);
+            let mut sorted = labels.clone();
+            sorted.sort_unstable();
+            assert_eq!(
+                sorted,
+                ["Timişoara", "Timișoara", "sat", "şcoală", "școală"],
+                "strict={strict} fold={fold}"
+            );
+            // Both spellings of "școală" sort where the Kindle looks for them:
+            // the cedilla one as "scoala", after "sat".
+            let pos = |s: &str| labels.iter().position(|l| l == s).unwrap();
+            assert!(pos("școală") < pos("sat") && pos("sat") < pos("şcoală"));
+        }
+        // Outside Romanian a cedilla letter is a letter of its own (Turkish
+        // "şehir"), so it gets no comma-below spelling, while a comma-below
+        // headword still gets its cedilla one.
+        let labels = sorted_in(&["şehir", "șarpe", "kapı"], "tr", false, false);
+        let mut sorted = labels.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, ["kapı", "şarpe", "şehir", "șarpe"]);
+        assert!(romanian_letter_aliases("casa", true).is_empty());
+    }
+
+    #[test]
+    fn mixed_scripts_and_supplementary_characters_sort_by_code_unit_in_every_path() {
+        // Latin letters fold in any dictionary; Greek, Cyrillic and Latin
+        // Extended Additional keep their code units, capitals first; a
+        // character outside the BMP sorts as its surrogates, after U+D7FF and
+        // before U+E000.
+        let words = [
+            "Zebra", "apple", "из", "Из", "x😀y", "xﬁy", "xay", "Ω", "ω", "ẞa", "Ḃx", "bx",
+        ];
+        let want = [
+            "apple", "bx", "xay", "x😀y", "xﬁy", "Zebra", "Ω", "ω", "Из", "из", "Ḃx", "ẞa",
+        ];
+        for path in PATHS {
+            assert_in_order(&sorted_in(&words, path.0, path.1, path.2), &want, path);
+        }
+        // Modifier letters and the skipped Extended-B and IPA letters weigh
+        // nothing; ư and ơ weigh as u and o.
+        let words = [
+            "Hawaiʻi", "hawaiian", "hawaii", "ǆep", "ep", "eq", "ưa", "ua", "ub", "ʃip", "ip",
+        ];
+        let want = [
+            "ep", "ǆep", "eq", "hawaii", "Hawaiʻi", "hawaiian", "ip", "ʃip", "ua", "ưa", "ub",
+        ];
+        for path in PATHS {
+            assert_in_order(&sorted_in(&words, path.0, path.1, path.2), &want, path);
+        }
+    }
+
+    #[test]
+    fn generated_ordt_ties_keep_encoded_byte_order() {
+        // Japanese, Chinese, Korean and Arabic-script dictionaries sort by the
+        // generated table's weights with ties in encoded byte order (then
+        // label text for labels stored as the same bytes), and none of the
+        // other tie rules. In a kana table every ASCII letter shares one weight
+        // and `%`, `_` and `-` weigh nothing; in a literal table `%` and `_`
+        // weigh nothing.
+        let ascii = |labels: Vec<String>| -> Vec<String> {
+            labels.into_iter().filter(|l| l.is_ascii()).collect()
+        };
+        for (strict, fold) in [(false, false), (true, false), (false, true)] {
+            assert_eq!(
+                ascii(sorted_in(
+                    &["ba", "ab", "a-b", "a%b", "かき"],
+                    "ja",
+                    strict,
+                    fold
+                )),
+                ["a%b", "a-b", "ab", "ba"]
+            );
+            assert_eq!(
+                ascii(sorted_in(&["ab", "a_b", "a%b", "水"], "zh", strict, fold)),
+                ["a%b", "a_b", "ab"]
+            );
+        }
+    }
+
+    #[test]
+    fn generated_ordt_dictionaries_get_no_romanian_aliases() {
+        for lang in ["ja", "zh", "ko", "ar", "fa"] {
+            let mut labels = sorted_in(&["Timișoara", "şcoală", "水"], lang, false, false);
+            labels.sort_unstable();
+            assert_eq!(labels, ["Timișoara", "şcoală", "水"], "{lang}");
+        }
+    }
+
+    #[test]
+    fn labels_stored_as_the_same_bytes_sort_by_their_text() {
+        // As plain UTF-16 and in the Japanese table these labels are cut to the
+        // same 254 bytes (the one-byte exact table stores them whole and
+        // apart); whatever order they are read in, they are written in one
+        // order.
+        let long = "д".repeat(130);
+        let words: Vec<String> = ["в", "б", "а"]
+            .iter()
+            .map(|tail| format!("{long}{tail}"))
+            .chain(["кот".to_string()])
+            .collect();
+        for (lang, strict) in [("ru", false), ("ru", true), ("ja", false)] {
+            for rotation in 0..words.len() {
+                let mut input: Vec<&str> = words.iter().map(String::as_str).collect();
+                input.rotate_left(rotation);
+                let labels = sorted_in(&input, lang, strict, false);
+                let long_ones: Vec<&String> = labels.iter().filter(|l| l.len() > 200).collect();
+                let mut want = long_ones.clone();
+                want.sort_unstable();
+                assert_eq!(long_ones, want, "{lang} strict={strict}");
+            }
+        }
+    }
+
+    #[test]
+    fn plain_utf16_labels_fold_the_prolonged_sound_mark() {
+        // The exact table stores ー after kana as a marker for the vowel it
+        // lengthens, and plain UTF-16 labels do the same, so "カード" is
+        // stored with U+3095 in place of ー and weighs as "かあど".
+        for (lang, strict, fold) in [
+            ("it", false, true),
+            ("ru", false, false),
+            ("el", false, false),
+        ] {
+            let entries: Vec<DictionaryEntry> = ["カード", "かと", "かど", "かあど"]
+                .iter()
+                .map(|h| entry(h))
+                .collect();
+            let positions = vec![(0, 0); entries.len()];
+            let (terms, tables) =
+                build_lookup_terms(&entries, &positions, b"", false, lang, strict, fold);
+            assert!(tables.is_none());
+            let card = terms.iter().find(|t| t.label == "カード").unwrap();
+            assert_eq!(
+                card.label_bytes,
+                [0x30, 0xAB, 0x30, 0x95, 0x30, 0xC9],
+                "{lang}"
+            );
+            let labels: Vec<&str> = terms.iter().map(|t| t.label.as_str()).collect();
+            assert_eq!(labels, ["かあど", "カード", "かと", "かど"], "{lang}");
+        }
+    }
+
+    #[test]
+    fn equal_keys_put_fewer_skipped_units_then_the_spelled_out_form_first() {
+        let words = ["Stras-se", "Straße", "Strasse", "T-shirt", "tshirt"];
+        let want = ["Strasse", "Straße", "Stras-se", "tshirt", "T-shirt"];
+        for path in PATHS {
+            assert_in_order(&sorted_in(&words, path.0, path.1, path.2), &want, path);
+        }
+    }
+
+    #[test]
+    fn equal_keys_put_rewritten_labels_apostrophes_accents_then_capitals_first() {
+        // A word spelled like none of these labels opens the first one equal
+        // to it ignoring case, else the first of them all. "-aren" is looked
+        // up as "aren", which equals neither "-aren" nor "åren"; "donʼt" with
+        // U+02BC equals neither "don't" nor "dont"; "If" equals both "if" and
+        // "IF"; "A.I." and "a.i." are both looked up without the last period.
+        let words = [
+            "åren",
+            "-aren",
+            "'n",
+            "-n",
+            "dont",
+            "don't",
+            "Демянюка",
+            "Дем’янюка",
+            "kudamm",
+            "Ku'damm",
+            "IF",
+            "if",
+            "a.i.",
+            "A.I.",
+            "Andr.",
+            "andr-",
+            "пять",
+            "пʼять",
+        ];
+        let want: [[&str; 2]; 9] = [
+            ["-aren", "åren"],
+            // A rewritten label before one with more apostrophes.
+            ["-n", "'n"],
+            ["don't", "dont"],
+            ["Дем’янюка", "Демянюка"],
+            // U+02BC counts as an apostrophe: "п’ять" is looked up as
+            // "п'ять", which equals neither label, so the first one opens.
+            ["пʼять", "пять"],
+            // More apostrophes before fewer capitals.
+            ["Ku'damm", "kudamm"],
+            ["if", "IF"],
+            // Capitals do not count for labels the Kindle rewrites.
+            ["A.I.", "a.i."],
+            // Then the characters that weigh nothing, in code order.
+            ["andr-", "Andr."],
+        ];
+        let languages = ["de", "da", "tr", "fr", "en"];
+        let paths = PATHS
+            .iter()
+            .copied()
+            .chain(languages.iter().map(|&lang| (lang, false, false)));
+        for path in paths {
+            let labels = sorted_in(&words, path.0, path.1, path.2);
+            for pair in &want {
+                assert_in_order(&labels, pair, &path);
+            }
+        }
+    }
+
+    #[test]
+    fn german_and_danish_ties_move_back_only_labels_without_lowercase_and_danish_skips_accents() {
+        // Elsewhere the label with fewer accented letters comes first, then
+        // the one with fewer capitals: in a Norwegian dictionary "FØRER"
+        // opens "fører" rather than "fôrer" ("ø" does not count, since its
+        // case is compared). German books compare the case of every letter,
+        // and Danish books the case of `a`, `c`, `d`, `e`, `i`, `o` and `y`, so
+        // a word in capitals usually equals neither twin and opens the first;
+        // there only a label with no lowercase letter moves back, and
+        // "Email" comes before "e-mail", which has a character that weighs
+        // nothing. A German dictionary still puts fewer accents first, so a
+        // sentence-initial "Schlagen" opens "schlagen" and "wolf" opens
+        // "Wolf"; a Danish one does not.
+        let words = [
+            "fôrer",
+            "fører",
+            "Email",
+            "e-mail",
+            "HAUS",
+            "Haus",
+            "État",
+            "état",
+            "Schlägen",
+            "schlagen",
+            "wölf",
+            "Wolf",
+        ];
+        for path in PATHS
+            .iter()
+            .copied()
+            .chain([("tr", false, false), ("fr", false, false)])
+        {
+            let labels = sorted_in(&words, path.0, path.1, path.2);
+            assert_in_order(&labels, &["fører", "fôrer"], &path);
+            assert_in_order(&labels, &["e-mail", "Email"], &path);
+            assert_in_order(&labels, &["Haus", "HAUS"], &path);
+            // Every capital counts, not only the ASCII ones: "ÉTAT" opens
+            // "état".
+            assert_in_order(&labels, &["état", "État"], &path);
+        }
+        for lang in ["de", "da"] {
+            let path = (lang, false, false);
+            let labels = sorted_in(&words, lang, false, false);
+            assert_in_order(&labels, &["Email", "e-mail"], &path);
+            assert_in_order(&labels, &["Haus", "HAUS"], &path);
+        }
+        let de = ("de", false, false);
+        let labels = sorted_in(&words, "de", false, false);
+        assert_in_order(&labels, &["fører", "fôrer"], &de);
+        assert_in_order(&labels, &["schlagen", "Schlägen"], &de);
+        assert_in_order(&labels, &["Wolf", "wölf"], &de);
+        let da = ("da", false, false);
+        let labels = sorted_in(&words, "da", false, false);
+        assert_in_order(&labels, &["Schlägen", "schlagen"], &da);
+    }
+
+    #[test]
+    fn a_label_the_kindle_rewrites_gets_its_rewritten_spelling() {
+        let headwords = [
+            "MP3",
+            "COVID-19",
+            "l'altro",
+            "Bsp.",
+            "G7",
+            "G8",
+            "Ab1",
+            "ab",
+            "Bb2",
+            "tesi",
+            "Tesi2",
+            "dell'anno1",
+            "123",
+        ];
+        let entries: Vec<DictionaryEntry> = headwords.iter().map(|h| entry(h)).collect();
+        let positions: Vec<(usize, usize)> = (0..entries.len()).map(|i| (100 * i, 10)).collect();
+        for (strict, fold) in [(false, false), (false, true), (true, false)] {
+            let (terms, _) =
+                build_lookup_terms(&entries, &positions, b"", false, "it", strict, fold);
+            let start = |label: &str| terms.iter().find(|t| t.label == label).map(|t| t.start_pos);
+            // Digits or letters rewritten away: the spelling the Kindle looks
+            // up opens the same entry, an Italian elision included.
+            assert_eq!(start("MP"), Some(0));
+            assert_eq!(start("COVID"), Some(100));
+            assert_eq!(start("altro"), Some(200));
+            assert_eq!(start("Bb"), Some(800));
+            // A book in a language with no rules of its own keeps the
+            // elision and drops only the digit.
+            assert_eq!(start("anno"), Some(1100));
+            assert_eq!(start("dell'anno"), Some(1100));
+            // "123" is looked up as nothing, so it gets no empty label.
+            assert!(terms.iter().all(|t| !t.label.is_empty()));
+            // Only characters that weigh nothing dropped: "Bsp." is found by
+            // "Bsp" as it is.
+            assert_eq!(start("Bsp"), None);
+            // Another entry weighs the same: "G7" and "G8" would share "G",
+            // "Ab" would weigh like "ab", and "Tesi" like "tesi".
+            assert_eq!(start("G"), None);
+            assert_eq!(start("Ab"), None);
+            assert_eq!(start("Tesi"), None);
+            assert_eq!(
+                terms.len(),
+                headwords.len() + 6,
+                "strict={strict} fold={fold}"
+            );
+        }
+        // An English book drops no Italian article, so an English dictionary
+        // gets no "altro"; it drops a final 's instead.
+        let labels = sorted_in(&["l'altro", "people's"], "en", false, false);
+        let mut labels_sorted = labels.clone();
+        labels_sorted.sort_unstable();
+        assert_eq!(labels_sorted, ["l'altro", "people", "people's"]);
+        // A Thai word loses a final U+0E4C in any book.
+        let labels = sorted_in(&["พระจันทร์"], "th", false, false);
+        assert!(labels.iter().any(|l| l == "พระจันทร"), "{labels:?}");
+        // "Straße" is stored and weighed as "Strasse", so the "Strasse" that
+        // "Strasse3" is looked up by weighs like it and gets no alias.
+        let labels = sorted_in(&["Straße", "Strasse3"], "de", false, false);
+        assert_eq!(labels.len(), 2, "{labels:?}");
+        // U+0870 became a letter after Unicode 12.1, so "abc\u{870}" is
+        // looked up as "abc".
+        let labels = sorted_in(&["abc\u{870}"], "en", false, false);
+        assert!(labels.iter().any(|l| l == "abc"), "{labels:?}");
+        // The Japanese, Chinese, Korean and Arabic-script dictionaries keep
+        // their labels.
+        for lang in ["ja", "zh", "ko", "ar"] {
+            assert_eq!(sorted_in(&["MP3"], lang, false, false), ["MP3"], "{lang}");
+        }
+    }
+
+    #[test]
+    fn german_capitalized_prefix_gives_its_word_to_the_lowercase_entry() {
+        let headwords = [
+            "ein", "Ein-", "nach", "Nach-", "Sonder", "sonder", "Sonder-", "Ab-",
+        ];
+        let entries: Vec<DictionaryEntry> = headwords.iter().map(|h| entry(h)).collect();
+        let positions = vec![(0, 0); entries.len()];
+        let (terms, _) = build_lookup_terms(&entries, &positions, b"", false, "de", false, false);
+        let entry_of = |label: &str| {
+            terms
+                .iter()
+                .find(|t| t.label == label)
+                .map(|t| t.source_ordinal)
+        };
+        // A sentence that starts with "Ein" or "Nach" opens "ein" or "nach",
+        // and so does a tapped "Ein-".
+        assert_eq!(entry_of("Ein"), entry_of("ein"));
+        assert_eq!(entry_of("Nach"), entry_of("nach"));
+        // "Sonder" is a label already, and "Ab-" has no "ab" to give it to.
+        assert_eq!(terms.iter().filter(|t| t.label == "Sonder").count(), 1);
+        assert_eq!(entry_of("Sonder"), Some(4));
+        assert_eq!(entry_of("Ab"), None);
+        assert_eq!(terms.len(), headwords.len() + 2);
+        // Other dictionaries get no such alias.
+        assert_eq!(sorted_in(&["ein", "Ein-"], "it", false, false).len(), 2);
+        // Only the first letter is lowercased, and every final hyphen is
+        // removed: "ÜBER-" adds no alias for "über", and "Zu--" adds "Zu",
+        // which opens "zu".
+        let labels = sorted_in(&["über", "ÜBER-", "zu", "Zu--"], "de", false, false);
+        assert!(!labels.iter().any(|l| l == "ÜBER"), "{labels:?}");
+        assert!(labels.iter().any(|l| l == "Zu"), "{labels:?}");
+    }
+
+    #[test]
+    fn a_label_the_kindle_4_trims_further_gets_that_spelling_too() {
+        let start_in = |headwords: &[&str], lang: &str, strict: bool| {
+            let entries: Vec<DictionaryEntry> = headwords.iter().map(|h| entry(h)).collect();
+            let positions: Vec<(usize, usize)> =
+                (0..entries.len()).map(|i| (100 * i, 10)).collect();
+            let (terms, _) =
+                build_lookup_terms(&entries, &positions, b"", false, lang, strict, false);
+            let starts: std::collections::HashMap<String, usize> =
+                terms.into_iter().map(|t| (t.label, t.start_pos)).collect();
+            starts
+        };
+        // The Kindle 4 drops the Thai vowel signs and tone marks at the end of
+        // a word, which the Paperwhite 4 and 5 keep.
+        let th_words = ["กระทู้", "กระจู้", "กระจู๋", "ดี", "ดู", "ครู", "คร์"];
+        let th = start_in(&th_words, "th", false);
+        assert_eq!(th.get("กระท"), Some(&0));
+        // Two entries would share the spelling.
+        assert_eq!(th.get("กระจ"), None);
+        assert_eq!(th.get("ด"), None);
+        // Every Kindle looks "คร์" up as "คร", so that spelling stays with it
+        // and "ครู" does not get it.
+        assert_eq!(th.get("คร"), Some(&600));
+        assert_eq!(th.len(), 9, "{th:?}");
+        // A final combining accent goes too, except where the Kindle 4 shows
+        // no popup for the word that is left.
+        let it_words = ["citta\u{300}", "il\u{301}", "e\u{300}"];
+        let it = start_in(&it_words, "it", false);
+        assert_eq!(it.get("citta"), Some(&0));
+        assert_eq!(it.len(), 4, "{it:?}");
+        // --strict-accents keeps only the spellings every Kindle looks up.
+        let th = start_in(&th_words, "th", true);
+        assert_eq!(th.get("กระท"), None);
+        assert_eq!(th.get("คร"), Some(&600));
+        assert_eq!(th.len(), 8, "{th:?}");
+        assert_eq!(start_in(&it_words, "it", true).len(), 3);
+        // Listed the other way around, "คร์" still gets "คร": the spelling
+        // the Kindle 4 looks "ครู" up by does not take it from the spelling
+        // every Kindle looks "คร์" up by.
+        let th = start_in(&["คร์", "ครู"], "th", false);
+        assert_eq!(th.get("คร"), Some(&0), "{th:?}");
+    }
+
+    #[test]
+    fn letters_whose_case_a_kindle_compares_do_not_count_as_accented() {
+        // A Kindle compares the case of Ł, Ŀ, Đ, Ħ, ı, Ŋ and Ŧ, so a word in
+        // capitals with one of them equals neither twin and opens the first:
+        // "ŁAN" opens "łan" and "COĿL" opens "coŀl". Every other accented Latin
+        // letter up to U+017F counts, including those that weigh as z, so
+        // "FØRER" opens "Fører" rather than "fōrer" and "ŻAR" opens "Zar"
+        // rather than "žar".
+        let words = [
+            "Lan", "łan", "Dak", "đak", "Hal", "ħal", "Iko", "ıko", "Nam", "ŋam", "fōrer", "Fører",
+            "žar", "Zar", "Coll", "coŀl", "Tak", "ŧak",
+        ];
+        let want = [
+            ["łan", "Lan"],
+            ["đak", "Dak"],
+            ["ħal", "Hal"],
+            ["ıko", "Iko"],
+            ["ŋam", "Nam"],
+            ["Fører", "fōrer"],
+            ["Zar", "žar"],
+            ["coŀl", "Coll"],
+            ["ŧak", "Tak"],
+        ];
+        for path in PATHS.iter().copied().chain([("nb", false, false)]) {
+            let labels = sorted_in(&words, path.0, path.1, path.2);
+            for pair in &want {
+                assert_in_order(&labels, pair, &path);
+            }
+        }
+    }
+
+    #[test]
+    fn tie_rules_apply_in_their_order() {
+        // In each pair two neighboring rules pick opposite labels, so the pair
+        // keeps its order only while the rules do. A word spelled like neither
+        // label opens the first one. Apostrophes before accents: "KU'DAMM"
+        // opens "Ku'dämm" rather than "kudamm". Accents before capitals:
+        // "FØRER" opens "Fører" rather than "fōrer" ("ø" does not count), and
+        // "ŻAR" opens "Zar" rather than "žar". Letter pairs before the code
+        // order of the characters that weigh nothing: "STRASSE" opens
+        // "Stras.se" rather than "Stra-ße", although "-" comes before ".".
+        let words = [
+            "kudamm", "Ku'dämm", "fōrer", "Fører", "žar", "Zar", "Stra-ße", "Stras.se",
+        ];
+        let want = [
+            ["Ku'dämm", "kudamm"],
+            ["Fører", "fōrer"],
+            ["Zar", "žar"],
+            ["Stras.se", "Stra-ße"],
+        ];
+        for path in PATHS.iter().copied().chain([("nb", false, false)]) {
+            let labels = sorted_in(&words, path.0, path.1, path.2);
+            for pair in &want {
+                assert_in_order(&labels, pair, &path);
+            }
+        }
+    }
+
+    #[test]
+    fn only_a_paperwhite_rewrite_in_the_dictionary_language_moves_a_label_first() {
+        // A French book looks "donne-moi" up as "donne", so it comes before
+        // "donnemoi" and "donne_moi" opens it. A label that starts with Œ is
+        // looked up as written, and only the Kindle 4 drops a voicing mark at
+        // the end, so neither moves a label: "ŒUVRE" opens "oeuvre", and
+        // "か\u{3099}き" opens "かき".
+        let fr = ("fr", false, false);
+        let labels = sorted_in(
+            &["donnemoi", "donne-moi", "Œuvre", "oeuvre"],
+            "fr",
+            false,
+            false,
+        );
+        assert_in_order(&labels, &["donne-moi", "donnemoi"], &fr);
+        assert_in_order(&labels, &["oeuvre", "Œuvre"], &fr);
+        for path in PATHS.iter().copied().chain([fr]) {
+            let labels = sorted_in(&["かき\u{3099}", "かき"], path.0, path.1, path.2);
+            assert_in_order(&labels, &["かき", "かき\u{3099}"], &path);
+        }
+    }
+
+    /// A dictionary unpacked from a Kindle file can spell ß, æ and œ as the
+    /// marker and the second letter (`Fu`, U+0005, `s`). Rebuilt, it stores
+    /// the same labels in the same order as a source that spells the letters,
+    /// with no alias for the spelling without the marker ("Euvre").
+    #[test]
+    fn an_unpacked_headword_builds_as_its_letter() {
+        let letters = ["Œuvre", "Fuß", "Cæsar", "Straße", "Strasse", "bœuf", "Ærø"];
+        let markers = [
+            "\u{1}Euvre",
+            "Fu\u{5}s",
+            "C\u{4}esar",
+            "Stra\u{5}se",
+            "Strasse",
+            "b\u{2}euf",
+            "\u{3}Erø",
+        ];
+        let stored = |headwords: &[&str], path: &(&str, bool, bool)| -> Vec<Vec<u8>> {
+            let entries: Vec<DictionaryEntry> = headwords.iter().map(|h| entry(h)).collect();
+            let positions: Vec<(usize, usize)> =
+                (0..entries.len()).map(|i| (100 * i, 10)).collect();
+            let (terms, _) =
+                build_lookup_terms(&entries, &positions, b"", false, path.0, path.1, path.2);
+            terms.into_iter().map(|t| t.label_bytes).collect()
+        };
+        let de = [
+            ("de", false, false),
+            ("de", false, true),
+            ("de", true, false),
+        ];
+        for path in PATHS.iter().chain(&de) {
+            let want = stored(&letters, path);
+            assert_eq!(want.len(), letters.len(), "{path:?}");
+            assert_eq!(stored(&markers, path), want, "{path:?}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -5530,9 +6816,42 @@ mod cyrillic_alias_tests {
     }
 
     #[test]
-    fn strict_accents_skips_aliases() {
-        let e = [entry("ФСБ", &[]), entry("пробормота́в", &[])];
-        assert_eq!(terms(&e, true).len(), 2);
+    fn strict_accents_keeps_only_the_russian_lowercase_alias() {
+        // The Paperwhite 4 lowercases a word looked up in a Russian
+        // dictionary, so ФСБ needs фсб even under --strict-accents; the
+        // stress-stripped spelling is still left out.
+        let e = [
+            entry("ФСБ", &[]),
+            entry("пробормота́в", &[]),
+            entry("Москва́", &[]),
+        ];
+        let mut l: Vec<String> = terms(&e, true).into_iter().map(|t| t.label).collect();
+        l.sort_unstable();
+        assert_eq!(l, ["Москва́", "ФСБ", "москва́", "пробормота́в", "фсб"]);
+        // Ukrainian is looked up as typed: no alias at all.
+        let positions = vec![(0, 0); 2];
+        let e = [entry("ЄС", &[]), entry("Київ", &[])];
+        let (t, _) = build_lookup_terms(&e, &positions, b"", false, "uk", true, false);
+        assert_eq!(t.len(), 2);
+    }
+
+    #[test]
+    fn russian_lowercase_alias_lowers_sigma_like_the_kindle() {
+        // A Russian dictionary's lowercase alias must be the word the
+        // Paperwhite 4 and 5 search for: ΑΣ1Α as ασ1α and ΑΣ:Α as ας:α, not
+        // Unicode's ας1α and ασ:α, which no tapped word reaches.
+        for strict in [false, true] {
+            let e = [
+                entry("ΑΣ1Α", &[]),
+                entry("ΑΣ:Α", &[]),
+                entry("дом", &[]),
+                entry("кот", &[]),
+            ];
+            let t = terms(&e, strict);
+            let l = labels(&t);
+            assert!(l.contains(&"ασ1α") && l.contains(&"ας:α"), "{l:?}");
+            assert!(!l.contains(&"ας1α") && !l.contains(&"ασ:α"), "{l:?}");
+        }
     }
 
     #[test]
@@ -6313,6 +7632,13 @@ fn locale_code_opt(lang: &str) -> Option<u32> {
             "mi" => 0x0481,
             "lb" => 0x046E,
             "fo" => 0x0438,
+            // Thai, as kindlegen writes it. The Kindle 4 (firmware 4.1.4)
+            // picks the dictionary whose language id matches the book's, so
+            // it passed over a Thai dictionary written as English when a
+            // word was looked up in a Thai book. Esperanto has no Windows
+            // language id and kindlegen refuses to build it, so it keeps the
+            // English fallback.
+            "th" => 0x041E,
             // Arabic-script languages (generated all-literal ORDT, like ar).
             // The neutral primary LCID is what the firmware's per-language
             // query normalization is keyed on (issue #11).

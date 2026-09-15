@@ -113,25 +113,30 @@ enum Commands {
         #[arg(long)]
         no_self_check: bool,
 
-        /// Force exact accent matching for any script. Latin dictionaries
-        /// already default to exact matching, where accent and case variants
-        /// share a collation weight (so the index sorts folded and accent-
-        /// initial headwords resolve) but each letter stays a distinct symbol,
-        /// so "même" returns "même" not "meme" (issue #8). This flag forces the
-        /// same exact collation for Greek/Cyrillic too. No effect on book
-        /// builds. Also settable via KINDLING_STRICT_ACCENTS=1, the only way to
-        /// reach it under a wrapper that controls the command line (e.g.
-        /// pyglossary / reader.dict). Mutually exclusive with --fold-accents.
+        /// Store the labels of a Greek, Cyrillic or other non-Latin dictionary
+        /// with the exact per-character ORDT table that Latin dictionaries get
+        /// by default, except in Japanese, Chinese, Korean and Arabic-script
+        /// dictionaries, which keep their generated tables. The labels are
+        /// stored in the same order either way. Cyrillic dictionaries then get
+        /// no stress-stripped aliases, only Russian ones keep the lowercase
+        /// aliases, and no dictionary gets the aliases spelled the way only the
+        /// Kindle 4 looks words up, which can drop a final accent. No effect on
+        /// book builds. Also settable via KINDLING_STRICT_ACCENTS=1, the only
+        /// way to reach it under a wrapper that controls the command line
+        /// (e.g. pyglossary / reader.dict). Mutually exclusive with
+        /// --fold-accents.
         #[arg(long, conflicts_with = "fold_accents")]
         strict_accents: bool,
 
-        /// Opt into kindlegen-style accent folding for a Latin dictionary
-        /// instead of the exact-matching default: the diacritic-folding Greek
-        /// ORDT/SPL collation blob, so "meme" also matches "même". The labels
-        /// are still folded-sorted, so accent-initial headwords resolve. Use
-        /// this for byte-for-byte kindlegen parity or accent-insensitive
-        /// lookup. No effect on Greek/Cyrillic (already folding) or book
-        /// builds. Also settable via KINDLING_FOLD_ACCENTS=1.
+        /// Store a Latin dictionary's labels as plain UTF-16 with the
+        /// kindlegen-derived ORDT/SPL blob, instead of the exact per-character
+        /// table that is the default. The labels are stored in the same order
+        /// either way, so the two builds open the same entries, except that a
+        /// label longer than 127 characters is cut where a one-byte default
+        /// table keeps up to 254. No effect on dictionaries whose headwords are
+        /// not mostly Latin script, on Japanese, Chinese, Korean and
+        /// Arabic-script dictionaries, or on book builds. Also settable via
+        /// KINDLING_FOLD_ACCENTS=1.
         #[arg(long, conflicts_with = "strict_accents")]
         fold_accents: bool,
 
@@ -629,10 +634,14 @@ enum Commands {
 
     /// Simulate an on-device dictionary lookup against a built MOBI.
     ///
-    /// Reproduces the firmware's orth-index search (accent/case folding for
-    /// Latin and Greek, literal matching for CJK/Arabic, query-side case
-    /// folding for Cyrillic) and reports which stored form resolves. This is a
-    /// build-side regression check, not a hardware oracle; see `src/lookup.rs`.
+    /// Predicts which label the Paperwhite 5 (firmware 5.19.2) opens for a
+    /// word tapped in a book in the dictionary's input language: the word is
+    /// formatted as the Kindle formats it, the index is searched in its stored
+    /// order, and one label of the returned run is chosen. Exits 1 when
+    /// nothing opens. It does not model the dictionary form or the retries
+    /// with trailing characters removed in Japanese, Chinese and Korean books,
+    /// the weights of the Hangul jamo, or how the Kindle 4 and firmware 5.19.6
+    /// differ.
     Lookup {
         /// Built dictionary MOBI to search.
         input: PathBuf,
@@ -1589,13 +1598,100 @@ fn do_lookup(input: &PathBuf, word: &str) {
         eprintln!("note: the HUFF/CDIC tables in this file could not be read: {why}");
     }
     // A record number that was not adjusted for records inserted ahead of it
-    // is the one failure that looks exactly like an absent headword.
+    // is the one failure that looks exactly like an absent headword. A Kindle
+    // searches nothing in such a file, so say what the index would open once
+    // the header is right.
+    let index_record = report.index_record.unwrap_or(0);
     if report.index_pointer_is_stale() {
+        let named = match report.declared_index_record {
+            Some(rec) => format!("names record {rec}"),
+            None => "names no record".to_string(),
+        };
         eprintln!(
-            "note: the MOBI header names record {} for the dictionary index, but the orth index \
-             is at record {}. Using the index that is there.",
-            report.declared_index_record.unwrap_or(0),
-            report.index_record.unwrap_or(0)
+            "note: the MOBI header {named} for the dictionary index, but the orth index is at \
+             record {index_record}. A Kindle reads only the record the header names, so it opens \
+             nothing in this file."
+        );
+    }
+    if let Some(hit) = &report.would_open {
+        eprintln!(
+            "note: with the header fixed, {word:?} would open {:?} at text position {}.",
+            hit.matched_label, hit.position
+        );
+    }
+
+    // What the Kindle does to the word before it looks it up, and what the
+    // search returned, so a surprising answer can be traced to its step.
+    if report.index_record.is_some() && report.formatted != word {
+        // A language kindling has no code for is shown without one.
+        let book = if report.book_language.is_empty() {
+            "a book in the dictionary's language".to_string()
+        } else {
+            format!(
+                "a book in the dictionary's language ({:?})",
+                report.book_language
+            )
+        };
+        if report.formatted.is_empty() {
+            eprintln!(
+                "note: the Kindle formats {word:?} to nothing for {book}, and looks nothing up."
+            );
+        } else {
+            eprintln!(
+                "note: the Kindle looks up {word:?} as {:?}, formatted for {book}.",
+                report.formatted
+            );
+        }
+    }
+    if report.searched != report.formatted {
+        eprintln!(
+            "note: in a Russian dictionary a Paperwhite lowercases the word it looks up, so it \
+             searches for {:?}.",
+            report.searched
+        );
+    }
+    if report.run.len() > 1 {
+        eprintln!(
+            "note: the index search returned {} labels: {}.",
+            report.run.len(),
+            quoted_first(&report.run)
+        );
+    }
+    if !report.unreachable.is_empty() {
+        let (labels, them) = match report.unreachable.len() {
+            1 => ("1 label".to_string(), "it"),
+            n => (format!("{n} labels"), "them"),
+        };
+        let (pairs, are) = if report.order_breaks == 1 {
+            ("pair", "is")
+        } else {
+            ("pairs", "are")
+        };
+        eprintln!(
+            "note: the index {}holds {labels}, {}, which the Kindle weighs the same as {:?}, but the \
+             index is not stored in the order its search follows ({} adjacent {pairs} of labels \
+             {are} out of order), so the search cannot reach {them}.",
+            if report.result.is_some() { "also " } else { "" },
+            quoted_first(&report.unreachable),
+            report.searched,
+            report.order_breaks,
+        );
+    }
+
+    // The simulator gives the Hangul jamo their code units, which is not how
+    // a Kindle weighs them, so its answer cannot be trusted near such labels.
+    if report.hangul_jamo_labels > 0 {
+        let (labels, contain, those, them) = if report.hangul_jamo_labels == 1 {
+            ("label", "contains", "that label", "it")
+        } else {
+            ("labels", "contain", "those labels", "them")
+        };
+        eprintln!(
+            "note: {} {labels} in this index {contain} Hangul jamo (U+1100 to U+11F9 or U+3131 \
+             to U+318E). A Kindle weighs these characters in a way this simulation does not \
+             model, so on a device {those}, and labels stored near {them}, may open nothing \
+             whatever the result below says.",
+            report.hangul_jamo_labels
         );
     }
 
@@ -1615,10 +1711,25 @@ fn do_lookup(input: &PathBuf, word: &str) {
         }
         None => {
             match report.index_record {
+                Some(rec) if report.index_pointer_is_stale() => {
+                    println!(
+                        "{word:?} does not resolve in {}: the MOBI header does not name the orth \
+                         index at record {rec}, so a Kindle finds no dictionary index to search.",
+                        input.display()
+                    );
+                }
+                Some(rec) if report.formatted.is_empty() => {
+                    println!(
+                        "{word:?} does not resolve in {}: the Kindle formats it to nothing, so it \
+                         looks nothing up in the {} headwords of the orth index at record {rec}.",
+                        input.display(),
+                        report.entries
+                    );
+                }
                 Some(rec) => {
                     println!(
                         "{word:?} does not resolve in {}: the orth index at record {rec} holds {} \
-                         headwords and none of them match.",
+                         headwords and the search finds none of them.",
                         input.display(),
                         report.entries
                     );
@@ -1635,7 +1746,8 @@ fn do_lookup(input: &PathBuf, word: &str) {
                     }
                     if !report.nearest.is_empty() {
                         eprintln!(
-                            "note: {word:?} would sort among {}.",
+                            "note: the search for {:?} ended among {}.",
+                            report.searched,
                             quoted(&report.nearest)
                         );
                     }
@@ -1659,6 +1771,18 @@ fn quoted(labels: &[String]) -> String {
         .map(|l| format!("{l:?}"))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// Quote the first 20 labels and count the rest. Labels made only of
+/// characters that weigh nothing on a Kindle, such as Hangul syllables, all
+/// weigh the same, so the search for one of them returns every such label.
+fn quoted_first(labels: &[String]) -> String {
+    const SHOWN: usize = 20;
+    let mut out = quoted(&labels[..labels.len().min(SHOWN)]);
+    if labels.len() > SHOWN {
+        out.push_str(&format!(" and {} more", labels.len() - SHOWN));
+    }
+    out
 }
 
 /// Build a StarDict bundle from an OPF or EPUB dictionary input.

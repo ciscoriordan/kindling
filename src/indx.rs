@@ -18,7 +18,7 @@ const MAX_INDX_DATA_SIZE: usize = 64000;
 /// Embedded as static data (3906 bytes).
 const ORDT_GREEK: &[u8] = include_bytes!("ordt_greek.bin");
 
-/// Extract the firmware's single-character fold map from the SPL1 spelling
+/// Extract kindlegen's single-character fold map from the SPL1 spelling
 /// table inside `ORDT_GREEK` (Amazon's own collation blob). SPL1 is a byte
 /// array indexed by input byte: `table[b]` is the base ASCII letter that byte
 /// folds to. The 0x80..=0x9F slots are indexed by the Windows-1252 byte, not
@@ -26,11 +26,12 @@ const ORDT_GREEK: &[u8] = include_bytes!("ordt_greek.bin");
 /// 0xA0..=0xFF slots are Latin-1 (== Unicode). Returns `(source_char,
 /// fold_target)` pairs for every byte that folds to a distinct ASCII letter.
 ///
-/// This is the ground truth `crate::ordt::fold_base` is checked against, so
-/// the hand-written fold logic provably tracks the firmware table rather than
-/// guessing. Coverage is Latin-1 + the cp1252 additions only, because the
-/// static blob spans no further; that is exactly the range the drift test
-/// asserts over.
+/// `crate::ordt::device_weight` is checked against these pairs, so the
+/// Latin-1 folds measured on the Kindle 4 and the Paperwhite 4 stay in
+/// agreement with kindlegen's own spelling table (the devices do not read
+/// it). Coverage is Latin-1 + the cp1252 additions only, because the static
+/// blob spans no further; that is exactly the range the drift test asserts
+/// over.
 #[cfg(test)]
 pub(crate) fn amazon_fold_pairs() -> Vec<(char, char)> {
     fn cp1252_to_unicode(b: u8) -> Option<char> {
@@ -454,6 +455,10 @@ fn build_tagx(tag_defs: &[TagDef]) -> Vec<u8> {
     result
 }
 
+/// The longest label an INDX data entry stores, in bytes; longer labels are
+/// cut to this length (see [`encode_indx_entry`]).
+pub(crate) const MAX_INDX_LABEL_BYTES: usize = 254;
+
 /// Encode a single INDX entry.
 ///
 /// No prefix compression (kindlegen doesn't use it for dictionary entries).
@@ -473,12 +478,12 @@ fn encode_indx_entry(
 ) -> Vec<u8> {
     let new_len;
     let new_bytes: Vec<u8>;
-    if label_bytes.len() > 254 {
+    if label_bytes.len() > MAX_INDX_LABEL_BYTES {
         // Full-byte length field caps at 255; keep it even so a UTF-16BE
         // label is never split mid-code-unit. 254 bytes is 127 BMP chars,
         // well beyond any real headword.
-        new_bytes = label_bytes[..254].to_vec();
-        new_len = 254;
+        new_bytes = label_bytes[..MAX_INDX_LABEL_BYTES].to_vec();
+        new_len = MAX_INDX_LABEL_BYTES;
     } else {
         new_bytes = label_bytes.to_vec();
         new_len = label_bytes.len();
@@ -696,7 +701,6 @@ fn build_indx_primary(
         // The ORDT blob contains: 2B padding + ORDT1(12B) + ORDT2(12B) +
         // SPL1-SPL6 sections. Find actual offsets by scanning for magic bytes.
         let mut ordt1_abs = ordt_start + 2;
-        let mut ordt2_abs = ordt_start + 14;
         let mut spl1_abs = ordt_start + 26;
         let mut spl2_abs = ordt_start + 286;
         let mut spl3_abs = ordt_start + 546;
@@ -724,15 +728,26 @@ fn build_indx_primary(
                 && (i == ordt_start + 2 || ordt1_abs == ordt_start + 2)
             {
                 ordt1_abs = i;
-                // Look for second ORDT
-                for j in (i + 4)..ordt_start + 30 {
-                    if j + 4 <= record.len() && &record[j..j + 4] == b"ORDT" {
-                        ordt2_abs = j;
-                        break;
-                    }
-                }
                 break;
             }
+        }
+
+        // The blob's own ORDT2 is a 4-entry table followed by the SPL1 magic,
+        // so the 7 values the header promises read [0, '%', '_', 0, "SP",
+        // "L1", 'o']. Pointed at it, a label holding the markers kindling
+        // stores ß, æ and œ as (values 1 to 5, see `ordt::stored_label_text`)
+        // was found by no spelling on the Kindle 4 or the Paperwhite 4, and
+        // it hid its neighbors ("Futter") as well. No other UTF-16 label holds
+        // a value below 7, so a table that maps each of them to itself leaves
+        // every other lookup as it was: all 828,806 labels of a Greek word
+        // list open the same entries either way.
+        while record.len() % 4 != 0 {
+            record.push(0x00);
+        }
+        let ordt2_abs = record.len();
+        record.extend_from_slice(b"ORDT");
+        for value in 0u16..7 {
+            record.extend_from_slice(&value.to_be_bytes());
         }
 
         // ORDT/ORDT2 pointers

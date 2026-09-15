@@ -663,8 +663,8 @@ mod tests {
         let fold_indx = orth_primary(&build(dir_fold.path(), false, true));
         let strict_indx = orth_primary(&build(dir_strict.path(), true, false));
 
-        // --fold-accents build: the diacritic-folding Greek ORDT/SPL collation
-        // blob is embedded (this is what makes "meme" match "même").
+        // --fold-accents build: the ORDT/SPL blob taken from a kindlegen Greek
+        // dictionary is embedded.
         assert!(
             fold_indx.windows(4).any(|w| w == b"SPL1"),
             "--fold-accents orth INDX should contain the SPL folding collation"
@@ -681,8 +681,9 @@ mod tests {
         // ORDT (new_exact) instead. Every character is its own single-byte
         // symbol (ordt_type=1, oentries > the 3-symbol seed) but accent/case
         // variants share a collation weight, and there is NO SPL folding
-        // table. This folded-weight, distinct-symbol layout is what makes the
-        // firmware match accents exactly on device (issue #8).
+        // table. The devices do not weigh labels by the file's tables, so the
+        // default, --fold-accents and --strict-accents builds open the same
+        // entries; this test only checks the layout.
         let spl_present_strict = strict_indx.windows(4).any(|w| w == b"SPL1");
         assert!(
             !spl_present_strict,
@@ -5993,7 +5994,8 @@ p { margin: 0.3em 0; }
             // The real entry, whose rendered body is byte-identical to it.
             parts.push_str(&format!(
                 "<idx:entry name=\"default\" scriptable=\"yes\">\
-                 <idx:orth value=\"ztrap{i:02}\"/>{SHARED}</idx:entry>"
+                 <idx:orth value=\"ztrap{}\"/>{SHARED}</idx:entry>",
+                char::from(b'a' + i as u8)
             ));
         }
         let html = format!(
@@ -6048,7 +6050,9 @@ p { margin: 0.3em 0; }
         // which reads the orth index the same way the firmware does, so this
         // tests what a device would actually be told.
         for i in 0..6 {
-            let word = format!("ztrap{i:02}");
+            // Letters only: a Kindle drops the digits at the end of a
+            // tapped word, so "ztrap00" would be looked up as "ztrap".
+            let word = format!("ztrap{}", char::from(b'a' + i as u8));
             let found = crate::lookup::lookup(&data, &word)
                 .unwrap_or_else(|| panic!("{word} did not resolve"));
             let block = blocks

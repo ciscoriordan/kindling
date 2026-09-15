@@ -133,13 +133,17 @@ mod tests {
         guide_href: Option<&str>,
         content_href: &str,
     ) -> Vec<String> {
+        // The tests run in parallel, and the clock can return the same value
+        // to two of them, so a counter keeps each directory separate.
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "kindling_nav_links_{}_{}",
+            "kindling_nav_links_{}_{}_{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         let guide = guide_href
             .map(|h| format!(r#"<guide><reference type="text" title="Start" href="{h}"/></guide>"#))

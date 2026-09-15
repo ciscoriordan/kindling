@@ -15,8 +15,13 @@
 //!   point), kana folding and gojuon order for Japanese, and byte parity of
 //!   the ORDT table + headword labels against the committed kindlegen build
 //!   (identical for the all-literal scripts; value-equivalent for Japanese);
-//! * for the UTF-16BE scripts (en/el/fr/ru/tr): UTF-16BE labels in byte
-//!   order and the static Greek collation blob.
+//! * for the Latin fixtures (en/fr/tr): the exact-accent ORDT table (no Greek
+//!   collation blob), labels that decode back to the headword set, and
+//!   entries in its folded order with punctuation skipped;
+//! * for the Greek and Cyrillic fixtures (el/ru): UTF-16BE labels and the
+//!   static Greek collation blob, embedded for Greek and left out for Russian;
+//! * for both: entries in the order a Kindle lookup searches them, checked
+//!   with a key written out in this file (`device_key`).
 //!
 //! See issue #11 and `crate::ordt`. On-device verification status is in the
 //! README supported-languages table.
@@ -345,12 +350,99 @@ fn check_utf16(code: &str, _c: &Lang, parsed: &ParsedMobi, idx: usize, primary: 
         }
     }
     assert_eq!(decoded, want, "{code}: decoded headword set");
-    for pair in indx.entries.windows(2) {
+    let units: Vec<Vec<u16>> = indx
+        .entries
+        .iter()
+        .map(|e| {
+            e.label
+                .chunks_exact(2)
+                .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                .collect()
+        })
+        .collect();
+    check_device_order(code, &units);
+}
+
+/// Asserts that labels, given as the UTF-16 units a Kindle reads from them,
+/// are stored in the order the Kindle 4 (firmware 4.1.4) and the Paperwhite 4
+/// (firmware 5.16.5) search them, by [`device_key`]. Among equal keys it also
+/// expects the label with fewer units that weigh nothing first, which
+/// kindling's order gives these fixtures; the devices find labels with equal
+/// keys in any order.
+fn check_device_order(code: &str, labels: &[Vec<u16>]) {
+    let order: Vec<(Vec<u16>, usize)> = labels.iter().map(|u| device_key(u)).collect();
+    for (i, pair) in order.windows(2).enumerate() {
         assert!(
-            pair[0].label <= pair[1].label,
-            "{code}: labels out of UTF-16BE order"
+            pair[0] <= pair[1],
+            "{code}: labels out of order: {:?} before {:?}",
+            String::from_utf16_lossy(&labels[i]),
+            String::from_utf16_lossy(&labels[i + 1])
         );
     }
+}
+
+/// The key a Kindle lookup compares labels by, written out independently of
+/// `kindling::ordt::device_collation_key` so this test checks it, for the
+/// characters the fixtures use: each unit's weight with the units that weigh
+/// nothing left out, and how many were left out. A Latin letter below U+0300
+/// weighs as its lowercase base letter; ASCII punctuation, the Latin-1 signs,
+/// the letters the Kindle passes over and General Punctuation weigh nothing;
+/// the no-break space weighs as a space and ¹²³ as digits; Greek, Cyrillic
+/// and every other unit weigh as themselves.
+fn device_key(units: &[u16]) -> (Vec<u16>, usize) {
+    const LETTERS: &[(char, &str)] = &[
+        ('a', "AaÀÁÂÃÄÅàáâãäåĀāĂăĄąǍǎǞǟǠǡǺǻǼȀȁȂȃɐ"),
+        ('b', "BbƀƁƂƃɓʙ"),
+        ('c', "CcÇçĆćĈĉĊċČčƇƈɕʗ"),
+        ('d', "DdÐðĎďĐđƉƊƋƌɖɗ"),
+        ('e', "EeÈÉÊËèéêëĒēĔĕĖėĘęĚěƎƏƐǝȄȅȆȇɘəɚ"),
+        ('f', "FfƑƒ"),
+        ('g', "GgĜĝĞğĠġĢģƓƔǤǥǦǧǴǵɠɡɢʛ"),
+        ('h', "HhĤĥĦħɥɦɧʜ"),
+        ('i', "IiÌÍÎÏìíîïĨĩĪīĬĭĮįİıƗǏǐȈȉȊȋɨɪ"),
+        ('j', "JjĴĵǰɟʄʝ"),
+        ('k', "KkĶķĸƘƙǨǩʞ"),
+        ('l', "LlĹĺĻļĽľĿŀŁłƚɫɬɭʟ"),
+        ('m', "MmµƜɯɰɱ"),
+        ('n', "NnÑñŃńŅņŇňŉŊŋƝƞɲɳɴ"),
+        ('o', "OoÒÓÔÕÖØòóôõöøŌōŎŏŐőƆƟƠơǑǒǪǫǬǭǾǿȌȍȎȏɔɵ"),
+        ('p', "PpƤƥ"),
+        ('q', "Qqʠ"),
+        ('r', "RrŔŕŖŗŘřƦȐȑȒȓɹɺɻɼɽɾɿʀʁ"),
+        ('s', "SsŚśŜŝŞşŠšſʂ"),
+        ('t', "TtÞþŢţŤťŦŧƫƬƭƮʇʈ"),
+        ('u', "UuÙÚÛÜùúûüŨũŪūŬŭŮůŰűŲųƯưǓǔǕǖǗǘǙǚǛǜȔȕȖȗʉ"),
+        ('v', "VvƲʋʌ"),
+        ('w', "WwŴŵʍ"),
+        ('x', "Xx"),
+        ('y', "YyÝýÿŶŷŸƳƴʎʏ"),
+        ('z', "ZzŹźŻżŽžƵƶʐʑ"),
+    ];
+    let mut key = Vec::new();
+    let mut skipped = 0;
+    for &unit in units {
+        let c = char::from_u32(u32::from(unit));
+        let weight = match unit {
+            0x20 | 0xA0 => 0x20,
+            0x30..=0x39 => unit,
+            0xB9 => u16::from(b'1'),
+            0xB2 => u16::from(b'2'),
+            0xB3 => u16::from(b'3'),
+            0x00..=0x2FF => LETTERS
+                .iter()
+                .find(|(_, spelled)| c.is_some_and(|c| spelled.contains(c)))
+                .map_or(0, |&(base, _)| base as u16),
+            0x2000..=0x206F => 0,
+            0x0370..=0x052F | 0x1F00..=0x1FFF => unit,
+            _ => panic!("U+{unit:04X} is outside what this key covers; extend it"),
+        };
+        if weight == 0 {
+            skipped += 1;
+        } else {
+            key.push(weight);
+        }
+    }
+    (key, skipped)
 }
 
 /// Mirrors `mobi::headwords_are_cyrillic`: gates the stress/case lookup-alias
@@ -442,6 +534,25 @@ fn check_exact_ordt(code: &str, _c: &Lang, parsed: &ParsedMobi, idx: usize, prim
             "{code}: entries out of folded collation order at {i}"
         );
     }
+    let units: Vec<Vec<u16>> = indx
+        .entries
+        .iter()
+        .map(|e| {
+            let elems: Vec<usize> = if two_byte {
+                e.label
+                    .chunks_exact(2)
+                    .map(|c| usize::from(u16::from_be_bytes([c[0], c[1]])))
+                    .collect()
+            } else {
+                e.label.iter().map(|&b| usize::from(b)).collect()
+            };
+            elems
+                .into_iter()
+                .map(|v| ordt.codepoints.get(v).map_or(v as u16, |&cp| cp as u16))
+                .collect()
+        })
+        .collect();
+    check_device_order(code, &units);
 }
 
 fn check(code: &str) {

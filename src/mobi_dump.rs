@@ -1264,17 +1264,26 @@ fn decode_label_ordt(bytes: &[u8], ordt: &OrdtInfo) -> Option<String> {
         }
     }
 
-    // Attempt 2: values as UTF-16 code units. On a two-byte table an
-    // expansion marker is one letter written as two symbols, the second only
-    // there for collation (see `ordt::expansion_char`).
+    // Attempt 2: values as UTF-16 code units. An expansion marker and the
+    // letter after it are one letter (see `ordt::expansion_of`).
     if values.iter().all(|&v| v <= 0xFFFF) {
         let mut units: Vec<u16> = Vec::with_capacity(values.len());
         let mut i = 0;
         while i < values.len() {
-            match crate::ordt::expansion_char(values[i]).filter(|_| ordt.sym_width == 2) {
+            // A marker followed by its second letter, in either label width.
+            let marker = crate::ordt::expansion_char(values[i]).filter(|&c| {
+                crate::ordt::expansion_of(c)
+                    .is_some_and(|(_, _, second)| values.get(i + 1) == Some(&(second as u32)))
+            });
+            match marker {
                 Some(c) => {
                     units.push(c as u16);
                     i += 2;
+                }
+                // A vowel marker after kana, as in a plain label.
+                None if i > 0 && matches!(values[i], 0x3095..=0x3098 | 0x309F) => {
+                    units.push(0x30FC);
+                    i += 1;
                 }
                 None => {
                     units.push(values[i] as u16);
@@ -1325,8 +1334,45 @@ fn decode_label(bytes: &[u8], ordt: Option<&OrdtInfo>, encoding: u32) -> String 
             chars.push(u16::from_be_bytes([chunk[0], chunk[1]]));
         }
         if let Ok(s) = String::from_utf16(&chars) {
-            if s.chars().all(|c| !c.is_control() || c == ' ') {
-                return s;
+            // A marker followed by its second letter is one letter, as in an
+            // ORDT label (see `ordt::expansion_of`), but only in an index of
+            // text labels, one that declares the UTF-16 encoding 65002. Other
+            // indexes, such as kindlegen's spelling index, hold codes that
+            // merely look like such a pair.
+            let values: Vec<u32> = s.chars().map(|c| c as u32).collect();
+            let mut joined = String::with_capacity(s.len());
+            let mut i = 0;
+            while i < values.len() {
+                let letter = crate::ordt::expansion_char(values[i]).filter(|&c| {
+                    encoding == 65002
+                        && crate::ordt::expansion_of(c).is_some_and(|(_, _, second)| {
+                            values.get(i + 1) == Some(&(second as u32))
+                        })
+                });
+                match letter {
+                    Some(c) => {
+                        joined.push(c);
+                        i += 2;
+                    }
+                    // The markers a stored label writes for a prolonged sound
+                    // mark after a vowel (see `ordt::label_codepoints`). They
+                    // always follow another character, so a one-character
+                    // entry in the character map keeps its own small kana.
+                    None if encoding == 65002
+                        && i > 0
+                        && matches!(values[i], 0x3095..=0x3098 | 0x309F) =>
+                    {
+                        joined.push('\u{30FC}');
+                        i += 1;
+                    }
+                    None => {
+                        joined.extend(char::from_u32(values[i]));
+                        i += 1;
+                    }
+                }
+            }
+            if joined.chars().all(|c| !c.is_control() || c == ' ') {
+                return joined;
             }
         }
     }
@@ -1580,6 +1626,78 @@ mod tests {
         assert!(s.contains("tag[2] = [73]"), "got {}", s);
         assert!(s.contains("tag[42] = [1]"), "got {}", s);
         assert!(!s.contains("decode_failed"), "got {}", s);
+    }
+
+    /// kindlegen stores ß, æ and œ as a marker and the letter's second half,
+    /// in one-byte tables too, and kindling does the same in its tables and
+    /// in plain UTF-16 labels. The dump showed those labels as hex or as CJK
+    /// characters; each pair is the one letter.
+    #[test]
+    fn marker_pairs_decode_as_their_letter() {
+        // One-byte table: F u [5] s, b [4] e r e, c [2] e u r.
+        let one = OrdtInfo {
+            sym_width: 1,
+            values: vec![0, 0x46, 0x75, 5, 0x73, 0x62, 4, 0x65, 0x72, 0x63, 2],
+            weights: Vec::new(),
+        };
+        assert_eq!(decode_label(&[1, 2, 3, 4], Some(&one), 65002), "Fuß");
+        assert_eq!(decode_label(&[5, 6, 7, 8, 7], Some(&one), 65002), "bære");
+        assert_eq!(decode_label(&[9, 10, 7, 2, 8], Some(&one), 65002), "cœur");
+        // Two-byte table.
+        let two = OrdtInfo {
+            sym_width: 2,
+            values: one.values.clone(),
+            weights: Vec::new(),
+        };
+        assert_eq!(
+            decode_label(&[0, 1, 0, 2, 0, 3, 0, 4], Some(&two), 65002),
+            "Fuß"
+        );
+        // Plain UTF-16: S t r a [5] s e, and [1] E u v r e.
+        let utf16 =
+            |units: &[u16]| -> Vec<u8> { units.iter().flat_map(|u| u.to_be_bytes()).collect() };
+        assert_eq!(
+            decode_label(
+                &utf16(&[0x53, 0x74, 0x72, 0x61, 5, 0x73, 0x65]),
+                None,
+                65002
+            ),
+            "Straße"
+        );
+        assert_eq!(
+            decode_label(&utf16(&[1, 0x45, 0x75, 0x76, 0x72, 0x65]), None, 65002),
+            "Œuvre"
+        );
+        // The vowel markers after kana are the prolonged sound mark: ス [u] パ
+        // [a], キ [i] コ [o]. A marker on its own, as in the character map, is
+        // its small kana.
+        assert_eq!(
+            decode_label(&utf16(&[0x30B9, 0x3097, 0x30D1, 0x3095]), None, 65002),
+            "スーパー"
+        );
+        assert_eq!(
+            decode_label(&utf16(&[0x30AD, 0x3096, 0x30B3, 0x309F]), None, 65002),
+            "キーコー"
+        );
+        assert_eq!(decode_label(&utf16(&[0x3095]), None, 65002), "ゕ");
+        // The same in a label written through a table.
+        let kana = OrdtInfo {
+            sym_width: 1,
+            values: vec![0, 0x30B9, 0x3097, 0x30D1, 0x3095],
+            weights: Vec::new(),
+        };
+        assert_eq!(decode_label(&[1, 2, 3, 4], Some(&kana), 65002), "スーパー");
+        assert_eq!(decode_label(&[4], Some(&kana), 65002), "ゕ");
+        // An index that does not declare 65002, such as kindlegen's spelling
+        // index, holds codes, not letters.
+        assert_eq!(
+            decode_label(&utf16(&[4, 0x65, 0x6F]), None, 0xFFFF_FFFF),
+            "hex:0x00040065006F"
+        );
+        assert_eq!(
+            decode_label(&utf16(&[0x30AD, 0x3096]), None, 0xFFFF_FFFF),
+            "キゖ"
+        );
     }
 
     /// Tiny synthetic INDX test: build a minimal PalmDB + MOBI + INDX

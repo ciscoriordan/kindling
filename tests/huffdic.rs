@@ -321,31 +321,39 @@ fn lookup_resolves_in_a_huffdic_dictionary() {
 }
 
 /// Issue #49: a dictionary whose orth index pointer was left behind still has
-/// its index, and every query in it used to miss.
+/// its index, and every query in it used to miss with nothing to say why. A
+/// Kindle opens nothing in it either, so it is still a miss, but one that
+/// names the pointer and says what the index would open.
 #[test]
-fn lookup_recovers_a_stale_orth_index_pointer() {
+fn lookup_reports_a_stale_orth_index_pointer() {
     let stale = fixture("en_huffdic_stale_index.mobi");
     let (ok, out) = cli(&["lookup", stale.to_str().unwrap(), "book"]);
-    assert!(ok, "stale-pointer dictionary should still resolve:\n{out}");
-    assert!(out.contains("resolves"), "{out}");
+    assert!(
+        !ok,
+        "a Kindle opens nothing in a stale-pointer dictionary:\n{out}"
+    );
+    assert!(out.contains("does not resolve"), "{out}");
     assert!(
         out.contains("MOBI header names record"),
         "the stale pointer should be reported, not silently worked around:\n{out}"
     );
+    assert!(out.contains("would open \"book\""), "{out}");
 
-    // Same headword, same answer as the file whose pointer is right.
+    // Same headword, same text position as the file whose pointer is right.
     let healthy = fixture("en_huffdic.mobi");
     let (_, good) = cli(&["lookup", healthy.to_str().unwrap(), "book"]);
     let position = |s: &str| {
-        s.lines()
-            .find_map(|l| l.rsplit_once("text position ").map(|(_, p)| p.to_string()))
+        s.lines().find_map(|l| {
+            l.rsplit_once("text position ")
+                .map(|(_, p)| p.trim_end_matches('.').to_string())
+        })
     };
     assert_eq!(
         position(&out),
         position(&good),
-        "recovered index should resolve to the same text position"
+        "the index should name the same text position"
     );
-    println!("  \u{2713} stale orth index pointer is recovered and reported");
+    println!("  \u{2713} stale orth index pointer is a miss that names what it would open");
 }
 
 #[test]
@@ -397,13 +405,13 @@ fn a_miss_says_why_it_missed() {
 fn notes_go_to_stderr_and_leave_one_line_on_stdout() {
     let stale = fixture("en_huffdic_stale_index.mobi");
     let (ok, stdout, stderr) = cli_split(&["lookup", stale.to_str().unwrap(), "book"]);
-    assert!(ok, "should resolve:\n{stdout}{stderr}");
+    assert!(!ok, "should miss:\n{stdout}{stderr}");
     assert_eq!(
         stdout.lines().count(),
         1,
         "stdout should be exactly the result line, got:\n{stdout}"
     );
-    assert!(stdout.contains("resolves"), "{stdout}");
+    assert!(stdout.contains("does not resolve"), "{stdout}");
     assert!(stderr.contains("HUFF/CDIC"), "{stderr}");
     assert!(stderr.contains("MOBI header names record"), "{stderr}");
     println!("  \u{2713} result on stdout, both notes on stderr");
