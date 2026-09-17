@@ -936,8 +936,9 @@ mod validate {
         // A decimal level is numbered with <li value="N">, which the popup
         // honors and kindlegen emits. A level that declared a lettered or
         // roman style is written as plain lines with its marker as text, not
-        // as list items: firmware 5.19.2 draws 65535 for an ordered item
-        // without a value (issue #56).
+        // as list items, and a nested literal-marker level gets a literal
+        // non-breaking-space indent: firmware 5.19.2 draws 65535 for an
+        // ordered item without a value (issue #56).
         let (tmp, opf) = stage_fixture("dict_list_markers", "content.opf");
         let out = run_build(&["--no-validate", opf.to_str().unwrap()]);
         assert!(
@@ -967,8 +968,8 @@ mod validate {
             "the lower-alpha level is a plain line with a literal marker\n{rawml}"
         );
         assert!(
-            rawml.contains("<div>i. "),
-            "the lower-roman level is a plain line with a literal marker\n{rawml}"
+            rawml.contains("<div>\u{a0}\u{a0}\u{a0}i. "),
+            "the lower-roman level is indented one step and has a literal marker\n{rawml}"
         );
         assert!(
             !rawml.contains("<li>"),

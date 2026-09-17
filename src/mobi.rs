@@ -3268,6 +3268,8 @@ fn roman_marker(n: u32, upper: bool) -> String {
 ///
 /// A level that declares a lettered or roman style is not written as a list
 /// at all: it becomes `<div>` blocks with the marker as text (issue #56).
+/// Each nested literal-marker level starts with three non-breaking spaces,
+/// because plain blocks do not inherit the indentation their source lists had.
 /// Every `<li>` left in an `<ol>` carries a `value`, because firmware 5.19.2
 /// draws 65535 for an ordered item without one, where 5.18.1 draws nothing.
 fn convert_list_markers(html: &str) -> String {
@@ -3345,6 +3347,18 @@ fn convert_list_markers(html: &str) -> String {
                 }
                 (false, "li") => {
                     let cleaned = strip(attrs);
+                    // A nested plain-block list gets no indentation from the
+                    // list it replaced. Keep its depth visible with literal
+                    // non-breaking spaces, which survive the dictionary
+                    // whitespace pass. The first literal-marker level needs
+                    // no prefix; every literal-marker ancestor adds one step.
+                    let literal_ancestors = stack
+                        .iter()
+                        .take(stack.len().saturating_sub(1))
+                        .filter(|(style, _)| {
+                            matches!(*style, Some(value) if value != ListStyle::Decimal)
+                        })
+                        .count();
                     match stack.last_mut() {
                         // Item of an ordered list with an explicit value: keep
                         // it and continue numbering from there (HTML semantics).
@@ -3369,7 +3383,8 @@ fn convert_list_markers(html: &str) -> String {
                                 // `value` draws nothing on firmware 5.18.1 but
                                 // 65535 on 5.19.2, so none may be left.
                                 let cleaned = value_num.replace_all(&cleaned, "").into_owned();
-                                format!("<div{cleaned}>{} ", style.marker(n))
+                                let indent = "\u{a0}".repeat(literal_ancestors * 3);
+                                format!("<div{cleaned}>{indent}{} ", style.marker(n))
                             }
                         }
                         // <ul> item (or a stray <li> outside any list): no number.
@@ -4420,9 +4435,10 @@ mod record_split_tests {
     ///
     /// A decimal level keeps `value="N"`, the one marker the MOBI7 popup is
     /// confirmed to draw on every firmware. A declared lettered or roman
-    /// level is written as plain lines with its marker as text: an ordered
-    /// item without a `value` draws nothing on firmware 5.18.1 but 65535 on
-    /// 5.19.2, so none may be left.
+    /// level is written as plain lines with its marker as text, and each
+    /// nested literal-marker level gains three non-breaking spaces: an
+    /// ordered item without a `value` draws nothing on firmware 5.18.1 but
+    /// 65535 on 5.19.2, so none may be left.
     #[test]
     fn a_declared_sub_list_becomes_plain_lines() {
         let html = concat!(
@@ -4444,7 +4460,10 @@ mod record_split_tests {
         // The declared levels are plain lines with their marker as text.
         assert!(out.contains("<div>a. sub one</div>"), "{out}");
         assert!(out.contains("<div>b. sub two</div>"), "{out}");
-        assert!(out.contains("<div>i. sub sub</div>"), "{out}");
+        assert!(
+            out.contains("<div>\u{a0}\u{a0}\u{a0}i. sub sub</div>"),
+            "the nested roman level keeps one indentation step: {out}"
+        );
         // No ordered item is left without a value.
         assert!(!out.contains("<li>"), "an unnumbered ordered item: {out}");
         assert_eq!(

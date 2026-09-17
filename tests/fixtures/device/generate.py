@@ -444,44 +444,23 @@ def build_dict_e(root):
 
 
 def build_dict_g(root):
-    """#56 list markers: what a MOBI7 popup will actually draw.
+    """#56 list markers and nested indentation on real firmware.
 
-    reader.dict numbers senses with <ol> and letters or roman numerals its
-    sub-senses with list-style-type. kindling flattens every level to decimal
-    by writing value="N" on each <li>, because that is the one marker the
-    popup was known to draw (issue #16, device-verified). Whether anything
-    else works has never been tested, and two cheap possibilities have to be
-    ruled in or out before the code changes:
-
-      LIST-TYPE   <ol type="a"> with value="1" on each item. kindling passes
-                  `type` through today and kindlegen's own output proves the
-                  combination is legal MOBI7. If the renderer takes the glyph
-                  from `type` and the ordinal from `value`, nothing else is
-                  needed and the fix is one attribute.
-      LIST-TEXT   the marker written into the item text. This is what a
-                  compile-to-literal-markup fix would produce, and because
-                  kindling also writes value="1" on the same item, this entry
-                  shows whether the two stack into "1. a." — which is the
-                  failure mode that would make that fix unusable.
-      LIST-PLAIN  an ordinary decimal <ol>, the control. If this one draws no
-                  numbers either, the popup is ignoring list markup entirely
-                  and neither approach can work.
-
-    0.22.1 shipped <ol type="a"> on its own, with no value, and the device
-    drew nothing at all; that is why the decimal flattening exists. This probe
-    differs in pairing `type` with `value`, which is the combination that was
-    never tried.
+    Decimal senses remain numbered list items. Declared lettered and roman
+    levels become plain divs with literal markers, because firmware 5.19.2
+    draws 65535 for an ordered item without a value. A nested literal-marker
+    level gains three non-breaking spaces. LIST-KINDLING exercises that exact
+    production path; the OED, NBSP and decimal shapes isolate the mechanism if
+    its roman level still fails to indent on a device.
     """
     d = os.path.join(root, "src", "dict-g")
     os.makedirs(d, exist_ok=True)
     body = (
-        "<p>LIST-TYPE, expect a. b. c.</p>"
-        '<ol type="a"><li>ALPHA item one</li><li>ALPHA item two</li>'
-        "<li>ALPHA item three</li></ol>"
-        "<p>LIST-TEXT, expect a. b. and NOT 1. a.</p>"
-        "<ol><li>a. TEXT item one</li><li>b. TEXT item two</li></ol>"
-        "<p>LIST-PLAIN control, expect 1. 2.</p>"
-        "<ol><li>PLAIN item one</li><li>PLAIN item two</li></ol>"
+        "<p>LIST-KINDLING, expect 1. MAIN, a. ALPHA, then an indented i. ROMAN.</p>"
+        "<ol><li>MAIN item"
+        '<ol style="list-style-type:lower-alpha"><li>ALPHA item'
+        '<ol style="list-style-type:lower-roman"><li>ROMAN item</li></ol>'
+        "</li></ol></li></ol>"
         # The shape Amazon's own Oxford Dictionary of English uses for the
         # same job, from a screenshot on issue 56: a filled square for the
         # top sense, a right-pointing triangle for the sub-sense, both as
@@ -495,6 +474,8 @@ def build_dict_g(root):
         "<p>LIST-NBSP, same but indented with spaces instead of blockquote.</p>"
         "<p>\u25aa NBSP level one</p>"
         "<p>\u00a0\u00a0\u00a0\u25b8 NBSP level two</p>"
+        "<p>LIST-PLAIN control, expect 1. 2.</p>"
+        "<ol><li>PLAIN item one</li><li>PLAIN item two</li></ol>"
         "<p>LIST-BULLET control, expect bullets.</p>"
         "<ul><li>BULLET item one</li><li>BULLET item two</li></ul>"
     )
@@ -505,8 +486,9 @@ def build_dict_g(root):
     open(os.path.join(d, "dict-g.opf"), "w", encoding="utf-8").write(
         dict_opf("KD-G list markers", ["content.html"], uid="kindling-device-g"))
     write_common(d, "KD-G list markers",
-                 "Look up zlistprobe and read the four lists. Which markers appear "
-                 "decides whether lettered sub-senses can be rendered at all (issue 56).",
+                 "Look up zlistprobe. LIST-KINDLING must show numbered, lettered and "
+                 "indented roman levels without 65535; the remaining blocks are controls "
+                 "for the literal indentation and ordinary list rendering (issue 56).",
                  uid="kindling-device-g")
     return d, "dict-g.opf"
 
