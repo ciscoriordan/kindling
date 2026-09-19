@@ -302,6 +302,18 @@ struct NcxIndexEntry {
     last_child: Option<usize>,
 }
 
+/// One entry in a dictionary's KF7 NCX index.
+///
+/// KF7 navigation addresses the concatenated MOBI text directly, so it needs
+/// only an absolute offset and length.  Unlike the KF8 index it has no
+/// skeleton/fragment `pos_fid` tag.
+pub(crate) struct Kf7NcxEntry {
+    pub offset: usize,
+    pub length: usize,
+    pub label: String,
+    pub depth: usize,
+}
+
 /// Derive the NCX nodes: one base node per skeleton, labelled by the
 /// EPUB nav document (toc.ncx / nav.xhtml) entry for that spine file
 /// where one exists, falling back to the spine file's `<title>`, then to
@@ -2243,6 +2255,72 @@ fn build_ncx_indx(title: &str, entries: &[NcxIndexEntry]) -> (Vec<Vec<u8>>, Vec<
     )
 }
 
+/// Build a KF7 NCX index and its label CNCX records.
+///
+/// This is deliberately separate from [`build_ncx_indx`].  A KF7 NCX uses
+/// tags 1 (offset), 2 (length), 3 (label) and 4 (depth), omits KF8's tag 6
+/// fragment target, and labels its index entries with uppercase hexadecimal
+/// numbers. Kindle firmware 5.19.2 accepts this index in a dictionary while
+/// its text records retain kindling's empty TBS trailers (issue #64).
+pub(crate) fn build_kf7_ncx_indx(entries: &[Kf7NcxEntry]) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+    if entries.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+
+    let tag_defs = [
+        TagMeta {
+            number: 1,
+            values_per_entry: 1,
+            mask: 0x01,
+        },
+        TagMeta {
+            number: 2,
+            values_per_entry: 1,
+            mask: 0x02,
+        },
+        TagMeta {
+            number: 3,
+            values_per_entry: 1,
+            mask: 0x04,
+        },
+        TagMeta {
+            number: 4,
+            values_per_entry: 1,
+            mask: 0x08,
+        },
+    ];
+    let tagx = build_tagx(&[(1, 1, 0x01), (2, 1, 0x02), (3, 1, 0x04), (4, 1, 0x08)]);
+    let mut cncx = CncxBuilder::new();
+    let mut encoded: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(entries.len());
+
+    for (i, entry) in entries.iter().enumerate() {
+        let label_offset = cncx.add(&entry.label);
+        let index_label = format!("{i:X}").into_bytes();
+        let values: [Vec<u32>; 4] = [
+            vec![entry.offset as u32],
+            vec![entry.length as u32],
+            vec![label_offset],
+            vec![entry.depth as u32],
+        ];
+        let data = encode_indx_entry(&index_label, &tag_defs, &values);
+        encoded.push((index_label, data));
+    }
+
+    let (data_records, geometry) = build_indx_data_records(&encoded);
+    let cncx_count = cncx.record_count();
+    let primary = build_indx_primary(
+        &tagx,
+        data_records.len(),
+        entries.len(),
+        cncx_count,
+        &geometry,
+    );
+    (
+        std::iter::once(primary).chain(data_records).collect(),
+        cncx.into_records(),
+    )
+}
+
 /// Build a DATP record.
 ///
 /// kindlegen's DATP is a real, book-sized table (it scales with record
@@ -2974,6 +3052,56 @@ mod tests {
             cncx[0]
         );
         assert_eq!(&cncx[1..1 + title.len()], title);
+    }
+
+    #[test]
+    fn kf7_ncx_has_four_tags_and_hexadecimal_index_labels() {
+        let entries: Vec<Kf7NcxEntry> = (0..17)
+            .map(|i| Kf7NcxEntry {
+                offset: i * 100,
+                length: 100,
+                label: format!("Letter {i}"),
+                depth: usize::from(i > 0),
+            })
+            .collect();
+        let (records, cncx) = build_kf7_ncx_indx(&entries);
+        assert_eq!(records.len(), 2);
+        assert!(!cncx.is_empty());
+
+        let primary = &records[0];
+        let tagx_off = u32::from_be_bytes(primary[180..184].try_into().unwrap()) as usize;
+        let tagx_len =
+            u32::from_be_bytes(primary[tagx_off + 4..tagx_off + 8].try_into().unwrap()) as usize;
+        let tags: Vec<u8> = (tagx_off + 12..tagx_off + tagx_len - 4)
+            .step_by(4)
+            .map(|off| primary[off])
+            .collect();
+        assert_eq!(tags, vec![1, 2, 3, 4]);
+
+        let data = &records[1];
+        let idxt = u32::from_be_bytes(data[20..24].try_into().unwrap()) as usize;
+        let label_at = |i: usize| {
+            let p = idxt + 4 + i * 2;
+            let off = u16::from_be_bytes(data[p..p + 2].try_into().unwrap()) as usize;
+            let len = data[off] as usize;
+            std::str::from_utf8(&data[off + 1..off + 1 + len])
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(label_at(9), "9");
+        assert_eq!(label_at(10), "A");
+        assert_eq!(label_at(16), "10");
+
+        // The dictionary form has no parent/child tags, but tag 4 still
+        // carries the source TOC depth.
+        let tenth = {
+            let p = idxt + 4 + 10 * 2;
+            let off = u16::from_be_bytes(data[p..p + 2].try_into().unwrap()) as usize;
+            let next = u16::from_be_bytes(data[p + 2..p + 4].try_into().unwrap()) as usize;
+            let label_len = data[off] as usize;
+            &data[off + 1 + label_len..next]
+        };
+        assert_eq!(tenth.last().copied(), Some(0x81));
     }
 
     #[test]

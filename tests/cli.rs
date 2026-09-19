@@ -818,6 +818,75 @@ mod validate {
     }
 
     #[test]
+    fn dictionary_kf7_ncx_maps_front_matter_gaps_and_entries_with_empty_tbs() {
+        let (tmp, opf) = stage_fixture("clean_dict", "clean_dict.opf");
+        let usage = tmp.path().join("usage.html");
+        let usage_html = std::fs::read_to_string(&usage).unwrap();
+        std::fs::write(
+            &usage,
+            usage_html.replace(
+                "<h1>How to Use This Dictionary</h1>",
+                "<h1 id=\"usage-target\">How to Use This Dictionary</h1>",
+            ),
+        )
+        .unwrap();
+        let content = tmp.path().join("content.html");
+        let content_html = std::fs::read_to_string(&content).unwrap();
+        std::fs::write(
+            &content,
+            content_html.replace("<mbp:frameset>", "<mbp:frameset><h2 id=\"letter-k\">K</h2>"),
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("toc.ncx"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+<navMap>
+<navPoint id="n1" playOrder="1"><navLabel><text>Usage</text></navLabel><content src="usage.html#usage-target"/></navPoint>
+<navPoint id="n2" playOrder="2"><navLabel><text>K words</text></navLabel><content src="content.html#letter-k"/></navPoint>
+<navPoint id="n3" playOrder="3"><navLabel><text>V words</text></navLabel><content src="content.html#hw_validate"/></navPoint>
+<navPoint id="n4" playOrder="4"><navLabel><text>Copyright</text></navLabel><content src="copyright.html"/></navPoint>
+</navMap></ncx>"#,
+        )
+        .unwrap();
+        let out = Command::new(kindling_bin())
+            .arg("build")
+            .arg(&opf)
+            .output()
+            .expect("failed to spawn dictionary NCX build");
+        assert!(out.status.success(), "NCX build failed\n{}", dump(&out));
+        assert!(
+            String::from_utf8_lossy(&out.stderr)
+                .contains("Dictionary NCX: 4 table-of-contents entries"),
+            "build did not resolve every target shape\n{}",
+            dump(&out)
+        );
+
+        let data = std::fs::read(tmp.path().join("clean_dict.mobi")).unwrap();
+        let count = u16::from_be_bytes([data[76], data[77]]) as usize;
+        let be32 = |p: usize| u32::from_be_bytes(data[p..p + 4].try_into().unwrap()) as usize;
+        let offsets: Vec<usize> = (0..count)
+            .map(|i| be32(78 + i * 8))
+            .chain([data.len()])
+            .collect();
+        let rec = |i: usize| &data[offsets[i]..offsets[i + 1]];
+        let ncx = u32::from_be_bytes(rec(0)[0xF4..0xF8].try_into().unwrap()) as usize;
+        assert_ne!(ncx, 0xFFFF_FFFF);
+        let primary = rec(ncx);
+        assert_eq!(&primary[..4], b"INDX");
+        assert_eq!(u32::from_be_bytes(primary[36..40].try_into().unwrap()), 4);
+        let tagx = u32::from_be_bytes(primary[180..184].try_into().unwrap()) as usize;
+        let tags: Vec<u8> = (0..4).map(|i| primary[tagx + 12 + i * 4]).collect();
+        assert_eq!(tags, vec![1, 2, 3, 4]);
+
+        // Firmware 5.19.2 accepts this NCX without kindlegen's populated
+        // text-record index data. Kindling's normal empty multibyte/TBS
+        // trailers therefore remain unchanged.
+        let first_text = rec(1);
+        assert_eq!(&first_text[first_text.len() - 2..], &[0x00, 0x81]);
+    }
+
+    #[test]
     fn build_pyglossary_oeb1x_dict_succeeds() {
         // Regression for issue #3: PyGlossary emits an OEB 1.x OPF
         // (`<dc-metadata>` / `<x-metadata>` with capitalized Dublin Core

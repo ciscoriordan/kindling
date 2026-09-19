@@ -677,6 +677,62 @@ def build_dict_j(root):
     return d, "dict-j.opf"
 
 
+def build_dict_k(root):
+    """#64 KF7 dictionary NCX without populated text-record TBS entries.
+
+    The NCX targets three entry ids whose final offsets kindling knows after
+    dictionary assembly. They sit near the front, middle and end of a
+    multi-record text stream so one lucky jump cannot pass the probe. The same
+    words are in the lookup book: all three must still open as popups after the
+    Go To test.
+    """
+    name = "dict-k"
+    title = "KD-K KF7 table of contents"
+    uid = "kindling-device-k"
+    d = os.path.join(root, "src", name)
+    os.makedirs(d, exist_ok=True)
+    targets = [
+        ("ztocalpha", "toc-alpha", "ALPHA TOC TARGET — first part of the dictionary."),
+        ("ztocmiddle", "toc-middle", "MIDDLE TOC TARGET — middle of the dictionary."),
+        ("ztocomega", "toc-omega", "OMEGA TOC TARGET — final part of the dictionary."),
+    ]
+    filler = huff_filler(240)
+    entries = [entry(targets[0][0], f"<p><big>{targets[0][2]}</big></p>",
+                     entry_id=targets[0][1])]
+    entries += filler[:len(filler) // 2]
+    entries.append(entry(targets[1][0], f"<p><big>{targets[1][2]}</big></p>",
+                         entry_id=targets[1][1]))
+    entries += filler[len(filler) // 2:]
+    entries.append(entry(targets[2][0], f"<p><big>{targets[2][2]}</big></p>",
+                         entry_id=targets[2][1]))
+    entries += filler_entries()
+    open(os.path.join(d, "content.html"), "w", encoding="utf-8").write(
+        dict_html(entries, title=title))
+    opf_name = f"{name}.opf"
+    open(os.path.join(d, opf_name), "w", encoding="utf-8").write(
+        dict_opf(title, ["content.html"], uid=uid))
+    write_common(d, title,
+                 "Open this dictionary as a book. Its Go To table must show Alpha, "
+                 "Middle and Omega and each must land on the matching large heading. "
+                 "Then verify all three ztoc words through lookup (issue 64).",
+                 uid=uid)
+    nav = "".join(
+        f'<navPoint id="np{i}" playOrder="{i}"><navLabel><text>{label}</text></navLabel>'
+        f'<content src="content.html#{anchor}"/></navPoint>'
+        for i, (label, (_, anchor, _)) in enumerate(
+            zip(("Alpha", "Middle", "Omega"), targets), 1)
+    )
+    open(os.path.join(d, "toc.ncx"), "w", encoding="utf-8").write(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1" xml:lang="en">\n'
+        f'<head><meta name="dtb:uid" content="{esc(uid)}"/>'
+        '<meta name="dtb:depth" content="1"/><meta name="dtb:totalPageCount" content="0"/>'
+        '<meta name="dtb:maxPageNumber" content="0"/></head>\n'
+        f'<docTitle><text>{esc(title)}</text></docTitle>\n'
+        f'<navMap>{nav}</navMap>\n</ncx>\n')
+    return d, opf_name
+
+
 def build_dict_f(root):
     """#53 popup scroll-through: the <hr/> -> <hr/><mbp:pagebreak/> fix.
 
@@ -895,7 +951,7 @@ def probe_book(root):
         "<h1>Kindling device probe</h1>",
         "<p>Tap a word below, then use the dictionary name at the bottom of the popup "
         "to switch dictionaries. Every test dictionary here is English to English, so "
-        "all ten appear in that list.</p>",
+        "all eleven appear in that list.</p>",
         section(1, "1. Style, in all four dictionaries (issue 57)",
                 "Look up zstyle, then run it through KD-A, KD-B, KD-C and KD-D in turn. "
                 "In each one, UNDER and ITAL must both be much larger than the word plain, "
@@ -962,7 +1018,16 @@ def probe_book(root):
                 "that starts and then loses its place passes the first and fails the "
                 "other two.",
                 ["zhuffalpha", "zhuffmiddle", "zhuffomega"], cols=3),
-        "<h2>10. Controls</h2><p>These are ordinary entries in every dictionary. If they "
+        section(10, "10. Dictionary table of contents, in KD-K (issue 64)",
+                "Confirm KD-K KF7 table of contents appears under Settings > Language "
+                "and Dictionaries > Dictionaries > English. Open KD-K as a book and "
+                "choose Go To > Table of Contents. It must list "
+                "Alpha, Middle and Omega; each item must land on the matching large heading. "
+                "Then return here and look up all three words in KD-K. Each popup must show "
+                "the matching target text. A working Go To with a broken lookup, or working "
+                "lookups with no Go To table, both fail the probe.",
+                ["ztocalpha", "ztocmiddle", "ztocomega"], cols=3),
+        "<h2>11. Controls</h2><p>These are ordinary entries in every dictionary. If they "
         "fail too, something is wrong with the round rather than with the fix.</p>"
         "<table><tr>" + "".join(f"<td>{w}</td>" for w, _ in FILLER) + "</tr></table>",
     ]
@@ -1059,6 +1124,11 @@ def main():
     d, opf = build_dict_j(out)
     run([K, "build", os.path.join(d, opf), "-o", os.path.join(ship, "dict-j.mobi")],
         env={**os.environ, "KINDLING_HUFFDIC": "1"})
+
+    # KD-K verifies issue #64's KF7 NCX with the same empty trailing
+    # text-record index entries normal kindling dictionaries carry.
+    d, opf = build_dict_k(out)
+    run([K, "build", os.path.join(d, opf), "-o", os.path.join(ship, "dict-k.mobi")])
 
     print("books")
     # #30: the EPUB 3 spelling, and nothing else, has to carry the cover.

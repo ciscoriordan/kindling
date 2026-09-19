@@ -184,6 +184,12 @@ fn build_dictionary_mobi(
     strict_accents: bool,
     fold_accents: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // A dictionary is KF7-only, so its logical TOC needs the four-tag KF7
+    // NCX form rather than the KF8 book index. Keep the parsed points through
+    // assembly: that assembler moves every non-entry spine file ahead of the
+    // entries, so source-file offsets are not usable in the finished stream.
+    let dictionary_nav_points = crate::nav::parse_nav_points(opf);
+
     // Parse all dictionary entries from HTML content
     let mut all_entries: Vec<DictionaryEntry> = Vec::new();
     // Which spine file each entry came from. A cross-reference written as a
@@ -197,6 +203,7 @@ fn build_dictionary_mobi(
     // run per file for whatever followed its last entry.
     let mut entry_gaps: Vec<String> = Vec::new();
     let mut tail_gaps: Vec<String> = Vec::new();
+    let mut tail_gap_files: Vec<usize> = Vec::new();
     // Files that actually contributed entries. One that carries `<idx:entry>`
     // markup but yields nothing usable has no entry to hang its text on, so
     // it is read as front matter instead of skipped (issue #42).
@@ -209,6 +216,7 @@ fn build_dictionary_mobi(
         files_with_entries.insert(file_index);
         let tail = gaps.pop().unwrap_or_default();
         tail_gaps.push(tail);
+        tail_gap_files.push(file_index);
         entry_gaps.extend(gaps);
         entry_files.extend(std::iter::repeat_n(file_index, entries.len()));
         all_entries.extend(entries);
@@ -313,7 +321,9 @@ fn build_dictionary_mobi(
             &entry_files,
             &entry_gaps,
             &tail_gaps,
+            &tail_gap_files,
             &files_with_entries,
+            &dictionary_nav_points,
             kindle_limits,
         );
 
@@ -360,6 +370,15 @@ fn build_dictionary_mobi(
         &pending_links,
     );
 
+    let kf7_ncx_entries = build_dictionary_ncx_entries(&dictionary_nav_points, &text_content);
+    if !dictionary_nav_points.is_empty() && kf7_ncx_entries.is_empty() {
+        eprintln!("Dictionary NCX: no navigation targets resolved; writing no NCX index");
+    } else if !kf7_ncx_entries.is_empty() {
+        eprintln!(
+            "Dictionary NCX: {} table-of-contents entries",
+            kf7_ncx_entries.len()
+        );
+    }
     // Self-check: validate the final HTML blob before we split it into
     // records. This is the last chance to notice structural corruption
     // (unclosed tags, `<hr/` garbage, unclosed attribute quotes) before
@@ -548,6 +567,13 @@ fn build_dictionary_mobi(
         gen_ordt.as_ref(),
     );
     eprintln!("  Orth INDX: {} records", indx_records.len());
+    let (kf7_ncx_records, kf7_ncx_cncx_records) = crate::kf8::build_kf7_ncx_indx(&kf7_ncx_entries);
+    if !kf7_ncx_records.is_empty() {
+        eprintln!(
+            "  KF7 NCX: {} index + label records",
+            kf7_ncx_records.len() + kf7_ncx_cncx_records.len()
+        );
+    }
 
     // Build FLIS, FCIS, EOF records
     let flis = build_flis();
@@ -587,7 +613,9 @@ fn build_dictionary_mobi(
     let num_datp = usize::from(datp_record.is_some());
 
     // Calculate record indices
-    // Layout: record0 | text | [HUFF + CDICs] | image records | orth_INDX | infl_INDX | [DATP] | FLIS | FCIS | [SRCS] | [CMET] | EOF
+    // Layout: record0 | text | [HUFF + CDICs] | image records | orth_INDX |
+    // [KF7 NCX + CNCX] | infl_INDX | [DATP] | FLIS | FCIS |
+    // [SRCS] | [CMET] | EOF
     //
     // The huffdic model sits directly after the text, which is where
     // kindlegen puts it and where huff_rec_index points, so everything past
@@ -601,12 +629,17 @@ fn build_dictionary_mobi(
     };
     let orth_index_record = after_model + num_image_records;
     let infl_index_record = 0xFFFFFFFFusize;
+    let kf7_ncx_index_record = if kf7_ncx_records.is_empty() {
+        None
+    } else {
+        Some(orth_index_record + indx_records.len())
+    };
+    let after_indices =
+        orth_index_record + indx_records.len() + kf7_ncx_records.len() + kf7_ncx_cncx_records.len();
     // DATP goes directly before FLIS, where kindlegen puts it, which also
     // makes it the last content record (flis_record - 1) as kindlegen has it.
-    let datp_index = datp_record
-        .as_ref()
-        .map(|_| orth_index_record + indx_records.len());
-    let flis_record = orth_index_record + indx_records.len() + num_datp;
+    let datp_index = datp_record.as_ref().map(|_| after_indices);
+    let flis_record = after_indices + num_datp;
     let fcis_record = flis_record + 1;
     let srcs_record_idx = if srcs_record.is_some() {
         Some(fcis_record + 1)
@@ -618,6 +651,8 @@ fn build_dictionary_mobi(
         + num_model
         + num_image_records
         + indx_records.len()
+        + kf7_ncx_records.len()
+        + kf7_ncx_cncx_records.len()
         + num_datp
         + 3
         + num_optional;
@@ -658,6 +693,7 @@ fn build_dictionary_mobi(
         0,    // unused: the dictionary EXTH (build_exth) writes its own 125
         huffdic_model,
         datp_index,
+        kf7_ncx_index_record,
     );
 
     // Assemble all records
@@ -666,6 +702,8 @@ fn build_dictionary_mobi(
     all_records.extend(model_records);
     all_records.extend(image_records);
     all_records.extend(indx_records);
+    all_records.extend(kf7_ncx_records);
+    all_records.extend(kf7_ncx_cncx_records);
     if let Some(datp) = datp_record {
         all_records.push(datp);
     }
@@ -1489,6 +1527,7 @@ fn build_book_mobi(
             (num_image_records + num_font_records) as u32,
             None, // books keep PalmDOC; huffdic is a dictionary option
             None, // books and comics are never huffdic, so no DATP
+            None, // books carry their NCX in the KF8 section
         );
 
         // Build KF8 record 0 (version=8, KF8-relative indices)
@@ -2675,6 +2714,190 @@ fn idx_entry_id(html: &str) -> Option<String> {
     None
 }
 
+/// An invisible anchor carried through dictionary assembly for one source TOC
+/// target. The dictionary assembler changes source order, strips `idx:` tags,
+/// rewrites image attributes and may add UTF-8 record padding, so a marker in
+/// the final stream is the only offset that remains authoritative through all
+/// of those transforms.
+fn dictionary_ncx_marker(index: usize) -> String {
+    format!("<a id=\"_kindling_ncx_{index:X}\"></a>")
+}
+
+fn insert_dictionary_ncx_marker(text: &mut String, offset: usize, index: usize) {
+    if offset <= text.len() && text.is_char_boundary(offset) {
+        text.insert_str(offset, &dictionary_ncx_marker(index));
+    }
+}
+
+/// Place one invisible marker at every resolvable dictionary TOC target.
+///
+/// This runs after each contribution has received the same cleanup it will
+/// have in the MOBI text, but before the contributions are concatenated. It
+/// therefore handles all source shapes: front matter, a file target, an
+/// anchor between entries (the usual letter heading), an entry id/headword,
+/// an anchor inside an entry, and trailing matter after the last entry.
+#[allow(clippy::too_many_arguments)]
+fn insert_dictionary_ncx_markers(
+    opf: &OPFData,
+    nav_points: &[crate::nav::NavPoint],
+    entries: &[DictionaryEntry],
+    entry_files: &[usize],
+    tail_gap_files: &[usize],
+    front_matter_files: &[usize],
+    front_matter_sections: &mut [String],
+    stripped_entries: &mut [String],
+    stripped_gaps: &mut [String],
+    stripped_tails: &mut [String],
+) {
+    let doc_hrefs: Vec<String> = opf
+        .get_content_html_hrefs()
+        .iter()
+        .map(|href| links::normalize_path(&percent_decode(href)))
+        .collect();
+    let wrapper_anchors: Vec<std::collections::HashSet<String>> = opf
+        .get_content_html_paths()
+        .iter()
+        .map(|path| {
+            std::fs::read_to_string(path)
+                .map(|html| links::scan_document_anchors(&html))
+                .unwrap_or_default()
+        })
+        .collect();
+
+    for (nav_index, point) in nav_points.iter().enumerate() {
+        let Some(file) = doc_hrefs.iter().position(|href| *href == point.file_href) else {
+            continue;
+        };
+
+        let at_file_start = point.fragment.is_none()
+            || point.fragment.as_ref().is_some_and(|fragment| {
+                wrapper_anchors
+                    .get(file)
+                    .is_some_and(|anchors| anchors.contains(fragment))
+            });
+
+        // A file without dictionary entries is emitted as one front-matter
+        // section. Anchors survived its cleanup, while a bare file target (or
+        // an id on its html/body wrapper) means the section start.
+        if let Some(section) = front_matter_files.iter().position(|&f| f == file) {
+            let target = if at_file_start {
+                Some(0)
+            } else {
+                let fragment = point.fragment.as_deref().unwrap_or_default();
+                links::scan_anchors(&front_matter_sections[section])
+                    .into_iter()
+                    .find(|anchor| anchor.name == fragment)
+                    .map(|anchor| anchor.offset)
+            };
+            if let Some(offset) = target {
+                insert_dictionary_ncx_marker(
+                    &mut front_matter_sections[section],
+                    offset,
+                    nav_index,
+                );
+            }
+            continue;
+        }
+
+        // A dictionary file begins with the run immediately before its first
+        // entry. The run can be empty; adding the marker there still places a
+        // bare file target exactly before that entry.
+        if at_file_start {
+            if let Some(i) = entry_files.iter().position(|&f| f == file) {
+                insert_dictionary_ncx_marker(&mut stripped_gaps[i], 0, nav_index);
+            }
+            continue;
+        }
+
+        let fragment = point.fragment.as_deref().unwrap_or_default();
+        let mut placed = false;
+        for (i, &entry_file) in entry_files.iter().enumerate() {
+            if entry_file != file {
+                continue;
+            }
+
+            // The run before the entry is where alphabet headings normally
+            // live. Search it before the entry to preserve source order.
+            if let Some(anchor) = links::scan_anchors(&stripped_gaps[i])
+                .into_iter()
+                .find(|anchor| anchor.name == fragment)
+            {
+                insert_dictionary_ncx_marker(&mut stripped_gaps[i], anchor.offset, nav_index);
+                placed = true;
+                break;
+            }
+
+            let entry_start = idx_entry_id(&entries[i].html_content).as_deref() == Some(fragment)
+                || fragment == format!("hw_{}", entries[i].headword);
+            let target = if entry_start {
+                Some(0)
+            } else {
+                links::scan_anchors(&stripped_entries[i])
+                    .into_iter()
+                    .find(|anchor| anchor.name == fragment)
+                    .map(|anchor| anchor.offset)
+            };
+            if let Some(offset) = target {
+                insert_dictionary_ncx_marker(&mut stripped_entries[i], offset, nav_index);
+                placed = true;
+                break;
+            }
+        }
+
+        if placed {
+            continue;
+        }
+        if let Some(tail) = tail_gap_files.iter().position(|&f| f == file) {
+            if let Some(anchor) = links::scan_anchors(&stripped_tails[tail])
+                .into_iter()
+                .find(|anchor| anchor.name == fragment)
+            {
+                insert_dictionary_ncx_marker(&mut stripped_tails[tail], anchor.offset, nav_index);
+            }
+        }
+    }
+}
+
+/// Resolve the markers in the final byte stream into the four fields a KF7
+/// NCX stores. Entries are sorted by their assembled positions because the
+/// dictionary writer moves all front matter ahead of its entries.
+fn build_dictionary_ncx_entries(
+    nav_points: &[crate::nav::NavPoint],
+    text: &[u8],
+) -> Vec<crate::kf8::Kf7NcxEntry> {
+    let mut resolved: Vec<(usize, String, usize)> = Vec::new();
+    let mut unresolved = 0usize;
+    for (i, point) in nav_points.iter().enumerate() {
+        let marker = dictionary_ncx_marker(i);
+        match find_bytes(text, marker.as_bytes()) {
+            Some(at) => resolved.push((at + marker.len(), point.label.clone(), point.depth)),
+            None => unresolved += 1,
+        }
+    }
+
+    resolved.sort_by_key(|(offset, _, _)| *offset);
+    let mut out = Vec::with_capacity(resolved.len());
+    for (i, (offset, label, depth)) in resolved.iter().enumerate() {
+        let end = resolved.get(i + 1).map_or(text.len(), |next| next.0);
+        if end > *offset {
+            out.push(crate::kf8::Kf7NcxEntry {
+                offset: *offset,
+                length: end - *offset,
+                label: label.clone(),
+                depth: *depth,
+            });
+        }
+    }
+
+    if unresolved > 0 {
+        eprintln!(
+            "Dictionary NCX: {unresolved} navigation target(s) could not be resolved and were \
+             omitted"
+        );
+    }
+    out
+}
+
 /// What `build_text_content_by_letter` returns: the merged body text, the
 /// per-entry headword needles, the link placeholders still waiting to be
 /// patched with real file positions, and the gap text that sits between
@@ -2692,13 +2915,16 @@ type AssembledDictionaryText = (Vec<u8>, Vec<Box<[u8]>>, Vec<PendingFilepos>, Ve
 /// before the dictionary entries so that front matter is preserved. The
 /// `<mbp:frameset>` wrapper from the source dictionary HTML is also preserved,
 /// as it is required for Kindle dictionary rendering.
+#[allow(clippy::too_many_arguments)]
 fn build_text_content_by_letter(
     opf: &OPFData,
     entries: &[DictionaryEntry],
     entry_files: &[usize],
     entry_gaps: &[String],
     tail_gaps: &[String],
+    tail_gap_files: &[usize],
     files_with_entries: &std::collections::HashSet<usize>,
+    nav_points: &[crate::nav::NavPoint],
     split: bool,
 ) -> AssembledDictionaryText {
     let doc_hrefs = opf.get_content_html_hrefs();
@@ -2708,6 +2934,7 @@ fn build_text_content_by_letter(
     let mut front_matter_links: Vec<PendingFilepos> = Vec::new();
     // Collect non-dictionary spine items (front matter) and extract styles
     let mut front_matter_sections: Vec<String> = Vec::new();
+    let mut front_matter_files: Vec<usize> = Vec::new();
     let mut dict_styles: Vec<String> = Vec::new();
     let mut seen_style_blocks: HashSet<String> = HashSet::new();
     let mut seen_css_paths: HashSet<std::path::PathBuf> = HashSet::new();
@@ -2790,6 +3017,7 @@ fn build_text_content_by_letter(
                 replace_hrefs_with_filepos(&body, doc_href, file_index, &documents);
             front_matter_links.extend(pending);
             front_matter_sections.push(body);
+            front_matter_files.push(file_index);
         }
     }
 
@@ -2842,14 +3070,27 @@ fn build_text_content_by_letter(
     // run is trimmed of any mix of those and whitespace. Only the front: a
     // break at the END of a run is the one that belongs before the next
     // entry, and an entry contributes no leading break itself.
-    let stripped_gaps: Vec<String> = entry_gaps
+    let mut stripped_gaps: Vec<String> = entry_gaps
         .par_iter()
         .map(|gap| trim_leading_separators(&strip_idx_markup(gap)))
         .collect();
-    let stripped_tails: Vec<String> = tail_gaps
+    let mut stripped_tails: Vec<String> = tail_gaps
         .par_iter()
         .map(|gap| trim_leading_separators(&strip_idx_markup(gap)))
         .collect();
+
+    insert_dictionary_ncx_markers(
+        opf,
+        nav_points,
+        entries,
+        entry_files,
+        tail_gap_files,
+        &front_matter_files,
+        &mut front_matter_sections,
+        &mut stripped_entries,
+        &mut stripped_gaps,
+        &mut stripped_tails,
+    );
 
     // Keep the opening bytes of each entry's own contribution to the blob.
     // These are what `find_entry_positions` anchors on: the exact byte string
@@ -6941,6 +7182,8 @@ fn build_record0(
     huffdic: Option<(usize, usize)>,
     // The DATP record, when there is one (huffdic text only).
     datp: Option<usize>,
+    // KF7 NCX primary index for dictionaries with a logical TOC.
+    primary_index_record: Option<usize>,
 ) -> Vec<u8> {
     let default_name = if is_dictionary { "Dictionary" } else { "Book" };
     let full_name = if opf.title.is_empty() {
@@ -7063,10 +7306,15 @@ fn build_record0(
     // Extra record data flags (multibyte + TBS)
     put32(&mut mobi, 224, 3);
 
-    // NCX and other indices: 0xFFFFFFFF (matches lemma v1.0.0 output)
+    // NCX and other indices. A dictionary with a logical TOC points this
+    // field at its four-tag KF7 NCX index (issue #64).
     put32(&mut mobi, 216, 0xFFFFFFFF);
     put32(&mut mobi, 220, 0xFFFFFFFF);
-    put32(&mut mobi, 228, 0xFFFFFFFF);
+    put32(
+        &mut mobi,
+        228,
+        primary_index_record.map_or(0xFFFFFFFF, |idx| idx as u32),
+    );
     put32(&mut mobi, 232, 0xFFFFFFFF);
     put32(&mut mobi, 236, 0xFFFFFFFF);
     put32(&mut mobi, 240, 0xFFFFFFFF);
