@@ -399,6 +399,25 @@ fn a_miss_says_why_it_missed() {
     println!("  \u{2713} an absent headword and an absent index read differently");
 }
 
+/// Issue #49 began with a reasonable inference: an all-miss result on a
+/// Kindlegen `-c2` file looked like HUFF/CDIC support was absent. State the
+/// actual boundary explicitly: lookup supports the compression because it
+/// reads the separate, uncompressed orthographic index.
+#[test]
+fn lookup_says_huffdic_dictionary_compression_is_supported() {
+    let dict = fixture("en_huffdic.mobi");
+    let (ok, stdout, stderr) = cli_split(&["lookup", dict.to_str().unwrap(), "book"]);
+    assert!(ok, "the fixture lookup should resolve:\n{stdout}{stderr}");
+    assert!(
+        stderr.contains("HUFF/CDIC dictionary compression is supported"),
+        "the CLI must state support rather than let a miss imply the opposite:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("separate, uncompressed orthographic index at record"),
+        "the CLI must explain why compression does not determine lookup:\n{stderr}"
+    );
+}
+
 /// The subcommand is documented as a scriptable assertion, so the notes must
 /// not end up in whatever is reading its output.
 #[test]
@@ -412,7 +431,10 @@ fn notes_go_to_stderr_and_leave_one_line_on_stdout() {
         "stdout should be exactly the result line, got:\n{stdout}"
     );
     assert!(stdout.contains("does not resolve"), "{stdout}");
-    assert!(stderr.contains("HUFF/CDIC"), "{stderr}");
+    assert!(
+        stderr.contains("HUFF/CDIC dictionary compression is supported"),
+        "{stderr}"
+    );
     assert!(stderr.contains("MOBI header names record"), "{stderr}");
     println!("  \u{2713} result on stdout, both notes on stderr");
 }

@@ -1583,19 +1583,29 @@ fn do_lookup(input: &PathBuf, word: &str) {
     // subcommand keeps working as the scriptable assertion the README
     // documents.
     //
-    // Say so on a huffdic file. kindling writes HUFF/CDIC only when
-    // KINDLING_HUFFDIC asks for it, so most people looking one up built it
-    // elsewhere (`kindlegen -c2`, or an Amazon store dictionary) and deserve
-    // to know the compression was understood rather than being left to guess
-    // it was the reason for a miss (issue #49).
+    // Say exactly what HUFF/CDIC changes on a dictionary. Someone who sees
+    // compression 17480 must not be left to infer that a miss means the
+    // format is unsupported: the orthographic index remains separate and
+    // uncompressed, so lookup does support it (issue #49).
     if report.is_huffdic() {
-        eprintln!(
-            "note: text records use HUFF/CDIC compression (kindlegen -c2). The lookup index is \
-             not compressed, so this does not affect the result."
-        );
+        match report.index_record {
+            Some(record) => eprintln!(
+                "note: HUFF/CDIC dictionary compression is supported. `lookup` searches the \
+                 separate, uncompressed orthographic index at record {record}; it does not \
+                 decompress definition text."
+            ),
+            None => eprintln!(
+                "note: HUFF/CDIC dictionary compression is supported. `lookup` searches a \
+                 separate, uncompressed orthographic index; this file has no usable one."
+            ),
+        }
     }
     if let Some(why) = &report.huffdic_error {
-        eprintln!("note: the HUFF/CDIC tables in this file could not be read: {why}");
+        eprintln!(
+            "warning: the HUFF/CDIC text model could not be read: {why}. The lookup result \
+             below still comes from the separate orthographic index, but definition text cannot \
+             be verified."
+        );
     }
     // A record number that was not adjusted for records inserted ahead of it
     // is the one failure that looks exactly like an absent headword. A Kindle

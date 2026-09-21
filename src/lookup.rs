@@ -128,8 +128,9 @@ pub struct LookupReport {
     pub unreadable: bool,
     /// Why the HUFF/CDIC tables could not be read, on a huffdic file whose
     /// compression model is broken. The lookup index is never compressed, so
-    /// this never explains a miss - it is here so a report on a huffdic file
-    /// can say the compression was understood, or say plainly that it was not.
+    /// this never explains a miss - it lets the CLI distinguish an unreadable
+    /// definition-text model from lookup support, which comes from the
+    /// separate uncompressed orthographic index.
     pub huffdic_error: Option<String>,
     /// The first few headwords in index order, decoded.
     ///
