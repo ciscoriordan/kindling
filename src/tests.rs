@@ -5282,6 +5282,49 @@ mod tests {
     }
 
     #[test]
+    fn test_webtoon_rotate_spreads_keeps_forced_and_detected_slices_upright() {
+        use crate::comic;
+        use image::GenericImageView;
+
+        let dir = TempDir::new("webtoon_rotate_spreads");
+        let profile = comic::get_profile("k34").unwrap();
+        for (name, height, forced) in [("forced", 1800, true), ("detected", 3400, false)] {
+            let input = dir.path().join(name);
+            fs::create_dir_all(&input).unwrap();
+            let strip_path = input.join("strip.png");
+            let img =
+                image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(1000, height, |x, y| {
+                    image::Rgb([((x * 3 + y) % 256) as u8, 90, ((x + y) % 256) as u8])
+                }));
+            img.save(&strip_path).unwrap();
+            assert_eq!(comic::detect_webtoon(&[strip_path]), !forced);
+
+            let output = dir.path().join(format!("{name}.mobi"));
+            let options = comic::ComicOptions {
+                webtoon: forced,
+                rotate_spreads: true,
+                crop: 0,
+                enhance: false,
+                panel_view: false,
+                ..Default::default()
+            };
+            comic::build_comic_with_options(&input, &output, &profile, &options).unwrap();
+
+            let data = fs::read(&output).unwrap();
+            let (_, _, offsets) = parse_palmdb(&data);
+            let rec0 = get_record(&data, &offsets, 0);
+            let first_image = read_u32_be(rec0, 108) as usize;
+            let decoded =
+                image::load_from_memory(get_record(&data, &offsets, first_image)).unwrap();
+            assert_eq!(
+                decoded.dimensions(),
+                (600, 480),
+                "{name} webtoon must preserve the slice's width and orientation"
+            );
+        }
+    }
+
+    #[test]
     fn test_rotate_spreads() {
         use crate::comic;
         use image::GenericImageView;

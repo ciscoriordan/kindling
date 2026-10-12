@@ -183,7 +183,7 @@ enum Commands {
         no_split: bool,
 
         /// Rotate double-page spreads 90 degrees clockwise instead of splitting.
-        /// Gives a full-page spread view, useful for tablet users.
+        /// Gives a full-page spread view, useful for tablet users. Webtoon slices stay upright.
         #[arg(long)]
         rotate_spreads: bool,
 

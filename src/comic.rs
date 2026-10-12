@@ -248,6 +248,7 @@ pub struct ComicOptions {
     pub cover: Option<CoverSource>,
     /// Rotate double-page spreads 90 degrees clockwise instead of splitting them.
     /// Useful for tablet users who want a full-page spread view.
+    /// Does not rotate slices in forced or automatically detected webtoon mode.
     pub rotate_spreads: bool,
     /// Ship the source pages as they are: no resize, no grayscale conversion,
     /// no crop, no enhance, no moire pass, no re-encode (issue #29). For
@@ -1193,13 +1194,14 @@ fn process_image_pipeline(
     // clockwise instead of being split, producing a single portrait page that
     // preserves the full spread. This overrides the split behavior for spreads.
     //
-    // Webtoon bands are exempt from splitting. A band is already one
+    // Webtoon bands are exempt from splitting and rotation. A band is already one
     // device-height slice of a single tall strip, so a band that came out wider
     // than it is tall is not a spread: splitting it ships two half-width pages
     // where the strip asked for one, which reads as two narrow columns. The
     // split flag is on by default, so webtoon mode has to refuse it here rather
-    // than trust every caller to pass --no-split.
-    let pages = if options.rotate_spreads && is_double_page_spread(&img) {
+    // than trust every caller to pass --no-split. Rotating a band would turn
+    // its content sideways, so --rotate-spreads uses the same exemption.
+    let pages = if options.rotate_spreads && !is_webtoon && is_double_page_spread(&img) {
         vec![img.rotate90()]
     } else if options.split && !is_webtoon && is_double_page_spread(&img) {
         let (left, right) = split_spread(&img);
@@ -3232,6 +3234,50 @@ mod tests {
             as_band.len(),
             1,
             "a webtoon band must ship as one page, not two halves"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn webtoon_bands_are_not_rotated_as_spreads() {
+        let dir = std::env::temp_dir().join(format!(
+            "kindling_comic_webtoon_rotation_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let band_path = dir.join("band.png");
+        let img = image::RgbImage::from_fn(1000, 800, |x, y| {
+            image::Rgb([(x / 5) as u8, (y / 4) as u8, 80])
+        });
+        image::DynamicImage::ImageRgb8(img)
+            .save(&band_path)
+            .unwrap();
+
+        let profile = get_profile("k34").unwrap();
+        let options = ComicOptions {
+            rotate_spreads: true,
+            crop: 0,
+            enhance: false,
+            ..Default::default()
+        };
+
+        let as_page = process_image_pipeline(&band_path, &profile, &options, false, false).unwrap();
+        assert_eq!(
+            as_page.len(),
+            1,
+            "rotation must still override spread splitting"
+        );
+        let rotated = image::load_from_memory(&as_page[0]).unwrap();
+        assert_eq!(rotated.dimensions(), (600, 750));
+
+        let as_band = process_image_pipeline(&band_path, &profile, &options, false, true).unwrap();
+        assert_eq!(as_band.len(), 1, "a webtoon band must remain one page");
+        let upright = image::load_from_memory(&as_band[0]).unwrap();
+        assert_eq!(
+            upright.dimensions(),
+            (600, 480),
+            "a landscape webtoon band must keep its original orientation"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
