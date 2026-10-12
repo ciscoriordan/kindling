@@ -454,7 +454,7 @@ pub fn build_comic_with_options(
                 eprintln!("Processing image {}/{}...", idx + 1, total);
             }
             let is_cover = options.cover_fill && cover_source_idx == Some(idx);
-            match process_image_pipeline(img_path, profile, options, is_cover) {
+            match process_image_pipeline(img_path, profile, options, is_cover, is_webtoon) {
                 Ok(jpeg_pages) => Some((idx, jpeg_pages)),
                 Err(e) => {
                     eprintln!("Warning: skipping {} ({})", img_path.display(), e);
@@ -1106,6 +1106,7 @@ fn process_image_pipeline(
     profile: &DeviceProfile,
     options: &ComicOptions,
     cover_fill: bool,
+    is_webtoon: bool,
 ) -> Result<Vec<Vec<u8>>, Box<dyn std::error::Error>> {
     let img = image::open(path)?;
 
@@ -1191,9 +1192,16 @@ fn process_image_pipeline(
     // When rotate_spreads is enabled, landscape spreads are rotated 90 degrees
     // clockwise instead of being split, producing a single portrait page that
     // preserves the full spread. This overrides the split behavior for spreads.
+    //
+    // Webtoon bands are exempt from splitting. A band is already one
+    // device-height slice of a single tall strip, so a band that came out wider
+    // than it is tall is not a spread: splitting it ships two half-width pages
+    // where the strip asked for one, which reads as two narrow columns. The
+    // split flag is on by default, so webtoon mode has to refuse it here rather
+    // than trust every caller to pass --no-split.
     let pages = if options.rotate_spreads && is_double_page_spread(&img) {
         vec![img.rotate90()]
-    } else if options.split && is_double_page_spread(&img) {
+    } else if options.split && !is_webtoon && is_double_page_spread(&img) {
         let (left, right) = split_spread(&img);
         vec![left, right]
     } else {
@@ -3161,7 +3169,7 @@ mod tests {
             no_optimize: true,
             ..Default::default()
         };
-        let out = process_image_pipeline(&page, &profile, &options, false).unwrap();
+        let out = process_image_pipeline(&page, &profile, &options, false, false).unwrap();
         assert_eq!(out.len(), 1, "one page in, one page out");
         assert_eq!(
             out[0], source,
@@ -3171,7 +3179,7 @@ mod tests {
         // And the default pipeline does what it always did, so the flag is
         // the only thing that changes behavior.
         let normal = ComicOptions::default();
-        let processed = process_image_pipeline(&page, &profile, &normal, false).unwrap();
+        let processed = process_image_pipeline(&page, &profile, &normal, false, false).unwrap();
         let decoded = image::load_from_memory(&processed[0]).unwrap();
         assert!(
             decoded.width() <= profile.width && decoded.height() <= profile.height,
@@ -3180,6 +3188,50 @@ mod tests {
         assert_ne!(
             processed[0], source,
             "the default pipeline still re-encodes"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A webtoon band is one device-height slice of a single tall strip. On a
+    /// strip wider than the device is tall the band comes out landscape, which
+    /// `is_double_page_spread` reads as a spread -- so every band was cut in
+    /// half and shipped as two narrow columns instead of one full page.
+    #[test]
+    fn webtoon_bands_are_not_split_in_half() {
+        let dir = std::env::temp_dir().join(format!(
+            "kindling_comic_webtoon_band_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 1000 wide against the 600x800 profile: wider than tall, so the
+        // splitter reads it as a double-page spread.
+        let img = image::RgbImage::from_fn(1000, 800, |x, y| {
+            image::Rgb([((x * 3 + y) % 256) as u8, 90, ((x + y) % 256) as u8])
+        });
+        let band_path = dir.join("band.png");
+        image::DynamicImage::ImageRgb8(img)
+            .save(&band_path)
+            .unwrap();
+
+        let profile = get_profile("k34").unwrap();
+        let options = ComicOptions::default();
+        assert!(options.split, "splitting is on by default");
+
+        let as_page = process_image_pipeline(&band_path, &profile, &options, false, false).unwrap();
+        assert_eq!(
+            as_page.len(),
+            2,
+            "outside webtoon mode a landscape page is still a spread"
+        );
+
+        let as_band = process_image_pipeline(&band_path, &profile, &options, false, true).unwrap();
+        assert_eq!(
+            as_band.len(),
+            1,
+            "a webtoon band must ship as one page, not two halves"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
