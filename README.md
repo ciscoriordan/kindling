@@ -263,12 +263,12 @@ Comic builds do not embed the intermediate EPUB as a SRCS record by default (thi
 
 Converts image folders, CBZ files, CBR files, and EPUB files to Kindle-optimized MOBI with:
 - **Device profiles**: *paperwhite*, *kpw5*, *oasis*, *scribe*, *scribe2025*, *kindle2024*, *basic*, *colorsoft*, *kpw6*, *scribe-colorsoft*, *fire-hd-10*, and the 600x800 era: *k34* (Kindle 3/Keyboard and Touch), *k57*, *k810*, *kpw1* (758x1024) and *kdx* (824x1000). `--device 800x600` resolves to the 600x800 box, since that is how those screens are advertised (issue #28). The four pre-KF8 profiles warn when selected without `--legacy-mobi`, because a KF8-only `.azw3` will not open on them. The DX height is 1000 rather than its panel's 1200 on purpose: it reserves the bottom strip for the progress bar, and a full-height image gives blank pages between the real ones
-- **Spread splitting**: Landscape images auto-split into two pages (disable: `--no-split`)
+- **Spread splitting**: Landscape comic pages auto-split into two pages (disable: `--no-split`); `--rotate-spreads` rotates a spread 90 degrees clockwise instead
 - **Margin cropping**: `--crop 2` (default) crops margins + page numbers, `--crop 1` crops margins only, `--crop 0` disables cropping
 - **Auto-contrast**: Histogram stretching and gamma correction for e-ink (disable: `--no-enhance`)
 - **Moire correction**: Rainbow artifact removal for color e-ink screens (Colorsoft), applied automatically to grayscale source images
 - **Manga mode**: `--rtl` reverses page order and split direction
-- **Webtoon mode**: `--webtoon` merges vertical strips and splits at panel gutters with overlap fallback to prevent content loss
+- **Webtoon mode**: `--webtoon` merges vertical strips and splits at panel gutters with overlap fallback to prevent content loss. Also detected automatically when every input image is more than three times as tall as it is wide. Each slice keeps its full width and original orientation, including when `--rotate-spreads` is set
 - **Panel View**: Tap-to-zoom panel detection for Kindle (disable: `--no-panel-view`). Reading order configurable via `--panel-reading-order` (`horizontal-lr`, `horizontal-rl`, `vertical-lr`, `vertical-rl`); defaults to `horizontal-rl` with `--rtl`
 - **EPUB support**: Fixed-layout EPUB comics extracted in spine order (correct page sequence)
 - **CBR support**: RAR-based comic archives extracted via `bsdtar` (libarchive). `/usr/bin/bsdtar` ships with macOS; on Linux install `libarchive-tools` (`apt`) or `bsdtar` (`dnf`). Both RAR4 and RAR5 are supported. Header-encrypted CBRs are rejected with a clear error.
