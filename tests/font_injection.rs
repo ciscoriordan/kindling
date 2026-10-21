@@ -251,6 +251,14 @@ fn injection_rejects_conflicts_bad_fonts_and_unsupported_content() {
     fs::write(fixture.opf(), old).unwrap();
     fs::write(
         fixture.0.join("source/one.html"),
+        "<html><head><meta name=\"viewport\" content=\"width=800,height=1200\"/></head><body><p>x</p></body></html>",
+    )
+    .unwrap();
+    let result = fixture.build(&fixture.opf(), &["--embed-font", path]);
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("reflowable books only"));
+    fs::write(
+        fixture.0.join("source/one.html"),
         "<html><body><idx:entry><idx:orth value=\"x\"/>definition</idx:entry></body></html>",
     )
     .unwrap();

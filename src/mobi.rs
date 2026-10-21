@@ -149,7 +149,14 @@ pub fn build_mobi_from_extracted_with_fonts(
     // Detect dictionary vs book by checking HTML content for idx:entry tags
     let is_dictionary = detect_dictionary(opf);
 
-    if injection.is_some() && (is_dictionary || opf.is_fixed_layout) {
+    if injection.is_some()
+        && (is_dictionary
+            || opf.is_fixed_layout
+            || matches!(
+                extracted.profile,
+                crate::profile::Profile::Comic | crate::profile::Profile::Dict
+            ))
+    {
         return Err("--embed-font supports reflowable books only; dictionaries and fixed-layout books are unsupported".into());
     }
 
