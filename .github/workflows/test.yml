@@ -26,6 +26,12 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libarchive-tools
       - name: Run tests
         run: cargo test -- --show-output
+      - name: Build Ukrainian lookup device checks
+        run: python3 scripts/ukrainian_lookup_probes.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ukrainian-lookup-probes
+          path: target/ukrainian-lookup-probes/ukrainian-lookup-probes.zip
 
   # The structural EPUB tests cannot see a dangling href or an image resource
   # that is not in the archive; only epubcheck can, and its test is #[ignore]d

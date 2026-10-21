@@ -5987,13 +5987,20 @@ fn build_lookup_terms(
     //     symbol, so the Kindle shows each headword as written. The DEFAULT for
     //     Latin dictionaries (kindlegen's Latin layout too), and what
     //     `--strict-accents` forces for any script.
+    //   - Ukrainian: plain UTF-16 labels with a zero-weight NUL table, in
+    //     both default and strict modes, for the native search engine.
     //   - Otherwise plain UTF-16 labels: with the ORDT/SPL blob taken from a
     //     kindlegen Greek dictionary for Greek, and for Latin with
     //     `--fold-accents`; with no blob for Cyrillic and other scripts.
     //   Outside the generated tables every mode sorts labels by
     //   `ordt::device_collation_key`, so the modes open the same entries.
     let want_exact = strict_accents || (is_latin && !fold_accents);
-    let gen_ordt = if generated {
+    let gen_ordt = if locale_code(dict_lang) & 0xFF == 0x22 {
+        // Ukrainian native lookup needs a zero-weight NUL table (#71).
+        // Keeping the letters literal also avoids the native path's failed
+        // Cyrillic-to-symbol conversion in --strict-accents builds (#72).
+        Some(crate::ordt::OrdtTables::new_unicode())
+    } else if generated {
         let refs: Vec<&str> = ordered_labels.iter().map(|s| s.as_str()).collect();
         Some(crate::ordt::OrdtTables::new(&refs))
     } else if want_exact {
@@ -6275,6 +6282,28 @@ mod punctuated_label_order_tests {
         let (terms, _) =
             build_lookup_terms(&entries, &positions, b"", false, lang, false, fold_accents);
         terms.into_iter().map(|t| t.label).collect()
+    }
+
+    #[test]
+    fn ukrainian_uses_literal_letters_in_default_and_strict_modes() {
+        let words = ["одразу", "сум’яття", "сум'яття", "сумʼяття", "Київ", "𠀀"];
+        let entries: Vec<DictionaryEntry> = words.iter().map(|h| entry(h)).collect();
+        let positions: Vec<(usize, usize)> = entries.iter().map(|_| (0, 0)).collect();
+        for language in ["uk", "uk-UA", "UK_ua"] {
+            for strict in [false, true] {
+                let (terms, table) =
+                    build_lookup_terms(&entries, &positions, b"", false, language, strict, false);
+                let table = table.expect("native Ukrainian lookup needs the NUL weight");
+                assert_eq!(table.count(), 1);
+                assert_eq!(table.ordt_type(), 0);
+                for term in terms {
+                    assert_eq!(
+                        term.label_bytes,
+                        crate::ordt::encode_plain_label(&term.label)
+                    );
+                }
+            }
+        }
     }
 
     #[test]
