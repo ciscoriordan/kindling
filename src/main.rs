@@ -116,7 +116,8 @@ enum Commands {
         /// Store the labels of a Greek, Cyrillic or other non-Latin dictionary
         /// with the exact per-character ORDT table that Latin dictionaries get
         /// by default, except in Japanese, Chinese, Korean and Arabic-script
-        /// dictionaries, which keep their generated tables. The labels are
+        /// dictionaries, which keep their generated tables. Ukrainian keeps
+        /// UTF-16 letters with a NUL weight for native lookup. The labels are
         /// stored in the same order either way. Cyrillic dictionaries then get
         /// no stress-stripped aliases, only Russian ones keep the lowercase
         /// aliases, and no dictionary gets the aliases spelled the way only the

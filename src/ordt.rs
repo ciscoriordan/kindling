@@ -12,7 +12,8 @@
 //! keeps each character a distinct symbol. `--fold-accents` instead stores
 //! Latin labels as plain UTF-16 with the ORDT/SPL blob taken from a kindlegen
 //! Greek dictionary, which Greek dictionaries get by default. Cyrillic and
-//! other scripts store plain UTF-16 labels.
+//! other scripts store plain UTF-16 labels. Ukrainian keeps that label
+//! representation with a minimal zero-weight NUL table for native lookup.
 //! Outside the generated tables every index is sorted by
 //! `device_collation_key`, the weights a Kindle lookup gives each character.
 //!
@@ -218,6 +219,8 @@ pub(crate) fn label_codepoints(text: &str) -> Vec<u32> {
 
 /// Generated ORDT table pair plus the character-level encoder state.
 pub struct OrdtTables {
+    /// Keep the plain UTF-16 label representation with a zero-weight NUL.
+    unicode_literals: bool,
     /// Symbol -> collation weight (0 = ignorable).
     ordt1: Vec<u16>,
     /// Symbol -> Unicode code point value.
@@ -801,6 +804,7 @@ impl OrdtTables {
         let two_byte = has_literal || ordt2.len() > 256;
 
         OrdtTables {
+            unicode_literals: false,
             ordt1,
             ordt2,
             sym_of,
@@ -896,6 +900,7 @@ impl OrdtTables {
         let two_byte = ordt2.len() > 256 || supplementary;
 
         OrdtTables {
+            unicode_literals: false,
             ordt1,
             ordt2,
             sym_of,
@@ -909,6 +914,23 @@ impl OrdtTables {
     /// elements with a value `>= count()` are literals.
     pub fn count(&self) -> u32 {
         self.ordt2.len() as u32
+    }
+
+    /// Plain UTF-16 labels with a zero-weight NUL symbol. Native lookup in
+    /// firmware 5.20.1 converts an apostrophe to NUL, including when there
+    /// are no tables. Supplying this weight lets the comparison skip it.
+    /// Every nonzero unit remains a literal, including expansion markers
+    /// and surrogate pairs. No script-specific collation is introduced.
+    pub fn new_unicode() -> OrdtTables {
+        OrdtTables {
+            unicode_literals: true,
+            ordt1: vec![0],
+            ordt2: vec![0],
+            sym_of: HashMap::new(),
+            surrogate_sym: HashMap::new(),
+            two_byte: true,
+            stores_letter_pairs: false,
+        }
     }
 
     /// The `ordt_type` INDX header field: 0 for two-byte elements, 1 for
@@ -939,6 +961,9 @@ impl OrdtTables {
     /// Truncated at a character boundary to the entry writer's 254-byte
     /// length cap, never splitting a surrogate pair or a marker pair.
     pub fn encode_label(&self, text: &str) -> Vec<u8> {
+        if self.unicode_literals {
+            return encode_plain_label(text);
+        }
         let elem_bytes = if self.two_byte { 2 } else { 1 };
         let mut out: Vec<u8> = Vec::new();
         let stored;
@@ -1112,6 +1137,39 @@ mod tests {
         } else {
             bytes.iter().map(|&b| b as u16).collect()
         }
+    }
+
+    #[test]
+    fn unicode_table_preserves_plain_labels_and_ignores_only_nul() {
+        let table = OrdtTables::new_unicode();
+        assert_eq!(table.ordt_type(), 0);
+        assert_eq!(table.count(), 1);
+        assert_eq!(
+            table.serialize(),
+            (b"ORDT\0\0".to_vec(), b"ORDT\0\0".to_vec())
+        );
+        for word in [
+            "сум’яття",
+            "сум'яття",
+            "сумʼяття",
+            "одразу",
+            "Київ",
+            "до́м",
+            "Fuß",
+            "Œuvre",
+            "𠀀",
+            "カー",
+            "%_",
+        ] {
+            let bytes = table.encode_label(word);
+            assert_eq!(bytes, encode_plain_label(word), "{word}");
+            let units: Vec<u16> = bytes
+                .chunks_exact(2)
+                .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                .collect();
+            assert_eq!(table.stored_units(&bytes), units, "{word}");
+        }
+        assert_eq!(table.sort_key(&[0, 0, 4, 65]), table.sort_key(&[4, 65]));
     }
 
     #[test]
