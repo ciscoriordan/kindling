@@ -148,6 +148,17 @@ enum Commands {
         #[arg(long)]
         force_user_fonts: bool,
 
+        /// Embed a caller-supplied static TTF/OTF and select its family for
+        /// the body and paragraphs. Repeat for bold/italic faces or fallback
+        /// families; the first family is preferred. Reflowable KF8 books only.
+        #[arg(long, value_name = "PATH", conflicts_with = "force_user_fonts")]
+        embed_font: Vec<PathBuf>,
+
+        /// Override the family name of all --embed-font faces. Otherwise
+        /// names come from font metadata. Weight and style are preserved.
+        #[arg(long, value_name = "FAMILY", requires = "embed_font")]
+        font_family: Option<String>,
+
         /// Document type: "none" (no shelf assignment, default), "ebok"
         /// (Books shelf) or "pdoc" (Documents shelf). Writing EXTH 501 also
         /// writes an EXTH 113 identifier, and that pair is what lets the
@@ -890,7 +901,20 @@ fn do_build(
     strict_accents: bool,
     fold_accents: bool,
     force_user_fonts: bool,
+    embed_fonts: &[PathBuf],
+    font_family: Option<&str>,
 ) {
+    let injection = if embed_fonts.is_empty() {
+        None
+    } else {
+        match kindling::font_injection::FontInjection::from_paths(embed_fonts, font_family) {
+            Ok(fonts) => Some(fonts),
+            Err(error) => {
+                eprintln!("Error: {error}");
+                process::exit(1);
+            }
+        }
+    };
     let is_epub = input
         .extension()
         .map(|ext| ext.eq_ignore_ascii_case("epub"))
@@ -982,7 +1006,7 @@ fn do_build(
     }
 
     let result = match extracted.as_ref() {
-        Some(e) => mobi::build_mobi_from_extracted(
+        Some(e) => mobi::build_mobi_from_extracted_with_fonts(
             e,
             output_path,
             no_compress,
@@ -999,6 +1023,7 @@ fn do_build(
             strict_accents,
             fold_accents,
             force_user_fonts,
+            injection.as_ref(),
         ),
         None => mobi::build_mobi(
             &opf_path,
@@ -1106,6 +1131,8 @@ fn main() {
             strict_accents,
             fold_accents,
             false, // force_user_fonts: not part of the kindlegen interface
+            &[],
+            None,
         );
     } else {
         let cli = Cli::parse();
@@ -1130,6 +1157,8 @@ fn main() {
                 strict_accents,
                 fold_accents,
                 force_user_fonts,
+                embed_font,
+                font_family,
                 doc_type,
             } => {
                 // Default: ON for dictionaries, OFF for books.
@@ -1216,6 +1245,8 @@ fn main() {
                     strict_accents || strict_accents_from_env(),
                     fold_accents || fold_accents_from_env(),
                     force_user_fonts,
+                    &embed_font,
+                    font_family.as_deref(),
                 );
             }
             Commands::Comic {
