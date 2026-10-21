@@ -31,14 +31,14 @@ def generate(binary, output):
         source.joinpath("content.opf").write_text(package(f"Ukrainian lookup {name}", f"kindling-uk-lookup-{name}", True), encoding="utf-8")
         entries = "".join(f'<idx:entry><idx:orth value="{html.escape(word, quote=True)}"/><b>{html.escape(word)}</b><p>Dictionary {name}: {description}.</p></idx:entry>'
                           for word, description in [("одразу", "control"), (label, "apostrophe check")])
-        source.joinpath("content.html").write_text('<html xmlns:idx="http://www.mobipocket.com/idx"><head><title>Lookup probe</title></head><body>' + entries + '</body></html>', encoding="utf-8")
+        source.joinpath("content.html").write_text('<?xml version="1.0" encoding="UTF-8"?><html xmlns="http://www.w3.org/1999/xhtml" xmlns:idx="http://www.mobipocket.com/idx"><head><title>Lookup probe</title></head><body>' + entries + '</body></html>', encoding="utf-8")
         for strict in [False, True]:
             destination = output / f"dictionary-{name}{'-strict' if strict else ''}.mobi"
             subprocess.run([str(binary), "build", str(source / "content.opf"), "--no-validate", *(["--strict-accents"] if strict else []), "-o", str(destination)], check=True)
     source = output / "sources" / "book"
     source.mkdir(parents=True, exist_ok=True)
     source.joinpath("content.opf").write_text(package("Ukrainian apostrophe lookup check", "kindling-uk-lookup-book", False), encoding="utf-8")
-    source.joinpath("content.html").write_text('<html><head><title>Ukrainian lookup</title></head><body>' + ''.join(f'<p>{html.escape(word)}</p>' for word in ["одразу", "сумяття", "сум’яття", "сум'яття", "сумʼяття"]) + '</body></html>', encoding="utf-8")
+    source.joinpath("content.html").write_text('<?xml version="1.0" encoding="UTF-8"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>Ukrainian lookup</title></head><body>' + ''.join(f'<p>{html.escape(word)}</p>' for word in ["одразу", "сумяття", "сум’яття", "сум'яття", "сумʼяття"]) + '</body></html>', encoding="utf-8")
     subprocess.run([str(binary), "build", str(source / "content.opf"), "--no-validate", "-o", str(output / "lookup-book.azw3")], check=True)
     output.joinpath("README.txt").write_text(f'''Ukrainian dictionary lookup device check
 Built with {version}.
