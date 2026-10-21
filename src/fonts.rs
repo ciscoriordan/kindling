@@ -58,7 +58,7 @@ fn has_font_extension(href: &str) -> bool {
 /// Media type for the `kindle:embed` URL: normalize by sniffing the font
 /// data so generic manifest types (application/octet-stream) still get a
 /// type the renderer recognizes.
-fn embed_media_type(data: &[u8]) -> &'static str {
+pub(crate) fn embed_media_type(data: &[u8]) -> &'static str {
     if data.len() >= 4 && &data[0..4] == b"OTTO" {
         "application/vnd.ms-opentype"
     } else {
@@ -150,7 +150,7 @@ pub fn collect_fonts(opf: &OPFData) -> Vec<EmbeddedFont> {
 /// matches kindlegen's own output byte-for-byte in the header (flags=0x1,
 /// data at 24, no XOR key): kindlegen compresses but does not obfuscate,
 /// so kindling doesn't either.
-fn build_font_record(data: &[u8]) -> Vec<u8> {
+pub(crate) fn build_font_record(data: &[u8]) -> Vec<u8> {
     let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
     encoder.write_all(data).unwrap();
     let compressed = encoder.finish().unwrap();
@@ -306,7 +306,7 @@ pub fn strip_font_locking_inline_styles(html: &str) -> String {
 
 /// 4-char base32 (0-9, A-V) encoding used by `kindle:embed` indices,
 /// mirroring the cover URI encoding in `mobi.rs`.
-fn encode_kindle_embed_base32(mut value: usize) -> String {
+pub(crate) fn encode_kindle_embed_base32(mut value: usize) -> String {
     const DIGITS: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUV";
     let mut out = [b'0'; 4];
     for slot in out.iter_mut().rev() {

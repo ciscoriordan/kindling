@@ -97,10 +97,68 @@ pub fn build_mobi_from_extracted(
     fold_accents: bool,
     force_user_fonts: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    build_mobi_from_extracted_with_fonts(
+        extracted,
+        output_path,
+        no_compress,
+        headwords_only,
+        srcs_data,
+        include_cmet,
+        no_hd_images,
+        creator_tag,
+        kf8_only,
+        doc_type,
+        kindle_limits,
+        self_check,
+        kindlegen_parity,
+        strict_accents,
+        fold_accents,
+        force_user_fonts,
+        None,
+    )
+}
+
+/// Build from a parsed EPUB with optional caller-supplied fonts. Injection
+/// applies to reflowable books and their KF8 output only. It conflicts with
+/// `force_user_fonts`; source OPF, HTML, CSS, and font files are never edited.
+#[allow(clippy::too_many_arguments)]
+pub fn build_mobi_from_extracted_with_fonts(
+    extracted: &ExtractedEpub,
+    output_path: &Path,
+    no_compress: bool,
+    headwords_only: bool,
+    srcs_data: Option<&[u8]>,
+    include_cmet: bool,
+    no_hd_images: bool,
+    creator_tag: bool,
+    kf8_only: bool,
+    doc_type: Option<&str>,
+    kindle_limits: bool,
+    self_check: bool,
+    kindlegen_parity: bool,
+    strict_accents: bool,
+    fold_accents: bool,
+    force_user_fonts: bool,
+    injection: Option<&crate::font_injection::FontInjection>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if injection.is_some() && force_user_fonts {
+        return Err("font injection conflicts with --force-user-fonts".into());
+    }
     let opf = &extracted.opf;
 
     // Detect dictionary vs book by checking HTML content for idx:entry tags
     let is_dictionary = detect_dictionary(opf);
+
+    if injection.is_some()
+        && (is_dictionary
+            || opf.is_fixed_layout
+            || matches!(
+                extracted.profile,
+                crate::profile::Profile::Comic | crate::profile::Profile::Dict
+            ))
+    {
+        return Err("--embed-font supports reflowable books only; dictionaries and fixed-layout books are unsupported".into());
+    }
 
     if is_dictionary {
         if kf8_only {
@@ -147,6 +205,7 @@ pub fn build_mobi_from_extracted(
             self_check,
             kindlegen_parity,
             force_user_fonts,
+            injection,
         )
     }
 }
@@ -849,6 +908,7 @@ fn build_book_mobi(
     self_check: bool,
     kindlegen_parity: bool,
     force_user_fonts: bool,
+    injection: Option<&crate::font_injection::FontInjection>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // The device keys font selection (and hyphenation) on the book's
     // language, so a missing or unrecognized dc:language silently lands the
@@ -1075,7 +1135,16 @@ fn build_book_mobi(
             )
         })
         .collect();
-    let font_records: Vec<Vec<u8>> = embedded_fonts.into_iter().map(|f| f.record).collect();
+    let injected_css =
+        injection.map(|fonts| fonts.css(image_records.len() + embedded_fonts.len() + 1));
+    let mut font_records: Vec<Vec<u8>> = embedded_fonts.into_iter().map(|f| f.record).collect();
+    if let Some(fonts) = injection {
+        font_records.extend(fonts.records());
+        eprintln!(
+            "Injected body font families: {}",
+            fonts.families().join(", ")
+        );
+    }
     let num_font_records = font_records.len();
     if num_font_records > 0 {
         eprintln!(
@@ -1135,7 +1204,7 @@ fn build_book_mobi(
     // <style> blocks, and from per-element style="..." attributes
     // (issue #19). Skipped in kindlegen-parity mode, which passes CSS
     // through byte-for-byte like kindlegen.
-    let strip_font_css = font_embeds.is_empty() && !kindlegen_parity;
+    let strip_font_css = font_embeds.is_empty() && injection.is_none() && !kindlegen_parity;
     if strip_font_css {
         for part in &mut html_parts {
             let stripped = crate::fonts::strip_font_locking_style_blocks(part);
@@ -1158,6 +1227,15 @@ fn build_book_mobi(
         stripped
     } else {
         css_content
+    };
+    let css_content = match injected_css {
+        Some(css) => {
+            for part in &mut html_parts {
+                *part = crate::font_injection::link_css_flow(part);
+            }
+            css_content + &css
+        }
+        None => css_content,
     };
     let kf8_title = if opf.title.is_empty() {
         "Book"

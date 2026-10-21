@@ -36,6 +36,7 @@ regex = "1"
 scraper = "0.26"
 lightningcss = "1.0.0-alpha.71"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+ttf-parser = { version = "0.25.1", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 # Same version the library already pulls in, so this adds no crate to the
