@@ -7,6 +7,7 @@ import subprocess
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
+LATIN_WORDS = ["Fuß", "Œuvre", "café", "Łódź"]
 
 
 def package(title, identifier, dictionary):
@@ -30,7 +31,7 @@ def generate(binary, output):
         source.mkdir(parents=True, exist_ok=True)
         source.joinpath("content.opf").write_text(package(f"Ukrainian lookup {name}", f"kindling-uk-lookup-{name}", True), encoding="utf-8")
         entries = "".join(f'<idx:entry><idx:orth value="{html.escape(word, quote=True)}"/><b>{html.escape(word)}</b><p>Dictionary {name}: {description}.</p></idx:entry>'
-                          for word, description in [("одразу", "control"), (label, "apostrophe check")])
+                          for word, description in [("одразу", "control"), (label, "apostrophe check"), *[(word, "Latin lookup check") for word in LATIN_WORDS]])
         source.joinpath("content.html").write_text('<?xml version="1.0" encoding="UTF-8"?><html xmlns="http://www.w3.org/1999/xhtml" xmlns:idx="http://www.mobipocket.com/idx"><head><title>Lookup probe</title></head><body>' + entries + '</body></html>', encoding="utf-8")
         for strict in [False, True]:
             destination = output / f"dictionary-{name}{'-strict' if strict else ''}.mobi"
@@ -38,7 +39,7 @@ def generate(binary, output):
     source = output / "sources" / "book"
     source.mkdir(parents=True, exist_ok=True)
     source.joinpath("content.opf").write_text(package("Ukrainian apostrophe lookup check", "kindling-uk-lookup-book", False), encoding="utf-8")
-    source.joinpath("content.html").write_text('<?xml version="1.0" encoding="UTF-8"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>Ukrainian lookup</title></head><body>' + ''.join(f'<p>{html.escape(word)}</p>' for word in ["одразу", "сумяття", "сум’яття", "сум'яття", "сумʼяття"]) + '</body></html>', encoding="utf-8")
+    source.joinpath("content.html").write_text('<?xml version="1.0" encoding="UTF-8"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>Ukrainian lookup</title></head><body>' + ''.join(f'<p>{html.escape(word)}</p>' for word in ["одразу", "сумяття", "сум’яття", "сум'яття", "сумʼяття", *LATIN_WORDS]) + '</body></html>', encoding="utf-8")
     subprocess.run([str(binary), "build", str(source / "content.opf"), "--no-validate", "-o", str(output / "lookup-book.azw3")], check=True)
     output.joinpath("README.txt").write_text(f'''Ukrainian dictionary lookup device check
 Built with {version}.
@@ -51,6 +52,8 @@ In every dictionary, одразу is the positive control. Look up each of the f
 сумяття spellings in the book. They should reach the apostrophe-check entry in
 all eight dictionaries. Record the device, firmware, selected dictionary,
 query spelling, and displayed definition. Test both default and strict files.
+Also look up Fuß, Œuvre, café, and Łódź. Every dictionary contains these
+Latin headwords, which should open their own Latin lookup check entries.
 
 A stores U+2019, B U+0027, C U+02BC, and D no apostrophe. These files test index
 lookup and the reader's selection path together. Native search has been checked
@@ -62,6 +65,7 @@ python3 scripts/ukrainian_lookup_probes.py
 
 Tracking: https://github.com/ciscoriordan/kindling/issues/71
           https://github.com/ciscoriordan/kindling/issues/72
+          https://github.com/ciscoriordan/kindling/issues/74
 ''', encoding="utf-8")
     archive = output / "ukrainian-lookup-probes.zip"
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
