@@ -339,6 +339,60 @@ fn greek_case_and_accents_count() {
 }
 
 #[test]
+fn ukrainian_identity_table_keeps_latin_and_cyrillic_labels_reachable() {
+    let words = [
+        "одразу",
+        "Київ",
+        "до́м",
+        "сум’яття",
+        "Fuß",
+        "Œuvre",
+        "café",
+        "Łódź",
+        "Ơn",
+    ];
+    for (tag, flags) in [
+        ("uk_mixed", &[][..]),
+        ("uk_mixed_strict", &["--strict-accents"][..]),
+    ] {
+        let data = build_words(tag, "uk", &words, flags);
+        let parsed = common::parse_mobi_file(&data).unwrap();
+        let index = common::parse_indx(&parsed, parsed.kf7.header.orth_index as usize).unwrap();
+        let primary = parsed
+            .palmdb
+            .record(&data, parsed.kf7.header.orth_index as usize);
+        let table = common::parse_indx_ordt2(primary).unwrap();
+        assert_eq!(
+            common::u32_be(primary, 164),
+            0,
+            "two-byte UTF-16 label units"
+        );
+        assert_eq!(
+            common::u32_be(primary, 168),
+            0x300,
+            "native Latin query coverage"
+        );
+        for word in words {
+            assert!(lookup(&data, word).is_some(), "{tag}: {word}");
+        }
+        for word in ["Fuß", "Œuvre", "café", "Łódź", "Ơn"] {
+            assert_eq!(opens(&data, word).as_deref(), Some(word), "{tag}: {word}");
+        }
+        assert!(lookup(&data, "сум'яття").is_some());
+        assert!(lookup(&data, "сумʼяття").is_some());
+        assert!(lookup(&data, "неіснуюче").is_none());
+        // Decoding through the table must keep Latin accents and ligature
+        // markers intact; the native converter also needs each identity slot.
+        assert!(!index.entries.is_empty());
+        for unit in [1u16, 3, 5, 0x41, 0xE9, 0x141, 0x2FF] {
+            let bytes = unit.to_be_bytes();
+            let decoded = common::decode_indx_label_ordt2(&bytes, &table);
+            assert_eq!(decoded.encode_utf16().collect::<Vec<_>>(), [unit]);
+        }
+    }
+}
+
+#[test]
 fn cyrillic_query_without_punctuation_resolves_punctuated_headword() {
     // Punctuation weighs nothing, so "изпод" opens "из-под".
     let data = build_words(

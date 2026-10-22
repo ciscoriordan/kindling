@@ -13,7 +13,9 @@
 //! Latin labels as plain UTF-16 with the ORDT/SPL blob taken from a kindlegen
 //! Greek dictionary, which Greek dictionaries get by default. Cyrillic and
 //! other scripts store plain UTF-16 labels. Ukrainian keeps that label
-//! representation with a minimal zero-weight NUL table for native lookup.
+//! representation with an identity table for U+0000 to U+02FF for native
+//! lookup. NUL and punctuation have zero weight; Latin letters keep the
+//! device's case/accent folding weights.
 //! Outside the generated tables every index is sorted by
 //! `device_collation_key`, the weights a Kindle lookup gives each character.
 //!
@@ -104,6 +106,10 @@ const ASCII_ALNUM_WEIGHT: u16 = 2;
 /// never exact-match a query (issue #22). 254 keeps two-byte elements on an
 /// even boundary.
 const MAX_LABEL_BYTES: usize = 254;
+
+/// Native query conversion searches ORDT2 for every unit below U+0300.
+/// Identity symbols keep those units at their existing UTF-16 values.
+const UNICODE_IDENTITY_COUNT: u16 = 0x300;
 
 /// Collation weight for a kana code point, folding katakana onto hiragana.
 /// Returns None for non-kana. ヴ ヵ ヶ (and the hiragana ゔ ゕ ゖ) sit just
@@ -219,7 +225,7 @@ pub(crate) fn label_codepoints(text: &str) -> Vec<u32> {
 
 /// Generated ORDT table pair plus the character-level encoder state.
 pub struct OrdtTables {
-    /// Keep the plain UTF-16 label representation with a zero-weight NUL.
+    /// Keep plain UTF-16 labels, with identity symbols below U+0300.
     unicode_literals: bool,
     /// Symbol -> collation weight (0 = ignorable).
     ordt1: Vec<u16>,
@@ -916,16 +922,19 @@ impl OrdtTables {
         self.ordt2.len() as u32
     }
 
-    /// Plain UTF-16 labels with a zero-weight NUL symbol. Native lookup in
-    /// firmware 5.20.1 converts an apostrophe to NUL, including when there
-    /// are no tables. Supplying this weight lets the comparison skip it.
-    /// Every nonzero unit remains a literal, including expansion markers
-    /// and surrogate pairs. No script-specific collation is introduced.
+    /// Plain UTF-16 labels with identity symbols for U+0000 to U+02FF.
+    /// Native lookup in firmware 5.20.1 searches ORDT2 for these units and
+    /// otherwise falls back to their folded weight, or NUL if neither is
+    /// present. A NUL-only table therefore loses all Latin letters (#74).
+    /// Identity symbols preserve the stored labels, including the ligature
+    /// markers at U+0001 to U+0005. NUL and punctuation weigh zero (#71).
+    /// Units from U+0300 upward, including Cyrillic and surrogates, stay
+    /// literal to avoid the native Cyrillic-to-symbol failure (#72).
     pub fn new_unicode() -> OrdtTables {
         OrdtTables {
             unicode_literals: true,
-            ordt1: vec![0],
-            ordt2: vec![0],
+            ordt1: (0..UNICODE_IDENTITY_COUNT).map(device_weight).collect(),
+            ordt2: (0..UNICODE_IDENTITY_COUNT).collect(),
             sym_of: HashMap::new(),
             surrogate_sym: HashMap::new(),
             two_byte: true,
@@ -1140,14 +1149,30 @@ mod tests {
     }
 
     #[test]
-    fn unicode_table_preserves_plain_labels_and_ignores_only_nul() {
+    fn unicode_table_preserves_plain_labels_and_latin_query_symbols() {
         let table = OrdtTables::new_unicode();
         assert_eq!(table.ordt_type(), 0);
-        assert_eq!(table.count(), 1);
-        assert_eq!(
-            table.serialize(),
-            (b"ORDT\0\0".to_vec(), b"ORDT\0\0".to_vec())
-        );
+        assert_eq!(table.count(), 0x300);
+        let (weights, values) = table.serialize();
+        assert_eq!(weights.len(), 4 + 0x300 * 2);
+        assert_eq!(values.len(), 4 + 0x300 * 2);
+        for unit in 0..0x300u16 {
+            let offset = 4 + usize::from(unit) * 2;
+            assert_eq!(&values[offset..offset + 2], &unit.to_be_bytes());
+        }
+        for (unit, weight) in [
+            (0, 0),
+            (0x27, 0),
+            (0x2BC, 0),
+            (0x41, 0x61),
+            (0xE9, 0x65),
+            (1, 0x6F),
+            (3, 0x61),
+            (5, 0x73),
+        ] {
+            let offset = 4 + unit * 2;
+            assert_eq!(&weights[offset..offset + 2], &(weight as u16).to_be_bytes());
+        }
         for word in [
             "сум’яття",
             "сум'яття",
@@ -1157,6 +1182,9 @@ mod tests {
             "до́м",
             "Fuß",
             "Œuvre",
+            "café",
+            "Łódź",
+            "Ơn",
             "𠀀",
             "カー",
             "%_",

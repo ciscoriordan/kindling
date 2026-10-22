@@ -6065,8 +6065,8 @@ fn build_lookup_terms(
     //     symbol, so the Kindle shows each headword as written. The DEFAULT for
     //     Latin dictionaries (kindlegen's Latin layout too), and what
     //     `--strict-accents` forces for any script.
-    //   - Ukrainian: plain UTF-16 labels with a zero-weight NUL table, in
-    //     both default and strict modes, for the native search engine.
+    //   - Ukrainian: plain UTF-16 labels with identity symbols below U+0300
+    //     and zero-weight punctuation, in both default and strict modes.
     //   - Otherwise plain UTF-16 labels: with the ORDT/SPL blob taken from a
     //     kindlegen Greek dictionary for Greek, and for Latin with
     //     `--fold-accents`; with no blob for Cyrillic and other scripts.
@@ -6074,7 +6074,8 @@ fn build_lookup_terms(
     //   `ordt::device_collation_key`, so the modes open the same entries.
     let want_exact = strict_accents || (is_latin && !fold_accents);
     let gen_ordt = if locale_code(dict_lang) & 0xFF == 0x22 {
-        // Ukrainian native lookup needs a zero-weight NUL table (#71).
+        // Ukrainian native lookup needs Latin query symbols (#74) and a
+        // zero-weight NUL (#71), with the existing UTF-16 label values.
         // Keeping the letters literal also avoids the native path's failed
         // Cyrillic-to-symbol conversion in --strict-accents builds (#72).
         Some(crate::ordt::OrdtTables::new_unicode())
@@ -6372,7 +6373,7 @@ mod punctuated_label_order_tests {
                 let (terms, table) =
                     build_lookup_terms(&entries, &positions, b"", false, language, strict, false);
                 let table = table.expect("native Ukrainian lookup needs the NUL weight");
-                assert_eq!(table.count(), 1);
+                assert_eq!(table.count(), 0x300);
                 assert_eq!(table.ordt_type(), 0);
                 for term in terms {
                     assert_eq!(
