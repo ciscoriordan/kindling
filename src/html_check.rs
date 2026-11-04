@@ -62,6 +62,7 @@ pub fn parse_mobi_html(content: &[u8]) -> Result<(), String> {
         let cfg = reader.config_mut();
         cfg.check_end_names = false;
         cfg.allow_unmatched_ends = true;
+        cfg.allow_dangling_amp = true;
         cfg.check_comments = false;
         cfg.trim_text_start = false;
         cfg.trim_text_end = false;
@@ -97,6 +98,7 @@ pub fn check_balanced_tags(content: &[u8]) -> Result<(), String> {
         let cfg = reader.config_mut();
         cfg.check_end_names = false;
         cfg.allow_unmatched_ends = true;
+        cfg.allow_dangling_amp = true;
         cfg.check_comments = false;
         cfg.trim_text_start = false;
         cfg.trim_text_end = false;

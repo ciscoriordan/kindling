@@ -97,7 +97,7 @@ Add the crate to your `Cargo.toml` (published as `kindling-mobi`; the library na
 
 ```toml
 [dependencies]
-kindling-mobi = "0.43"
+kindling-mobi = "0.46.1"
 ```
 
 Then `use kindling::...`. Public API is defined in `src/lib.rs`.

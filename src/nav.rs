@@ -83,6 +83,7 @@ fn find_ncx_href(opf: &OPFData) -> Option<String> {
 fn parse_nav_xhtml(content: &str, nav_dir: &str) -> Vec<NavPoint> {
     let mut reader = Reader::from_str(content);
     reader.config_mut().check_end_names = false;
+    reader.config_mut().allow_dangling_amp = true;
 
     let mut points = Vec::new();
     // Depth inside the matched <nav> element (0 = outside).
@@ -137,13 +138,9 @@ fn parse_nav_xhtml(content: &str, nav_dir: &str) -> Vec<NavPoint> {
                     }
                 }
             }
-            Ok(Event::Text(ref e)) => {
+            Ok(ref event @ (Event::Text(_) | Event::CData(_) | Event::GeneralRef(_))) => {
                 if let Some((_, _, label, _)) = current.as_mut() {
-                    let text = e
-                        .unescape()
-                        .map(|t| t.to_string())
-                        .unwrap_or_else(|_| String::from_utf8_lossy(e.as_ref()).to_string());
-                    label.push_str(&text);
+                    crate::xml_text::append(label, event);
                 }
             }
             Ok(Event::End(ref e)) => {
@@ -184,6 +181,7 @@ fn parse_nav_xhtml(content: &str, nav_dir: &str) -> Vec<NavPoint> {
 fn parse_toc_ncx(content: &str, ncx_dir: &str) -> Vec<NavPoint> {
     let mut reader = Reader::from_str(content);
     reader.config_mut().check_end_names = false;
+    reader.config_mut().allow_dangling_amp = true;
 
     let mut points = Vec::new();
     let mut in_nav_map = false;
@@ -244,14 +242,10 @@ fn parse_toc_ncx(content: &str, ncx_dir: &str) -> Vec<NavPoint> {
                     _ => {}
                 }
             }
-            Ok(Event::Text(ref e)) => {
+            Ok(ref event @ (Event::Text(_) | Event::CData(_) | Event::GeneralRef(_))) => {
                 if in_text {
                     if let Some(label) = pending_label.as_mut() {
-                        let text = e
-                            .unescape()
-                            .map(|t| t.to_string())
-                            .unwrap_or_else(|_| String::from_utf8_lossy(e.as_ref()).to_string());
-                        label.push_str(&text);
+                        crate::xml_text::append(label, event);
                     }
                 }
             }

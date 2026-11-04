@@ -1,6 +1,6 @@
 [package]
 name = "kindling-mobi"
-version = "0.46.0"
+version = "0.46.1"
 edition = "2024"
 rust-version = "1.88"
 description = "Kindle MOBI/AZW3 builder for dictionaries, books, and comics. Drop-in kindlegen replacement."
@@ -30,13 +30,19 @@ ego-tree = "0.11"
 flate2 = "1"
 image = "0.25"
 memchr = "2"
-quick-xml = "0.36"
+quick-xml = "0.41"
 rayon = "1.10"
 regex = "1"
 scraper = "0.26"
-lightningcss = "1.0.0-alpha.71"
+# Kindling parses CSS without the bundler or source map support.
+lightningcss = { version = "1.0.0-alpha.71", default-features = false }
 zip = { version = "9.3.0", default-features = false, features = ["deflate-flate2", "deflate-zopfli"] }
 ttf-parser = { version = "0.25.1", default-features = false, features = ["std"] }
+
+# Set patched floors for these transitive dependencies too. Library consumers
+# resolve their own lockfiles.
+anyhow = "1.0.103"
+crossbeam-epoch = "0.9.20"
 
 [dev-dependencies]
 # Same version the library already pulls in, so this adds no crate to the
