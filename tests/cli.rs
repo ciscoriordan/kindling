@@ -673,6 +673,65 @@ mod validate {
         }
     }
 
+    fn write_zip_fixture(path: &std::path::Path, entries: &[(&str, &[u8])]) {
+        use std::io::Write;
+
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+        for (name, bytes) in entries {
+            writer
+                .start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(bytes).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+
+    #[test]
+    fn epub_and_cbz_cannot_overwrite_files_outside_extraction() {
+        let temp = TempDir::new("archive-path");
+        let outside = temp.path().join("outside.jpg");
+        std::fs::write(&outside, b"original").unwrap();
+        for (ext, run) in [
+            ("epub", run_build as fn(&[&str]) -> Output),
+            ("cbz", run_comic),
+        ] {
+            let archive = temp.path().join(format!("unsafe.{ext}"));
+            for name in ["../outside.jpg", outside.to_str().unwrap()] {
+                write_zip_fixture(&archive, &[(name, b"overwrite")]);
+                let out = run(&[archive.to_str().unwrap()]);
+                assert!(!out.status.success(), "{}", dump(&out));
+                assert!(
+                    String::from_utf8_lossy(&out.stderr).contains("Unsafe ZIP entry path"),
+                    "{}",
+                    dump(&out)
+                );
+                assert_eq!(std::fs::read(&outside).unwrap(), b"original");
+            }
+        }
+    }
+
+    #[test]
+    fn epub_package_path_stays_inside_archive() {
+        let temp = TempDir::new("epub-package-path");
+        std::fs::write(temp.path().join("outside.opf"), b"outside the archive").unwrap();
+        let archive = temp.path().join("unsafe.epub");
+        write_zip_fixture(
+            &archive,
+            &[(
+                "META-INF/container.xml",
+                br#"<container><rootfiles><rootfile full-path="../outside.opf"/></rootfiles></container>"#,
+            )],
+        );
+        let out = run_build(&[archive.to_str().unwrap()]);
+        assert!(!out.status.success(), "{}", dump(&out));
+        assert!(
+            String::from_utf8_lossy(&out.stderr)
+                .contains("EPUB package path points outside the archive"),
+            "{}",
+            dump(&out)
+        );
+    }
+
     /// Copy a fixture directory into a fresh temp dir so tests do not litter
     /// the source tree with generated `.azw3` / `.mobi` artifacts. Returns the
     /// path to the copied OPF inside the temp dir, plus the TempDir guard.

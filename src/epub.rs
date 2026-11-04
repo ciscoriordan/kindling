@@ -32,22 +32,29 @@ pub fn extract_epub(epub_path: &Path) -> Result<(PathBuf, PathBuf), Box<dyn std:
     }
     fs::create_dir_all(&temp_dir)?;
 
+    match unpack_epub(&epub_path, &temp_dir) {
+        Ok(opf_path) => Ok((temp_dir, opf_path)),
+        Err(error) => {
+            cleanup_temp_dir(&temp_dir);
+            Err(error)
+        }
+    }
+}
+
+fn unpack_epub(epub_path: &Path, temp_dir: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
     // Open and extract the ZIP archive
-    let file = fs::File::open(&epub_path)?;
+    let file = fs::File::open(epub_path)?;
     let mut archive = zip::ZipArchive::new(file)?;
 
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)?;
-        let name = entry.name().to_string();
+        let out_path = temp_dir.join(archive_entry_path(&entry)?);
 
-        // Skip directories
-        if name.ends_with('/') {
-            let dir_path = temp_dir.join(&name);
-            fs::create_dir_all(&dir_path)?;
+        if entry.is_dir() {
+            fs::create_dir_all(&out_path)?;
             continue;
         }
 
-        let out_path = temp_dir.join(&name);
         if let Some(parent_dir) = out_path.parent() {
             fs::create_dir_all(parent_dir)?;
         }
@@ -63,7 +70,7 @@ pub fn extract_epub(epub_path: &Path) -> Result<(PathBuf, PathBuf), Box<dyn std:
         parse_container_xml(&container_path)?
     } else {
         // Fallback: look for any .opf file in the extracted directory
-        find_opf_file(&temp_dir)?
+        find_opf_file(temp_dir)?
     };
 
     let opf_path = temp_dir.join(&opf_relative);
@@ -74,6 +81,12 @@ pub fn extract_epub(epub_path: &Path) -> Result<(PathBuf, PathBuf), Box<dyn std:
         )
         .into());
     }
+    if !opf_path
+        .canonicalize()?
+        .starts_with(temp_dir.canonicalize()?)
+    {
+        return Err("EPUB package path points outside the archive".into());
+    }
 
     eprintln!(
         "Extracted EPUB to {} (OPF: {})",
@@ -81,7 +94,22 @@ pub fn extract_epub(epub_path: &Path) -> Result<(PathBuf, PathBuf), Box<dyn std:
         opf_relative
     );
 
-    Ok((temp_dir, opf_path))
+    Ok(opf_path)
+}
+
+/// Validate archive paths before joining them to an extraction directory.
+pub(crate) fn archive_entry_path<R: Read>(
+    entry: &zip::read::ZipFile<'_, R>,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let name = entry.name()?;
+    // Reject absolute and drive-relative names rather than rewriting them.
+    if !name.starts_with(['/', '\\'])
+        && name.as_bytes().get(1) != Some(&b':')
+        && let Some(path) = entry.enclosed_name()
+    {
+        return Ok(path);
+    }
+    Err(format!("Unsafe ZIP entry path: {name:?}").into())
 }
 
 /// Parse META-INF/container.xml to find the rootfile (OPF) path.

@@ -2,7 +2,7 @@
 name = "kindling-mobi"
 version = "0.46.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "Kindle MOBI/AZW3 builder for dictionaries, books, and comics. Drop-in kindlegen replacement."
 license = "MIT"
 repository = "https://github.com/ciscoriordan/kindling"
@@ -35,7 +35,7 @@ rayon = "1.10"
 regex = "1"
 scraper = "0.26"
 lightningcss = "1.0.0-alpha.71"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9.3.0", default-features = false, features = ["deflate-flate2", "deflate-zopfli"] }
 ttf-parser = { version = "0.25.1", default-features = false, features = ["std"] }
 
 [dev-dependencies]

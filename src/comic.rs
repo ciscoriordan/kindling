@@ -1015,14 +1015,21 @@ fn extract_cbz(cbz_path: &Path) -> Result<(Vec<PathBuf>, PathBuf), Box<dyn std::
 
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)?;
-        let name = entry.name().to_string();
+        let relative_path = match epub::archive_entry_path(&entry) {
+            Ok(path) => path,
+            Err(error) => {
+                epub::cleanup_temp_dir(&extract_dir);
+                return Err(error);
+            }
+        };
+        let name = entry.name()?.into_owned();
 
         // Skip directories and hidden files (like __MACOSX)
         if name.ends_with('/') || name.starts_with("__MACOSX") || name.contains("/.") {
             continue;
         }
 
-        let out_path = extract_dir.join(&name);
+        let out_path = extract_dir.join(relative_path);
 
         // Also extract ComicInfo.xml if present
         let lower_name = name.to_lowercase();
