@@ -43,6 +43,7 @@ pub(crate) mod links;
 pub(crate) mod moire;
 pub(crate) mod palmdoc;
 pub(crate) mod vwi;
+pub(crate) mod xml_text;
 
 #[cfg(test)]
 mod tests;

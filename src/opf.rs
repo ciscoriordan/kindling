@@ -120,12 +120,13 @@ impl OPFData {
 
     fn parse_xml(&mut self, xml: &str) -> Result<(), Box<dyn std::error::Error>> {
         let mut reader = Reader::from_str(xml);
-        reader.config_mut().trim_text(true);
+        reader.config_mut().allow_dangling_amp = true;
 
         let mut in_metadata = false;
         let mut in_manifest = false;
         let mut in_spine = false;
         let mut current_tag = String::new();
+        let mut current_text = String::new();
         let mut package_unique_identifier_id = String::new();
         let mut current_identifier_id = String::new();
         let mut buf = Vec::new();
@@ -133,6 +134,7 @@ impl OPFData {
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+                    current_text.clear();
                     let local_name = local_tag_name(e.name().as_ref());
                     // OEB 1.x uses capitalized DC elements (<dc:Title>,
                     // <dc:Identifier>, etc.). Match case-insensitively on a
@@ -322,9 +324,15 @@ impl OPFData {
                         _ => {}
                     }
                 }
-                Ok(Event::Text(ref e)) => {
-                    let text = e.unescape().unwrap_or_default().trim().to_string();
+                Ok(ref event @ (Event::Text(_) | Event::CData(_) | Event::GeneralRef(_))) => {
+                    if in_metadata && !current_tag.is_empty() {
+                        crate::xml_text::append(&mut current_text, event);
+                    }
+                }
+                Ok(Event::End(ref e)) => {
+                    let text = current_text.trim();
                     if !text.is_empty() && in_metadata {
+                        let text = text.to_owned();
                         match current_tag.as_str() {
                             "title" => self.title = text,
                             "creator" => self.author = text,
@@ -364,8 +372,7 @@ impl OPFData {
                             _ => {}
                         }
                     }
-                }
-                Ok(Event::End(ref e)) => {
+                    current_text.clear();
                     let local_name = local_tag_name(e.name().as_ref());
                     match local_name.to_ascii_lowercase().as_str() {
                         "metadata" => in_metadata = false,
@@ -1218,7 +1225,7 @@ verb
 <package unique-identifier="uid">
 <metadata>
 <dc-metadata xmlns:dc="http://purl.org/metadata/dublin_core">
-<dc:Title>PyGlossary Dict</dc:Title>
+<dc:Title>PyGlossary &amp; Dict &#x391;</dc:Title>
 <dc:Language>fr</dc:Language>
 <dc:Identifier id="uid">abc123</dc:Identifier>
 <dc:Creator>An Author</dc:Creator>
@@ -1239,7 +1246,7 @@ verb
         fs::write(&opf_path, opf).unwrap();
         // HTML target does not need to exist for OPF metadata parsing.
         let data = OPFData::parse(&opf_path).unwrap();
-        assert_eq!(data.title, "PyGlossary Dict");
+        assert_eq!(data.title, "PyGlossary & Dict Α");
         assert_eq!(data.language, "fr");
         assert_eq!(data.identifier, "abc123");
         assert_eq!(data.author, "An Author");

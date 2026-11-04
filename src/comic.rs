@@ -2563,25 +2563,34 @@ pub fn parse_comic_info_xml(xml: &str) -> Result<ComicMetadata, Box<dyn std::err
     use quick_xml::events::Event;
 
     let mut reader = Reader::from_str(xml);
+    reader.config_mut().allow_dangling_amp = true;
     let mut metadata = ComicMetadata::default();
     let mut current_tag = String::new();
+    let mut current_text = String::new();
     let mut buf = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => {
                 current_tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                current_text.clear();
             }
-            Ok(Event::Text(ref e)) => {
-                let text = e.unescape().unwrap_or_default().to_string();
-                let text = text.trim().to_string();
+            Ok(ref event @ (Event::Text(_) | Event::CData(_) | Event::GeneralRef(_))) => {
+                if !current_tag.is_empty() {
+                    crate::xml_text::append(&mut current_text, event);
+                }
+            }
+            Ok(Event::End(_)) => {
+                let tag = std::mem::take(&mut current_tag);
+                let text = current_text.trim();
                 if text.is_empty() {
                     continue;
                 }
+                let text = text.to_owned();
                 // ComicInfo.xml is nominally PascalCase but real-world files
                 // from ComicTagger, Kavita, Kileko-Empire, etc. are inconsistent,
                 // so match case-insensitively.
-                match current_tag.to_ascii_lowercase().as_str() {
+                match tag.to_ascii_lowercase().as_str() {
                     "title" => metadata.title = Some(text),
                     "series" => metadata.series = Some(text),
                     "number" => metadata.number = Some(text),
@@ -2623,9 +2632,7 @@ pub fn parse_comic_info_xml(xml: &str) -> Result<ComicMetadata, Box<dyn std::err
                     "month" => metadata.month = Some(text),
                     _ => {}
                 }
-            }
-            Ok(Event::End(_)) => {
-                current_tag.clear();
+                current_text.clear();
             }
             Ok(Event::Eof) => break,
             Err(e) => {
@@ -3301,7 +3308,7 @@ mod tests {
     <Series>Star Wars: Darth Vader Modern Era Epic Collection: Vader Down</Series>
     <LanguageISO>en</LanguageISO>
     <PageCount>407</PageCount>
-    <writer>Kieron Gillen, Jason Aaron</writer>
+    <writer>Kieron Gillen, Jason Aaron &amp; Co.</writer>
     <Month>11</Month>
     <Year>2025</Year>
 </ComicInfo>"#;
@@ -3317,8 +3324,8 @@ mod tests {
             meta.writers,
         );
         assert!(
-            meta.writers.iter().any(|w| w == "Jason Aaron"),
-            "Writers should include Jason Aaron, got {:?}",
+            meta.writers.iter().any(|w| w == "Jason Aaron & Co."),
+            "Writers should preserve escaped ampersands, got {:?}",
             meta.writers,
         );
         assert_eq!(meta.language.as_deref(), Some("en"));
