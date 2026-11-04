@@ -797,7 +797,7 @@ fn identifier_from_srcs(input: &[u8], record_offsets: &[u32]) -> Option<String> 
             let Ok(mut entry) = archive.by_index(j) else {
                 continue;
             };
-            if !entry.name().ends_with(".opf") {
+            if !entry.name().is_ok_and(|name| name.ends_with(".opf")) {
                 continue;
             }
             let mut xml = String::new();

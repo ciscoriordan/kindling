@@ -82,12 +82,14 @@ Or install via Cargo (builds from source, installs `kindling-cli` to `~/.cargo/b
 cargo install kindling-mobi
 ```
 
-Or build from source. Kindling uses Rust edition 2024 and requires Rust 1.85 or newer. Run from the repo root:
+Or build from source. Kindling uses Rust edition 2024 and requires Rust 1.88 or newer. Run from the repo root:
 ```bash
 cargo build --release
 ```
 
 The binary is written to `target/release/kindling-cli`.
+
+EPUB and CBZ imports reject archive entries that would write outside the extraction directory.
 
 ### As a library
 
@@ -655,7 +657,7 @@ Standard Rust layout with `Cargo.toml` at the repo root:
 
 ```
 kindling/
-├── Cargo.toml                   # edition 2024, Rust 1.85+
+├── Cargo.toml                   # edition 2024, Rust 1.88+
 ├── src/
 │   ├── lib.rs                   # Library crate root, public API for external consumers
 │   ├── main.rs                  # CLI: build, comic, stardict, epub2, epub3, validate, repair, rewrite-metadata, thumbnail, dump, lookup, kindlegen-compat

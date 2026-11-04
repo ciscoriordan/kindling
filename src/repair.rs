@@ -304,7 +304,12 @@ fn repair_epub_inner(
     // Refuse DRM-encrypted files. Presence of META-INF/encryption.xml or
     // META-INF/rights.xml is the universal marker (Adobe ADEPT, B&N Social
     // DRM, Readium LCP all use one of these).
-    for name in archive.file_names() {
+    let names: Vec<String> = archive
+        .file_names()
+        .map(|name| name.map(|name| name.into_owned()))
+        .collect::<Result<_, _>>()
+        .map_err(RepairError::ZipRead)?;
+    for name in &names {
         let lower = name.to_ascii_lowercase();
         if lower == "meta-inf/encryption.xml" || lower == "meta-inf/rights.xml" {
             return Err(RepairError::DrmEncrypted);
@@ -313,7 +318,6 @@ fn repair_epub_inner(
 
     // Sanity-check EPUB structure: we need a mimetype file and a
     // META-INF/container.xml. If neither is present, this is not an EPUB.
-    let names: Vec<String> = archive.file_names().map(|s| s.to_string()).collect();
     let has_container = names
         .iter()
         .any(|n| n.eq_ignore_ascii_case("META-INF/container.xml"));
@@ -329,7 +333,7 @@ fn repair_epub_inner(
 
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i).map_err(RepairError::ZipRead)?;
-        let name = entry.name().to_string();
+        let name = entry.name().map_err(RepairError::ZipRead)?.into_owned();
         if entry.is_dir() {
             continue;
         }
@@ -1046,7 +1050,7 @@ mod tests {
         let bytes = std::fs::read(path).unwrap();
         let mut a = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
         (0..a.len())
-            .map(|i| a.by_index(i).unwrap().name().to_string())
+            .map(|i| a.by_index(i).unwrap().name().unwrap().into_owned())
             .collect()
     }
 

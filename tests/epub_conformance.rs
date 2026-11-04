@@ -86,7 +86,7 @@ fn read_epub(path: &Path) -> Epub {
     let mut first_stored = false;
     for i in 0..zip.len() {
         let mut e = zip.by_index(i).expect("zip entry");
-        let name = e.name().to_string();
+        let name = e.name().unwrap().into_owned();
         if i == 0 {
             first_name = name.clone();
             first_stored = e.compression() == zip::CompressionMethod::Stored;
