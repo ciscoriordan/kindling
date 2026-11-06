@@ -1,6 +1,6 @@
 [package]
 name = "kindling-mobi"
-version = "0.46.1"
+version = "0.46.2"
 edition = "2024"
 rust-version = "1.88"
 description = "Kindle MOBI/AZW3 builder for dictionaries, books, and comics. Drop-in kindlegen replacement."

@@ -2164,7 +2164,7 @@ mod tests {
     #[test]
     fn test_rtl_page_ordering() {
         use crate::comic;
-        // Build a comic with RTL mode and verify pages get reversed
+        // Build a comic with RTL mode and verify pages keep their source order
         let dir = TempDir::new("rtl_ordering");
         let images_dir = dir.path().join("images");
         fs::create_dir_all(&images_dir).unwrap();
@@ -2220,6 +2220,21 @@ mod tests {
             wm
         );
         println!("  \u{2713} RTL comic: EXTH 527=rtl, EXTH 525=horizontal-rl");
+
+        // The first image record must still be page 0 (the dark one, ~50)
+        let first_img_idx = read_u32_be(rec0, 108) as usize;
+        let first_img = get_record(&data, &offsets, first_img_idx);
+        let gray = image::load_from_memory(first_img)
+            .expect("first image record should decode")
+            .to_luma8();
+        let avg: f64 = gray.pixels().map(|p| p.0[0] as f64).sum::<f64>()
+            / (gray.width() as f64 * gray.height() as f64);
+        assert!(
+            avg < 100.0,
+            "RTL comic should start with page 0 (dark, ~50), but the first image \
+             record has average brightness {:.1}: the spine was reversed",
+            avg
+        );
     }
 
     #[test]

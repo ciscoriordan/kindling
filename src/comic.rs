@@ -455,7 +455,7 @@ pub fn build_comic_with_options(
                 eprintln!("Processing image {}/{}...", idx + 1, total);
             }
             let is_cover = options.cover_fill && cover_source_idx == Some(idx);
-            match process_image_pipeline(img_path, profile, options, is_cover, is_webtoon) {
+            match process_image_pipeline(img_path, profile, options, is_cover, is_webtoon, rtl) {
                 Ok(jpeg_pages) => Some((idx, jpeg_pages)),
                 Err(e) => {
                     eprintln!("Warning: skipping {} ({})", img_path.display(), e);
@@ -496,15 +496,6 @@ pub fn build_comic_with_options(
         }
     }
 
-    // Reverse page order for RTL reading direction
-    if rtl {
-        processed.reverse();
-        // Re-index after reversal
-        for (i, page) in processed.iter_mut().enumerate() {
-            page.index = i;
-        }
-    }
-
     let total_image_bytes: usize = processed.iter().map(|p| p.jpeg_data.len()).sum();
     eprintln!(
         "Processed into {} pages ({:.1} MB total JPEG data)",
@@ -532,7 +523,7 @@ pub fn build_comic_with_options(
 
         // Sort panels according to reading order
         let reading_order =
-            resolve_panel_reading_order(options.panel_reading_order.as_deref(), options.rtl);
+            resolve_panel_reading_order(options.panel_reading_order.as_deref(), rtl);
         if reading_order != "horizontal-lr" {
             eprintln!("Panel View: sorting panels in {} order", reading_order);
         }
@@ -1115,6 +1106,7 @@ fn process_image_pipeline(
     options: &ComicOptions,
     cover_fill: bool,
     is_webtoon: bool,
+    rtl: bool,
 ) -> Result<Vec<Vec<u8>>, Box<dyn std::error::Error>> {
     let img = image::open(path)?;
 
@@ -1191,11 +1183,12 @@ fn process_image_pipeline(
     };
 
     // Step 2: Detect and split double-page spreads
-    // Always split as [left, right] regardless of RTL. The global page reversal
-    // in build_comic_with_options handles RTL ordering: reversing [left, right]
-    // yields [right, left], which is the correct RTL reading order for a spread.
-    // Swapping here AND reversing globally would cancel out, producing the wrong
-    // cover image (left half instead of right half for RTL).
+    // Split as [left, right] for LTR and [right, left] for RTL, so each half
+    // lands in the spine in reading order. The spine itself is never reversed
+    // for RTL: the reader turns pages the other way because the OPF says
+    // page-progression-direction="rtl" (EXTH 527), which is also what KCC and
+    // kindlegen do. Reversing the whole page list on top of that opened the
+    // book on its last page and made the library thumbnail the last page.
     //
     // When rotate_spreads is enabled, landscape spreads are rotated 90 degrees
     // clockwise instead of being split, producing a single portrait page that
@@ -1212,7 +1205,11 @@ fn process_image_pipeline(
         vec![img.rotate90()]
     } else if options.split && !is_webtoon && is_double_page_spread(&img) {
         let (left, right) = split_spread(&img);
-        vec![left, right]
+        if rtl {
+            vec![right, left]
+        } else {
+            vec![left, right]
+        }
     } else {
         vec![img]
     };
@@ -3185,7 +3182,7 @@ mod tests {
             no_optimize: true,
             ..Default::default()
         };
-        let out = process_image_pipeline(&page, &profile, &options, false, false).unwrap();
+        let out = process_image_pipeline(&page, &profile, &options, false, false, false).unwrap();
         assert_eq!(out.len(), 1, "one page in, one page out");
         assert_eq!(
             out[0], source,
@@ -3195,7 +3192,8 @@ mod tests {
         // And the default pipeline does what it always did, so the flag is
         // the only thing that changes behavior.
         let normal = ComicOptions::default();
-        let processed = process_image_pipeline(&page, &profile, &normal, false, false).unwrap();
+        let processed =
+            process_image_pipeline(&page, &profile, &normal, false, false, false).unwrap();
         let decoded = image::load_from_memory(&processed[0]).unwrap();
         assert!(
             decoded.width() <= profile.width && decoded.height() <= profile.height,
@@ -3236,14 +3234,16 @@ mod tests {
         let options = ComicOptions::default();
         assert!(options.split, "splitting is on by default");
 
-        let as_page = process_image_pipeline(&band_path, &profile, &options, false, false).unwrap();
+        let as_page =
+            process_image_pipeline(&band_path, &profile, &options, false, false, false).unwrap();
         assert_eq!(
             as_page.len(),
             2,
             "outside webtoon mode a landscape page is still a spread"
         );
 
-        let as_band = process_image_pipeline(&band_path, &profile, &options, false, true).unwrap();
+        let as_band =
+            process_image_pipeline(&band_path, &profile, &options, false, true, false).unwrap();
         assert_eq!(
             as_band.len(),
             1,
@@ -3276,7 +3276,8 @@ mod tests {
             ..Default::default()
         };
 
-        let as_page = process_image_pipeline(&band_path, &profile, &options, false, false).unwrap();
+        let as_page =
+            process_image_pipeline(&band_path, &profile, &options, false, false, false).unwrap();
         assert_eq!(
             as_page.len(),
             1,
@@ -3285,7 +3286,8 @@ mod tests {
         let rotated = image::load_from_memory(&as_page[0]).unwrap();
         assert_eq!(rotated.dimensions(), (600, 750));
 
-        let as_band = process_image_pipeline(&band_path, &profile, &options, false, true).unwrap();
+        let as_band =
+            process_image_pipeline(&band_path, &profile, &options, false, true, false).unwrap();
         assert_eq!(as_band.len(), 1, "a webtoon band must remain one page");
         let upright = image::load_from_memory(&as_band[0]).unwrap();
         assert_eq!(
