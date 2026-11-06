@@ -97,7 +97,7 @@ Add the crate to your `Cargo.toml` (published as `kindling-mobi`; the library na
 
 ```toml
 [dependencies]
-kindling-mobi = "0.46.1"
+kindling-mobi = "0.46.2"
 ```
 
 Then `use kindling::...`. Public API is defined in `src/lib.rs`.
@@ -281,9 +281,9 @@ Converts image folders, CBZ files, CBR files, and EPUB files to Kindle-optimized
 - **Margin cropping**: `--crop 2` (default) crops margins + page numbers, `--crop 1` crops margins only, `--crop 0` disables cropping
 - **Auto-contrast**: Histogram stretching and gamma correction for e-ink (disable: `--no-enhance`)
 - **Moire correction**: Rainbow artifact removal for color e-ink screens (Colorsoft), applied automatically to grayscale source images
-- **Manga mode**: `--rtl` reverses page order and split direction
+- **Manga mode**: `--rtl` keeps pages in source order, sets right-to-left page progression, and emits split spreads right half first. `ComicInfo.xml` with `Manga` set to `YesAndRightToLeft` also enables this mode
 - **Webtoon mode**: `--webtoon` merges vertical strips and splits at panel gutters with overlap fallback to prevent content loss. Also detected automatically when every input image is more than three times as tall as it is wide. Each slice keeps its full width and original orientation, including when `--rotate-spreads` is set
-- **Panel View**: Tap-to-zoom panel detection for Kindle (disable: `--no-panel-view`). Reading order configurable via `--panel-reading-order` (`horizontal-lr`, `horizontal-rl`, `vertical-lr`, `vertical-rl`); defaults to `horizontal-rl` with `--rtl`
+- **Panel View**: Tap-to-zoom panel detection for Kindle (disable: `--no-panel-view`). Reading order configurable via `--panel-reading-order` (`horizontal-lr`, `horizontal-rl`, `vertical-lr`, `vertical-rl`); defaults to `horizontal-rl` when right-to-left mode is enabled by `--rtl` or `ComicInfo.xml`
 - **EPUB support**: Fixed-layout EPUB comics extracted in spine order (correct page sequence)
 - **CBR support**: RAR-based comic archives extracted via `bsdtar` (libarchive). `/usr/bin/bsdtar` ships with macOS; on Linux install `libarchive-tools` (`apt`) or `bsdtar` (`dnf`). Both RAR4 and RAR5 are supported. Header-encrypted CBRs are rejected with a clear error.
 - **ComicInfo.xml**: Auto-reads metadata and manga direction from CBZ and CBR files

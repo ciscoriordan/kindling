@@ -3192,7 +3192,8 @@ mod tests {
         // And the default pipeline does what it always did, so the flag is
         // the only thing that changes behavior.
         let normal = ComicOptions::default();
-        let processed = process_image_pipeline(&page, &profile, &normal, false, false, false).unwrap();
+        let processed =
+            process_image_pipeline(&page, &profile, &normal, false, false, false).unwrap();
         let decoded = image::load_from_memory(&processed[0]).unwrap();
         assert!(
             decoded.width() <= profile.width && decoded.height() <= profile.height,
@@ -3233,14 +3234,16 @@ mod tests {
         let options = ComicOptions::default();
         assert!(options.split, "splitting is on by default");
 
-        let as_page = process_image_pipeline(&band_path, &profile, &options, false, false, false).unwrap();
+        let as_page =
+            process_image_pipeline(&band_path, &profile, &options, false, false, false).unwrap();
         assert_eq!(
             as_page.len(),
             2,
             "outside webtoon mode a landscape page is still a spread"
         );
 
-        let as_band = process_image_pipeline(&band_path, &profile, &options, false, true, false).unwrap();
+        let as_band =
+            process_image_pipeline(&band_path, &profile, &options, false, true, false).unwrap();
         assert_eq!(
             as_band.len(),
             1,
@@ -3273,7 +3276,8 @@ mod tests {
             ..Default::default()
         };
 
-        let as_page = process_image_pipeline(&band_path, &profile, &options, false, false, false).unwrap();
+        let as_page =
+            process_image_pipeline(&band_path, &profile, &options, false, false, false).unwrap();
         assert_eq!(
             as_page.len(),
             1,
@@ -3282,7 +3286,8 @@ mod tests {
         let rotated = image::load_from_memory(&as_page[0]).unwrap();
         assert_eq!(rotated.dimensions(), (600, 750));
 
-        let as_band = process_image_pipeline(&band_path, &profile, &options, false, true, false).unwrap();
+        let as_band =
+            process_image_pipeline(&band_path, &profile, &options, false, true, false).unwrap();
         assert_eq!(as_band.len(), 1, "a webtoon band must remain one page");
         let upright = image::load_from_memory(&as_band[0]).unwrap();
         assert_eq!(
