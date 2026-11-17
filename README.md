@@ -1,6 +1,6 @@
 # Kindling
 
-<img width="100%" alt="Kindling - The missing MOBI generator. Dictionaries, books, comics." src="https://raw.githubusercontent.com/ciscoriordan/kindling/main/images/kindling_social.jpg">
+<img width="100%" alt="Kindling. The missing Kindle toolkit. Dictionaries, books, comics." src="https://raw.githubusercontent.com/ciscoriordan/kindling/main/images/kindling_social.jpg">
 
 The missing Kindle toolkit. Dictionaries, books, and comics. Single static Rust binary, no dependencies, cross-platform.
 
@@ -712,6 +712,8 @@ kindling/
 │   └── fixtures/                # One fixture per rule cluster plus the parity/ subtree
 └── target/release/kindling-cli  # compiled binary
 ```
+
+The README banner and GitHub social preview share an [SVG source](images/banner-source/README.md).
 
 ## Testing
 
