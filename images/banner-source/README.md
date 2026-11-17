@@ -1,11 +1,15 @@
 # Banner source
 
 Both banners use `banner.svg`. It clips the illustration from the original
-banner and sets the name in [Space Grotesk](https://floriankarsten.github.io/space-grotesk/)
-(weight 620) and the tagline in [Literata](https://github.com/googlefonts/literata)
-(weight 420, optical size 24). Both fonts use the SIL Open Font License 1.1.
-The SVG includes outlined lettering, so rendering does not require the fonts
-to be installed.
+banner, places the rasterized wordmark from `wordmark.png`, and draws the
+tagline in [Literata](https://github.com/googlefonts/literata) (weight 420,
+optical size 24, SIL Open Font License 1.1).
+
+The wordmark uses [Nitti Grotesk Medium](https://boldmonday.com/typefaces/nitti-grotesk/),
+designed by Pieter van Rosmalen and published by Bold Monday. It is set in
+title case at 163 px with −2 px letter spacing in the 1536 × 768 layout.
+The source PNG is rendered at three times its placement size. Neither font
+file is included or needed to regenerate the banners.
 
 From the repository root, regenerate both images with `rsvg-convert` and
 ImageMagick:
